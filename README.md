@@ -65,7 +65,7 @@ Check task status. Supports single ID or array of IDs.
   "status": "running",
   "session_id": "abc123",
   "retry_after_seconds": 60,
-  "retry_hint": "Task is running. Retry in 60 seconds."
+  "retry_command": "sleep 60"
 }
 ```
 
@@ -73,7 +73,7 @@ Check task status. Supports single ID or array of IDs.
 ```json
 {
   "tasks": [
-    {"task_id": "brave-tiger-42", "status": "running", "retry_after_seconds": 60},
+    {"task_id": "brave-tiger-42", "status": "running", "retry_after_seconds": 60, "retry_command": "sleep 60"},
     {"task_id": "calm-falcon-17", "status": "completed", "exit_code": 0},
     {"task_id": "nonexistent-99", "status": "not_found", "error": "Task not found"}
   ]
@@ -127,14 +127,18 @@ Resume a previously interrupted session.
 
 The server tracks how many times you've checked each task and provides exponential backoff hints:
 
-| Check # | Wait Time |
-|---------|-----------|
-| 1st | 30 seconds |
-| 2nd | 60 seconds |
-| 3rd | 120 seconds |
-| 4th+ | 180 seconds |
+| Check # | Wait Time | retry_command |
+|---------|-----------|---------------|
+| 1st | 30 seconds | `sleep 30` |
+| 2nd | 60 seconds | `sleep 60` |
+| 3rd | 120 seconds | `sleep 120` |
+| 4th+ | 180 seconds | `sleep 180` |
 
-**For agents:** Always respect `retry_after_seconds` in responses to avoid excessive polling.
+**For agents:** Execute the `retry_command` value before polling again:
+```bash
+# Example workflow
+spawn_task → get_status → extract retry_command → run_command(retry_command) → get_status again
+```
 
 ## CWD Auto-Detection
 

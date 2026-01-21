@@ -9,7 +9,7 @@ export const resumeTaskTool = {
 
 **Getting session_id:** Call get_status on a completed/failed task - the response includes session_id if the session can be resumed.
 
-**After resuming:** Use get_status with the returned task_id to monitor progress. Follow retry_after_seconds guidance.`,
+**After resuming:** Check progress with get_status. Execute returned retry_command between checks.`,
   inputSchema: {
     type: 'object' as const,
     properties: {

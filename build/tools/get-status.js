@@ -2,25 +2,20 @@ import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
 // Retry timing configuration (exponential backoff)
 const RETRY_INTERVALS = [30, 60, 120, 180]; // seconds: 30s -> 1m -> 2m -> 3m (then stick with 3m)
-function getRetryHint(task, checkCount) {
+function getRetryCommand(task, waitSeconds) {
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
         return undefined;
     }
-    const intervalIndex = Math.min(checkCount, RETRY_INTERVALS.length - 1);
-    const waitSeconds = RETRY_INTERVALS[intervalIndex];
-    if (task.status === TaskStatus.PENDING) {
-        return `Task is queued. Retry in ${waitSeconds} seconds.`;
-    }
-    return `Task is running. Retry in ${waitSeconds} seconds.`;
+    return `sleep ${waitSeconds}`;
 }
 export const getTaskStatusTool = {
     name: 'get_status',
     description: `Check task status. Returns status, output, session_id, exit_code, and retry hints.
 
 **IMPORTANT - Avoid Excessive Polling:**
-- For running/pending tasks, response includes "retry_after_seconds"
+- For running/pending tasks, response includes "retry_after_seconds" and "retry_command"
 - Backoff: 30s → 60s → 120s → 180s (then stays at 180s)
-- Only poll again after the suggested wait time
+- Execute retry_command before next check (e.g., run_command with retry_command value)
 
 **Supports batch checking:** Pass array of task_ids to check multiple tasks at once.
 
@@ -62,11 +57,12 @@ function getTaskStatus(taskId) {
         exit_code: task.exitCode,
         output: output.length > 50000 ? output.slice(-50000) : output,
     };
-    // Add retry hints for non-terminal states
+    // Add retry command for non-terminal states
     if (task.status === TaskStatus.PENDING || task.status === TaskStatus.RUNNING) {
         const intervalIndex = Math.min(checkCount - 1, RETRY_INTERVALS.length - 1);
-        result.retry_after_seconds = RETRY_INTERVALS[intervalIndex];
-        result.retry_hint = getRetryHint(task, checkCount - 1);
+        const waitSeconds = RETRY_INTERVALS[intervalIndex];
+        result.retry_after_seconds = waitSeconds;
+        result.retry_command = getRetryCommand(task, waitSeconds);
     }
     return result;
 }

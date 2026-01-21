@@ -16,7 +16,7 @@ export const spawnTaskTool = {
 
 **Models:** ${MODEL_IDS.map(m => m === DEFAULT_MODEL ? `${m} (default)` : m).join(', ')}
 
-**After spawning:** Use get_status with the returned task_id to check progress. Follow retry_after_seconds guidance to avoid excessive polling.`,
+**After spawning:** Check progress with get_status. Execute returned retry_command between checks.`,
     inputSchema: {
         type: 'object',
         properties: {
