@@ -1,41 +1,40 @@
-# Copilot MCP Server
+# Copilot Agent MCP Server
 
-An MCP (Model Context Protocol) server that enables AI assistants to spawn and manage GitHub Copilot CLI tasks programmatically.
+MCP server for spawning GitHub Copilot CLI subagent tasks.
 
-## Features
+## Tools (4)
 
-- **Spawn Tasks**: Start Copilot CLI tasks with custom prompts and model selection
-- **Track Status**: Poll task status and retrieve output in real-time
-- **Cancel Tasks**: Gracefully terminate running tasks
-- **List Tasks**: View all active and completed tasks
-- **Model Selection**: 14 AI models with tier-based filtering (fast/standard/premium)
-- **Resume Sessions**: Continue interrupted Copilot sessions
-- **Autonomous Mode**: Run tasks without user interaction prompts
-- **Error Categorization**: Detect auth, timeout, and rate limit errors
+| Tool | Description |
+|------|-------------|
+| `spawn_task` | Execute a task, returns task_id |
+| `get_status` | Poll task status and output |
+| `list_tasks` | List all tasks |
+| `resume_task` | Resume session by session_id |
 
-## Requirements
+## Models (3)
 
-- Node.js >= 18.0.0
-- GitHub Copilot CLI installed at `/opt/homebrew/bin/copilot`
-- Valid GitHub Copilot subscription
+| Model | Description |
+|-------|-------------|
+| `claude-sonnet-4.5` | Default - best balance |
+| `claude-opus-4.5` | Most capable |
+| `claude-haiku-4.5` | Fastest |
 
-## Installation
+## Templates (7)
+
+`executor` | `researcher` | `codebase-researcher` | `bug-researcher` | `architect` | `planner` | `turkish`
+
+## Install
 
 ```bash
-npm install
-npm run build
+npm install && npm run build
 ```
 
-## Usage
-
-### As MCP Server
-
-Add to your MCP client configuration:
+## MCP Config
 
 ```json
 {
   "mcpServers": {
-    "copilot-agents": {
+    "copilot": {
       "command": "node",
       "args": ["/path/to/copilot-agents/build/index.js"]
     }
@@ -43,133 +42,77 @@ Add to your MCP client configuration:
 }
 ```
 
-### Testing with MCP Inspector
+## Usage
 
 ```bash
-# List available tools
+# List tools
 npx @modelcontextprotocol/inspector --cli node build/index.js --method tools/list
 
-# Spawn a task
+# Spawn task
 npx @modelcontextprotocol/inspector --cli node build/index.js \
-  --method tools/call \
-  --tool-name spawn_copilot_task \
-  --tool-arg 'prompt=What is 2+2?'
+  --method tools/call --tool-name spawn_task \
+  --tool-arg 'prompt=Create hello.txt with Hello World'
 
-# Check status (replace TASK_ID)
+# Get status
 npx @modelcontextprotocol/inspector --cli node build/index.js \
-  --method tools/call \
-  --tool-name get_task_status \
-  --tool-arg 'taskId=TASK_ID'
+  --method tools/call --tool-name get_status \
+  --tool-arg 'task_id=TASK_ID'
+
+# With template
+npx @modelcontextprotocol/inspector --cli node build/index.js \
+  --method tools/call --tool-name spawn_task \
+  --tool-arg 'prompt=Research best practices for React' \
+  --tool-arg 'task_type=researcher'
 ```
 
-## Tools (6 total)
+## API
 
-### `spawn_copilot_task`
+### `spawn_task`
 
-Spawn a new Copilot CLI task with model selection.
+```json
+{
+  "prompt": "Task description (required)",
+  "task_type": "executor|researcher|...",
+  "model": "claude-sonnet-4.5",
+  "cwd": "/working/directory",
+  "timeout": 300000,
+  "autonomous": true
+}
+```
+Returns: `{ task_id }`
 
-**Parameters:**
-- `prompt` (required): The task prompt
-- `timeout`: Timeout in ms (default: 300000 = 5 min, max: 1 hour)
-- `cwd`: Working directory for the task
-- `model`: AI model (see `get_available_models` for options)
-- `silent`: Output only response without stats (default: true)
-- `autonomous`: Run without user interaction prompts (default: false)
+### `get_status`
 
-**Returns:** `{ taskId, message }`
-
-### `get_task_status`
-
-Get status and output of a task.
-
-**Parameters:**
-- `taskId` (required): The task ID from spawn_copilot_task
-
-**Returns:** `{ taskId, status, output, exitCode, sessionId, errorType, ... }`
-
-### `cancel_task`
-
-Cancel a running task.
-
-**Parameters:**
-- `taskId` (required): The task ID to cancel
-
-**Returns:** `{ success, message }`
+```json
+{ "task_id": "abc123" }
+```
+Returns: `{ task_id, status, session_id, exit_code, output }`
 
 ### `list_tasks`
 
-List all tracked tasks.
+```json
+{ "status": "running" }
+```
+Returns: `{ count, tasks: [{ task_id, status, session_id }] }`
 
-**Parameters:**
-- `status` (optional): Filter by status (`pending`, `running`, `completed`, `failed`, `cancelled`)
+### `resume_task`
 
-**Returns:** `{ count, tasks: [...] }`
+```json
+{ "session_id": "xyz789", "cwd": "/path" }
+```
+Returns: `{ task_id, resumed_session }`
 
-### `get_available_models`
-
-Get list of all available AI models with descriptions.
-
-**Parameters:**
-- `tier` (optional): Filter by tier (`fast`, `standard`, `premium`, `all`)
-
-**Returns:** `{ models: [...], recommended, tiers }`
-
-**Available Models:**
-| Tier | Models |
-|------|--------|
-| Fast | `gpt-4.1`, `claude-haiku-4.5`, `gpt-5-mini`, `gpt-5.1-codex-mini` |
-| Standard | `claude-sonnet-4` ⭐, `claude-sonnet-4.5`, `gpt-5.2-codex`, `gpt-5`, `gemini-3-pro-preview` |
-| Premium | `claude-opus-4.5` |
-
-### `resume_copilot_task`
-
-Resume a previous Copilot session.
-
-**Parameters:**
-- `sessionId` (required): Session ID from previous task
-- `timeout`: Timeout in ms
-- `cwd`: Working directory
-- `autonomous`: Run without user prompts
-
-**Returns:** `{ taskId, resumedSessionId, message }`
-
-## Task Status Flow
+## Status Flow
 
 ```
-PENDING → RUNNING → COMPLETED
-                 ↘ FAILED
-                 ↘ CANCELLED
+pending → running → completed | failed
 ```
 
-## Environment Variables
+## Env
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `COPILOT_PATH` | Path to Copilot CLI binary | `/opt/homebrew/bin/copilot` |
-
-## Security
-
-- Input sanitization with regex whitelist
-- No shell injection (uses Execa with args array)
-- Zod validation for all inputs
-- Path validation for cwd parameter
-- Model validation against known list
-- Output memory limits (max 2000 lines)
-- Error categorization (auth, timeout, rate limit)
-
-## Development
-
-```bash
-# Development mode with watch
-npm run dev
-
-# Build
-npm run build
-
-# Run tests
-node test-flow.mjs
-node test-comprehensive.mjs
-```
+| Variable | Default |
+|----------|---------|
+| `COPILOT_PATH` | `/opt/homebrew/bin/copilot` |
 
 ## License
 
