@@ -1,40 +1,28 @@
-# Copilot Agent MCP Server
+# Super Agents MCP Server
 
-MCP server for spawning GitHub Copilot CLI subagent tasks.
+An MCP server that spawns GitHub Copilot CLI agents as background tasks. Designed for AI-to-AI orchestration with human-readable task IDs, automatic workspace detection, and intelligent polling controls.
 
-## Tools (4)
+## Features
 
-| Tool | Description |
-|------|-------------|
-| `spawn_task` | Execute a task, returns task_id |
-| `get_status` | Poll task status and output |
-| `list_tasks` | List all tasks |
-| `resume_task` | Resume session by session_id |
+- **Human-Readable Task IDs** — `brave-tiger-42` instead of `a1b2c3d4e5f6`
+- **Case-Insensitive Lookups** — `BRAVE-TIGER-42` finds `brave-tiger-42`
+- **Batch Status Checks** — Check multiple tasks in one call
+- **Auto-Detect Workspace** — Uses client's workspace root as CWD
+- **Exponential Backoff Hints** — Prevents excessive polling (30s → 60s → 120s → 180s)
+- **Task Templates** — Optimized prompts for coding, planning, research, testing
 
-## Models (3)
-
-| Model | Description |
-|-------|-------------|
-| `claude-sonnet-4.5` | Default - best balance |
-| `claude-opus-4.5` | Most capable |
-| `claude-haiku-4.5` | Fastest |
-
-## Templates (7)
-
-`executor` | `researcher` | `codebase-researcher` | `bug-researcher` | `architect` | `planner` | `turkish`
-
-## Install
+## Quick Start
 
 ```bash
 npm install && npm run build
 ```
 
-## MCP Config
+Add to your MCP config:
 
 ```json
 {
   "mcpServers": {
-    "copilot": {
+    "super-agents": {
       "command": "node",
       "args": ["/path/to/copilot-agents/build/index.js"]
     }
@@ -42,77 +30,156 @@ npm install && npm run build
 }
 ```
 
-## Usage
-
-```bash
-# List tools
-npx @modelcontextprotocol/inspector --cli node build/index.js --method tools/list
-
-# Spawn task
-npx @modelcontextprotocol/inspector --cli node build/index.js \
-  --method tools/call --tool-name spawn_task \
-  --tool-arg 'prompt=Create hello.txt with Hello World'
-
-# Get status
-npx @modelcontextprotocol/inspector --cli node build/index.js \
-  --method tools/call --tool-name get_status \
-  --tool-arg 'task_id=TASK_ID'
-
-# With template
-npx @modelcontextprotocol/inspector --cli node build/index.js \
-  --method tools/call --tool-name spawn_task \
-  --tool-arg 'prompt=Research best practices for React' \
-  --tool-arg 'task_type=researcher'
-```
-
-## API
+## Tools
 
 ### `spawn_task`
 
+Execute a task using GitHub Copilot CLI agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `prompt` | string | ✅ | What the agent should do |
+| `task_type` | enum | ❌ | `super-coder` \| `super-planner` \| `super-researcher` \| `super-tester` |
+| `model` | enum | ❌ | `claude-sonnet-4.5` (default) \| `claude-opus-4.5` \| `claude-haiku-4.5` |
+| `cwd` | string | ❌ | Working directory (auto-detected from client) |
+| `timeout` | number | ❌ | Max execution time in ms (default: 600000 = 10 min) |
+| `autonomous` | boolean | ❌ | Run without user prompts (default: true) |
+
+**Response:**
 ```json
-{
-  "prompt": "Task description (required)",
-  "task_type": "executor|researcher|...",
-  "model": "claude-sonnet-4.5",
-  "cwd": "/working/directory",
-  "timeout": 300000,
-  "autonomous": true
-}
+{"task_id": "brave-tiger-42"}
 ```
-Returns: `{ task_id }`
 
 ### `get_status`
 
+Check task status. Supports single ID or array of IDs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | string \| string[] | ✅ | Task ID(s) to check |
+
+**Single task response:**
 ```json
-{ "task_id": "abc123" }
+{
+  "task_id": "brave-tiger-42",
+  "status": "running",
+  "session_id": "abc123",
+  "retry_after_seconds": 60,
+  "retry_hint": "Task is running. Retry in 60 seconds."
+}
 ```
-Returns: `{ task_id, status, session_id, exit_code, output }`
+
+**Batch response:**
+```json
+{
+  "tasks": [
+    {"task_id": "brave-tiger-42", "status": "running", "retry_after_seconds": 60},
+    {"task_id": "calm-falcon-17", "status": "completed", "exit_code": 0},
+    {"task_id": "nonexistent-99", "status": "not_found", "error": "Task not found"}
+  ]
+}
+```
 
 ### `list_tasks`
 
+List all spawned tasks.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | enum | ❌ | Filter: `pending` \| `running` \| `completed` \| `failed` \| `cancelled` |
+
+**Response:**
 ```json
-{ "status": "running" }
+{
+  "count": 2,
+  "tasks": [
+    {"task_id": "brave-tiger-42", "status": "running"},
+    {"task_id": "calm-falcon-17", "status": "completed"}
+  ]
+}
 ```
-Returns: `{ count, tasks: [{ task_id, status, session_id }] }`
 
 ### `resume_task`
 
+Resume a previously interrupted session.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | ✅ | Session ID from get_status response |
+| `cwd` | string | ❌ | Working directory (auto-detected) |
+| `timeout` | number | ❌ | Max execution time (default: 10 min) |
+
+**Response:**
 ```json
-{ "session_id": "xyz789", "cwd": "/path" }
+{"task_id": "swift-owl-88", "resumed_session": "abc123"}
 ```
-Returns: `{ task_id, resumed_session }`
+
+## Task Templates
+
+| Template | Use Case |
+|----------|----------|
+| `super-coder` | Implementation — writing code, fixing bugs, refactoring |
+| `super-planner` | Architecture — design decisions, breaking down complex work |
+| `super-researcher` | Investigation — codebase exploration, understanding systems |
+| `super-tester` | Testing — writing tests, QA verification |
+
+## Polling Behavior
+
+The server tracks how many times you've checked each task and provides exponential backoff hints:
+
+| Check # | Wait Time |
+|---------|-----------|
+| 1st | 30 seconds |
+| 2nd | 60 seconds |
+| 3rd | 120 seconds |
+| 4th+ | 180 seconds |
+
+**For agents:** Always respect `retry_after_seconds` in responses to avoid excessive polling.
+
+## CWD Auto-Detection
+
+The server automatically detects the client's workspace:
+
+1. On connection, server requests `roots/list` from client
+2. First root's URI is converted to filesystem path
+3. All spawned tasks use this as default CWD
+
+**Fallback chain:** Explicit `cwd` param → Client's first root → Server's `process.cwd()`
 
 ## Status Flow
 
 ```
-pending → running → completed | failed
+spawn_task() → pending → running → completed | failed | cancelled
 ```
 
-## Env
+## Environment Variables
 
-| Variable | Default |
-|----------|---------|
-| `COPILOT_PATH` | `/opt/homebrew/bin/copilot` |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Path to Copilot CLI binary |
+
+## CLI Testing
+
+```bash
+# List all tools
+npx @modelcontextprotocol/inspector --cli node build/index.js --method tools/list
+
+# Spawn a task
+npx @modelcontextprotocol/inspector --cli node build/index.js \
+  --method tools/call --tool-name spawn_task \
+  --tool-arg 'prompt=Create a hello world script'
+
+# Check status (case-insensitive)
+npx @modelcontextprotocol/inspector --cli node build/index.js \
+  --method tools/call --tool-name get_status \
+  --tool-arg 'task_id=BRAVE-TIGER-42'
+
+# Use a template
+npx @modelcontextprotocol/inspector --cli node build/index.js \
+  --method tools/call --tool-name spawn_task \
+  --tool-arg 'prompt=Investigate the authentication flow' \
+  --tool-arg 'task_type=super-researcher'
+```
 
 ## License
 
