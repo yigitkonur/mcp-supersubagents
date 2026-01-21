@@ -4,7 +4,7 @@ export declare const getTaskStatusTool: {
     inputSchema: {
         type: "object";
         properties: {
-            taskId: {
+            task_id: {
                 type: string;
                 description: string;
             };

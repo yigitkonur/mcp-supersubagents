@@ -51,7 +51,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { silent?: boolean; autonomous?: boolean; isResume?: boolean }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean }): TaskState {
     const id = nanoid(12);
     const task: TaskState = {
       id,
@@ -61,7 +61,6 @@ class TaskManager {
       startTime: new Date().toISOString(),
       cwd,
       model,
-      silent: options?.silent,
       autonomous: options?.autonomous,
       isResume: options?.isResume,
     };

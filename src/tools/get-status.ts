@@ -2,78 +2,40 @@ import { GetTaskStatusSchema } from '../utils/sanitize.js';
 import { taskManager } from '../services/task-manager.js';
 
 export const getTaskStatusTool = {
-  name: 'get_task_status',
-  description: 'Get the current status and output of a Copilot CLI task by its ID',
+  name: 'get_status',
+  description: 'Poll task status and output. Returns: status, output, session_id, exit_code.',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      taskId: {
-        type: 'string',
-        description: 'The task ID returned from spawn_copilot_task',
-      },
+      task_id: { type: 'string', description: 'Task ID from spawn_task' },
     },
-    required: ['taskId'],
+    required: ['task_id'],
   },
 };
 
 export async function handleGetTaskStatus(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
-    const parsed = GetTaskStatusSchema.parse(args);
-    
+    const parsed = GetTaskStatusSchema.parse({ taskId: (args as any)?.task_id || (args as any)?.taskId });
     const task = taskManager.getTask(parsed.taskId);
     
     if (!task) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              success: false,
-              error: `Task not found: ${parsed.taskId}`,
-            }, null, 2),
-          },
-        ],
-      };
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Task not found' }) }] };
     }
 
     const output = task.output.join('\n');
-    const outputTruncated = output.length > 50000 
-      ? output.slice(-50000) + '\n... (output truncated, showing last 50000 chars)'
-      : output;
-
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            success: true,
-            taskId: task.id,
-            status: task.status,
-            prompt: task.prompt,
-            sessionId: task.sessionId,
-            pid: task.pid,
-            startTime: task.startTime,
-            endTime: task.endTime,
-            exitCode: task.exitCode,
-            error: task.error,
-            outputLines: task.output.length,
-            output: outputTruncated,
-          }, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          task_id: task.id,
+          status: task.status,
+          session_id: task.sessionId,
+          exit_code: task.exitCode,
+          output: output.length > 50000 ? output.slice(-50000) : output,
+        }),
+      }],
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: message,
-          }, null, 2),
-        },
-      ],
-    };
+    return { content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown' }) }] };
   }
 }

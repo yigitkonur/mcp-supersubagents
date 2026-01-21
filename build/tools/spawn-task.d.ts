@@ -13,20 +13,16 @@ export declare const spawnTaskTool: {
                 enum: ("executor" | "researcher" | "codebase-researcher" | "bug-researcher" | "architect" | "planner" | "turkish")[];
                 description: string;
             };
-            timeout: {
+            model: {
                 type: string;
+                enum: ("claude-sonnet-4.5" | "claude-opus-4.5" | "claude-haiku-4.5")[];
                 description: string;
             };
             cwd: {
                 type: string;
                 description: string;
             };
-            model: {
-                type: string;
-                enum: ("claude-sonnet-4" | "claude-sonnet-4.5" | "claude-haiku-4.5" | "claude-opus-4.5")[];
-                description: string;
-            };
-            silent: {
+            timeout: {
                 type: string;
                 description: string;
             };

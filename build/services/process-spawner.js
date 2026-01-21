@@ -2,57 +2,29 @@ import { execa } from 'execa';
 import { existsSync } from 'fs';
 import { taskManager } from './task-manager.js';
 import { TaskStatus } from '../types.js';
-import { sanitizePrompt, validateCwd } from '../utils/sanitize.js';
+import { DEFAULT_MODEL } from '../models.js';
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
-const DEFAULT_TIMEOUT = 300000;
-const ERROR_PATTERNS = {
-    auth: /(?:not authenticated|auth.*failed|login required|unauthorized|401)/i,
-    rateLimit: /(?:rate limit|too many requests|429|quota exceeded)/i,
-    timeout: /(?:timed? ?out|timeout|ETIMEDOUT)/i,
-};
-function categorizeError(error) {
-    if (ERROR_PATTERNS.auth.test(error))
-        return 'auth';
-    if (ERROR_PATTERNS.rateLimit.test(error))
-        return 'rate_limit';
-    if (ERROR_PATTERNS.timeout.test(error))
-        return 'timeout';
-    return 'unknown';
-}
 export async function spawnCopilotProcess(options) {
-    const sanitizedPrompt = sanitizePrompt(options.prompt);
-    if (!sanitizedPrompt) {
-        throw new Error('Invalid prompt: contains disallowed characters or exceeds length limit');
-    }
-    const cwd = options.cwd ? validateCwd(options.cwd) : process.cwd();
-    if (options.cwd && !cwd) {
-        throw new Error('Invalid cwd: directory does not exist');
-    }
-    const task = taskManager.createTask(sanitizedPrompt, cwd || undefined, options.model, {
-        silent: options.silent ?? true,
-        autonomous: options.autonomous,
+    const prompt = options.prompt?.trim() || '';
+    const cwd = options.cwd && existsSync(options.cwd) ? options.cwd : process.cwd();
+    const model = options.model || DEFAULT_MODEL;
+    const task = taskManager.createTask(prompt, cwd, model, {
+        autonomous: options.autonomous ?? true,
         isResume: !!options.resumeSessionId,
     });
     const args = [];
     if (options.resumeSessionId) {
         args.push('--resume', options.resumeSessionId);
     }
-    else {
-        args.push('-p', sanitizedPrompt);
+    else if (prompt) {
+        args.push('-p', prompt);
     }
-    args.push('--allow-all-tools');
-    if (options.silent !== false) {
-        args.push('-s');
-    }
-    if (options.autonomous) {
+    args.push('--allow-all-tools', '-s', '--model', model);
+    if (options.autonomous !== false) {
         args.push('--no-ask-user');
     }
-    if (options.model) {
-        args.push('--model', options.model);
-    }
-    const timeout = options.timeout ?? DEFAULT_TIMEOUT;
     setImmediate(() => {
-        runProcess(task.id, args, cwd || process.cwd(), timeout);
+        runProcess(task.id, args, cwd, options.timeout ?? 300000);
     });
     return task.id;
 }
@@ -122,24 +94,20 @@ async function runProcess(taskId, args, cwd, timeout) {
             });
         }
         else {
-            const errorMsg = result.stderr || result.shortMessage || 'Unknown error';
             taskManager.updateTask(taskId, {
                 status: TaskStatus.FAILED,
                 exitCode: result.exitCode ?? 1,
                 endTime: new Date().toISOString(),
-                error: errorMsg,
-                errorType: categorizeError(errorMsg),
+                error: result.stderr || result.shortMessage || 'Unknown error',
                 process: undefined,
             });
         }
     }
     catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         taskManager.updateTask(taskId, {
             status: TaskStatus.FAILED,
             endTime: new Date().toISOString(),
-            error: errorMessage,
-            errorType: categorizeError(errorMessage),
+            error: error instanceof Error ? error.message : 'Unknown error',
             process: undefined,
         });
     }

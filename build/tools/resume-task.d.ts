@@ -4,11 +4,7 @@ export declare const resumeTaskTool: {
     inputSchema: {
         type: "object";
         properties: {
-            sessionId: {
-                type: string;
-                description: string;
-            };
-            timeout: {
+            session_id: {
                 type: string;
                 description: string;
             };
@@ -16,7 +12,7 @@ export declare const resumeTaskTool: {
                 type: string;
                 description: string;
             };
-            autonomous: {
+            timeout: {
                 type: string;
                 description: string;
             };

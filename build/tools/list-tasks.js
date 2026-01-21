@@ -2,15 +2,11 @@ import { ListTasksSchema } from '../utils/sanitize.js';
 import { taskManager } from '../services/task-manager.js';
 export const listTasksTool = {
     name: 'list_tasks',
-    description: 'List all Copilot CLI tasks, optionally filtered by status',
+    description: 'List all tasks with status. Filter: pending | running | completed | failed',
     inputSchema: {
         type: 'object',
         properties: {
-            status: {
-                type: 'string',
-                enum: ['pending', 'running', 'completed', 'failed', 'cancelled'],
-                description: 'Filter tasks by status',
-            },
+            status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'cancelled'] },
         },
         required: [],
     },
@@ -18,43 +14,23 @@ export const listTasksTool = {
 export async function handleListTasks(args) {
     try {
         const parsed = ListTasksSchema.parse(args || {});
-        const statusFilter = parsed.status ? parsed.status : undefined;
-        const tasks = taskManager.getAllTasks(statusFilter);
-        const summaries = tasks.map(task => ({
-            id: task.id,
-            status: task.status,
-            prompt: task.prompt.length > 100 ? task.prompt.slice(0, 100) + '...' : task.prompt,
-            startTime: task.startTime,
-            endTime: task.endTime,
-            exitCode: task.exitCode,
-            sessionId: task.sessionId,
-        }));
+        const tasks = taskManager.getAllTasks(parsed.status);
         return {
-            content: [
-                {
+            content: [{
                     type: 'text',
                     text: JSON.stringify({
-                        success: true,
-                        count: summaries.length,
-                        tasks: summaries,
-                    }, null, 2),
-                },
-            ],
+                        count: tasks.length,
+                        tasks: tasks.map(t => ({
+                            task_id: t.id,
+                            status: t.status,
+                            session_id: t.sessionId,
+                        })),
+                    }),
+                }],
         };
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({
-                        success: false,
-                        error: message,
-                    }, null, 2),
-                },
-            ],
-        };
+        return { content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown' }) }] };
     }
 }
 //# sourceMappingURL=list-tasks.js.map

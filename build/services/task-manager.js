@@ -51,7 +51,6 @@ class TaskManager {
             startTime: new Date().toISOString(),
             cwd,
             model,
-            silent: options?.silent,
             autonomous: options?.autonomous,
             isResume: options?.isResume,
         };

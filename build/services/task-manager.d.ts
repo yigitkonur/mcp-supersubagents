@@ -6,7 +6,6 @@ declare class TaskManager {
     private startCleanup;
     private cleanup;
     createTask(prompt: string, cwd?: string, model?: string, options?: {
-        silent?: boolean;
         autonomous?: boolean;
         isResume?: boolean;
     }): TaskState;
