@@ -3,13 +3,10 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const TASK_TYPES = {
-    executor: 'General task executor',
-    researcher: 'Web/GitHub research',
-    'codebase-researcher': 'Codebase search',
-    'bug-researcher': 'Bug analysis',
-    architect: 'System design',
-    planner: 'Task planning',
-    turkish: 'Turkish responses',
+    'super-coder': 'super coder for all coding tasks',
+    'super-planner': 'super planner for all planning tasks',
+    'super-researcher': 'super researcher for answering any question',
+    'super-tester': 'super tester to test stuff properly',
 };
 export const TASK_TYPE_IDS = Object.keys(TASK_TYPES);
 const cache = new Map();

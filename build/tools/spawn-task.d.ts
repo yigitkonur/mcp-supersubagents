@@ -10,7 +10,7 @@ export declare const spawnTaskTool: {
             };
             task_type: {
                 type: string;
-                enum: ("executor" | "researcher" | "codebase-researcher" | "bug-researcher" | "architect" | "planner" | "turkish")[];
+                enum: ("super-coder" | "super-planner" | "super-researcher" | "super-tester")[];
                 description: string;
             };
             model: {
