@@ -7,6 +7,7 @@ export declare const listTasksTool: {
             status: {
                 type: string;
                 enum: string[];
+                description: string;
             };
         };
         required: never[];

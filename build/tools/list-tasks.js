@@ -2,11 +2,24 @@ import { ListTasksSchema } from '../utils/sanitize.js';
 import { taskManager } from '../services/task-manager.js';
 export const listTasksTool = {
     name: 'list_tasks',
-    description: 'List all tasks with status. Filter: pending | running | completed | failed',
+    description: `List all spawned tasks with their current status.
+
+**Filter by status:** pending | running | completed | failed | cancelled
+
+**Use cases:**
+- Check which tasks are still running before spawning new ones
+- Find task IDs you may have lost
+- Monitor multiple concurrent tasks
+
+**Tip:** Use get_status with an array of task_ids for detailed status of specific tasks.`,
     inputSchema: {
         type: 'object',
         properties: {
-            status: { type: 'string', enum: ['pending', 'running', 'completed', 'failed', 'cancelled'] },
+            status: {
+                type: 'string',
+                enum: ['pending', 'running', 'completed', 'failed', 'cancelled'],
+                description: 'Filter tasks by status. Optional - omit to list all tasks.',
+            },
         },
         required: [],
     },

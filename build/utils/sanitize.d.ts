@@ -38,11 +38,11 @@ export declare const ResumeTaskSchema: z.ZodObject<{
     autonomous?: boolean | undefined;
 }>;
 export declare const GetTaskStatusSchema: z.ZodObject<{
-    taskId: z.ZodString;
+    taskId: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, "many">]>;
 }, "strip", z.ZodTypeAny, {
-    taskId: string;
+    taskId: string | string[];
 }, {
-    taskId: string;
+    taskId: string | string[];
 }>;
 export declare const ListTasksSchema: z.ZodObject<{
     status: z.ZodOptional<z.ZodEnum<["pending", "running", "completed", "failed", "cancelled"]>>;

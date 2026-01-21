@@ -5,7 +5,17 @@ export declare const getTaskStatusTool: {
         type: "object";
         properties: {
             task_id: {
-                type: string;
+                oneOf: ({
+                    type: string;
+                    description: string;
+                    items?: undefined;
+                } | {
+                    type: string;
+                    items: {
+                        type: string;
+                    };
+                    description: string;
+                })[];
                 description: string;
             };
         };

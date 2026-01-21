@@ -24,7 +24,7 @@ export async function spawnCopilotProcess(options) {
         args.push('--no-ask-user');
     }
     setImmediate(() => {
-        runProcess(task.id, args, cwd, options.timeout ?? 300000);
+        runProcess(task.id, args, cwd, options.timeout ?? 600000); // 10 minutes default
     });
     return task.id;
 }

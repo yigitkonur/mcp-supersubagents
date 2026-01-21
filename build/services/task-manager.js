@@ -1,4 +1,4 @@
-import { nanoid } from 'nanoid';
+import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
 import { TaskStatus } from '../types.js';
 const MAX_TASKS = 100;
 const TASK_TTL_MS = 60 * 60 * 1000;
@@ -42,7 +42,8 @@ class TaskManager {
         }
     }
     createTask(prompt, cwd, model, options) {
-        const id = nanoid(12);
+        const id = generateTaskId();
+        const normalizedId = normalizeTaskId(id);
         const task = {
             id,
             status: TaskStatus.PENDING,
@@ -54,23 +55,26 @@ class TaskManager {
             autonomous: options?.autonomous,
             isResume: options?.isResume,
         };
-        this.tasks.set(id, task);
+        this.tasks.set(normalizedId, task);
         return task;
     }
     getTask(id) {
-        return this.tasks.get(id) || null;
+        const normalizedId = normalizeTaskId(id);
+        return this.tasks.get(normalizedId) || null;
     }
     updateTask(id, updates) {
-        const task = this.tasks.get(id);
+        const normalizedId = normalizeTaskId(id);
+        const task = this.tasks.get(normalizedId);
         if (!task) {
             return null;
         }
         const updated = { ...task, ...updates };
-        this.tasks.set(id, updated);
+        this.tasks.set(normalizedId, updated);
         return updated;
     }
     appendOutput(id, line) {
-        const task = this.tasks.get(id);
+        const normalizedId = normalizeTaskId(id);
+        const task = this.tasks.get(normalizedId);
         if (task) {
             task.output.push(line);
             if (task.output.length > MAX_OUTPUT_LINES) {
@@ -92,7 +96,8 @@ class TaskManager {
         return tasks;
     }
     cancelTask(id) {
-        const task = this.tasks.get(id);
+        const normalizedId = normalizeTaskId(id);
+        const task = this.tasks.get(normalizedId);
         if (!task) {
             return false;
         }

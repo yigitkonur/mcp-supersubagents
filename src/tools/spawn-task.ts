@@ -5,38 +5,47 @@ import { TASK_TYPE_IDS, TASK_TYPES, applyTemplate, isValidTaskType, type TaskTyp
 
 export const spawnTaskTool = {
   name: 'spawn_task',
-  description: `Execute a task using GitHub Copilot CLI subagent. Returns task_id for polling.
+  description: `Execute a task using GitHub Copilot CLI agent. Returns a human-readable task_id for tracking.
 
-Models: ${MODEL_IDS.map(m => m === DEFAULT_MODEL ? `${m} (default)` : m).join(' | ')}
-Templates: ${TASK_TYPE_IDS.join(' | ')}`,
+**Quick Start:** Only "prompt" is required. Everything else has sensible defaults.
+
+**Task Types (pick one that matches your goal):**
+- **super-coder**: Implementation tasks - writing code, fixing bugs, refactoring
+- **super-planner**: Architecture and planning - design decisions, breaking down complex work
+- **super-researcher**: Investigation tasks - codebase exploration, understanding systems
+- **super-tester**: Testing tasks - writing tests, QA verification
+
+**Models:** ${MODEL_IDS.map(m => m === DEFAULT_MODEL ? `${m} (default)` : m).join(', ')}
+
+**After spawning:** Use get_status with the returned task_id to check progress. Follow retry_after_seconds guidance to avoid excessive polling.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       prompt: {
         type: 'string',
-        description: 'Task description. Be specific: include paths, requirements, expected output.',
+        description: 'What should the agent do? Be specific: include file paths, requirements, and expected outcomes.',
       },
       task_type: {
         type: 'string',
         enum: TASK_TYPE_IDS,
-        description: 'Agent template (optional)',
+        description: 'Agent template optimizing for specific task types. Optional - omit for general tasks.',
       },
       model: {
         type: 'string',
         enum: MODEL_IDS,
-        description: 'Model override (optional)',
+        description: `AI model to use. Optional, defaults to ${DEFAULT_MODEL}.`,
       },
       cwd: {
         type: 'string',
-        description: 'Working directory',
+        description: 'Working directory. Optional - defaults to server\'s current directory.',
       },
       timeout: {
         type: 'number',
-        description: 'Timeout ms (default 300000)',
+        description: 'Max execution time in ms. Optional, defaults to 600000 (10 minutes). Max 1 hour.',
       },
       autonomous: {
         type: 'boolean',
-        description: 'No user prompts (default true)',
+        description: 'Run without user prompts. Optional, defaults to true.',
       },
     },
     required: ['prompt'],
@@ -61,7 +70,10 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
     });
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }],
+      content: [{ type: 'text', text: JSON.stringify({ 
+        task_id: taskId,
+        hint: 'Use get_status to check progress. Wait at least 30 seconds before first check.'
+      }) }],
     };
   } catch (error) {
     return {
