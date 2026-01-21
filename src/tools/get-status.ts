@@ -49,6 +49,7 @@ interface TaskStatusResult {
   error?: string;
   retry_after_seconds?: number;
   retry_command?: string;
+  suggested_action?: string;
 }
 
 // Track check counts per task for exponential backoff
@@ -59,7 +60,12 @@ function getTaskStatus(taskId: string): TaskStatusResult {
   const task = taskManager.getTask(normalizedId);
   
   if (!task) {
-    return { task_id: taskId, status: 'not_found', error: 'Task not found' };
+    return { 
+      task_id: taskId, 
+      status: 'not_found', 
+      error: 'Task not found',
+      suggested_action: 'list_tasks'
+    };
   }
 
   // Increment check count for this task

@@ -16,7 +16,7 @@ export const spawnTaskTool = {
 
 **Models:** ${MODEL_IDS.map(m => m === DEFAULT_MODEL ? `${m} (default)` : m).join(', ')}
 
-**After spawning:** Check progress with get_status. Execute returned retry_command between checks.`,
+**Response includes:** task_id, next_action='get_status', next_action_args={task_id}`,
     inputSchema: {
         type: 'object',
         properties: {
@@ -65,12 +65,20 @@ export async function handleSpawnTask(args) {
             autonomous: parsed.autonomous,
         });
         return {
-            content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }],
+            content: [{ type: 'text', text: JSON.stringify({
+                        task_id: taskId,
+                        next_action: 'get_status',
+                        next_action_args: { task_id: taskId }
+                    }) }],
         };
     }
     catch (error) {
         return {
-            content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }) }],
+            content: [{ type: 'text', text: JSON.stringify({
+                        error: error instanceof Error ? error.message : 'Unknown error',
+                        suggested_action: 'spawn_task',
+                        suggestion: 'Check prompt parameter is provided and valid'
+                    }) }],
         };
     }
 }

@@ -9,7 +9,7 @@ export const resumeTaskTool = {
 
 **Getting session_id:** Call get_status on a completed/failed task - the response includes session_id if the session can be resumed.
 
-**After resuming:** Check progress with get_status. Execute returned retry_command between checks.`,
+**Response includes:** task_id, resumed_session, next_action='get_status', next_action_args={task_id}`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -48,11 +48,22 @@ export async function handleResumeTask(args: unknown): Promise<{ content: Array<
         type: 'text', 
         text: JSON.stringify({ 
           task_id: taskId, 
-          resumed_session: parsed.sessionId
+          resumed_session: parsed.sessionId,
+          next_action: 'get_status',
+          next_action_args: { task_id: taskId }
         }) 
       }] 
     };
   } catch (error) {
-    return { content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown' }) }] };
+    return { 
+      content: [{ 
+        type: 'text', 
+        text: JSON.stringify({ 
+          error: error instanceof Error ? error.message : 'Unknown',
+          suggested_action: 'get_status',
+          suggestion: 'Get session_id from completed/failed task before resuming'
+        }) 
+      }] 
+    };
   }
 }

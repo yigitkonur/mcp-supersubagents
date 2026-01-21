@@ -47,7 +47,11 @@ Execute a task using GitHub Copilot CLI agent.
 
 **Response:**
 ```json
-{"task_id": "brave-tiger-42"}
+{
+  "task_id": "brave-tiger-42",
+  "next_action": "get_status",
+  "next_action_args": {"task_id": "brave-tiger-42"}
+}
 ```
 
 ### `get_status`
@@ -75,7 +79,7 @@ Check task status. Supports single ID or array of IDs.
   "tasks": [
     {"task_id": "brave-tiger-42", "status": "running", "retry_after_seconds": 60, "retry_command": "sleep 60"},
     {"task_id": "calm-falcon-17", "status": "completed", "exit_code": 0},
-    {"task_id": "nonexistent-99", "status": "not_found", "error": "Task not found"}
+    {"task_id": "nonexistent-99", "status": "not_found", "error": "Task not found", "suggested_action": "list_tasks"}
   ]
 }
 ```
@@ -95,7 +99,9 @@ List all spawned tasks.
   "tasks": [
     {"task_id": "brave-tiger-42", "status": "running"},
     {"task_id": "calm-falcon-17", "status": "completed"}
-  ]
+  ],
+  "next_action": "get_status",
+  "next_action_hint": "Use get_status with task_id array to check multiple tasks at once"
 }
 ```
 
@@ -111,7 +117,12 @@ Resume a previously interrupted session.
 
 **Response:**
 ```json
-{"task_id": "swift-owl-88", "resumed_session": "abc123"}
+{
+  "task_id": "swift-owl-88",
+  "resumed_session": "abc123",
+  "next_action": "get_status",
+  "next_action_args": {"task_id": "swift-owl-88"}
+}
 ```
 
 ## Task Templates
