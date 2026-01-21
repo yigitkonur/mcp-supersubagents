@@ -1,0 +1,32 @@
+{
+  "name": "copilot-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for spawning and managing GitHub Copilot CLI tasks",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "copilot-mcp-server": "build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node build/index.js",
+    "clean": "rm -rf build"
+  },
+  "keywords": ["mcp", "copilot", "github", "cli", "agent"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "execa": "^9.5.2",
+    "nanoid": "^5.0.9",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
