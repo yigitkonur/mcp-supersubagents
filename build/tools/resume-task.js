@@ -18,7 +18,7 @@ export const resumeTaskTool = {
             },
             cwd: {
                 type: 'string',
-                description: 'Working directory. Optional - defaults to server\'s current directory.'
+                description: 'Working directory. Optional - auto-detected from client workspace.'
             },
             timeout: {
                 type: 'number',
@@ -44,8 +44,7 @@ export async function handleResumeTask(args) {
                     type: 'text',
                     text: JSON.stringify({
                         task_id: taskId,
-                        resumed_session: parsed.sessionId,
-                        hint: 'Use get_status to check progress. Wait at least 30 seconds before first check.'
+                        resumed_session: parsed.sessionId
                     })
                 }]
         };

@@ -7,8 +7,21 @@ import { getTaskStatusTool, handleGetTaskStatus } from './tools/get-status.js';
 import { listTasksTool, handleListTasks } from './tools/list-tasks.js';
 import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
 import { taskManager } from './services/task-manager.js';
+import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled } from './services/process-spawner.js';
 const server = new Server({ name: 'copilot-agent', version: '1.0.0' }, { capabilities: { tools: {} } });
+// Fetch client roots after initialization
+server.oninitialized = async () => {
+    try {
+        const result = await server.listRoots();
+        if (result?.roots?.length) {
+            clientContext.setRoots(result.roots);
+        }
+    }
+    catch {
+        // Client may not support roots - use server cwd as fallback
+    }
+};
 const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool];
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),

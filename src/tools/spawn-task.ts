@@ -37,7 +37,7 @@ export const spawnTaskTool = {
       },
       cwd: {
         type: 'string',
-        description: 'Working directory. Optional - defaults to server\'s current directory.',
+        description: 'Working directory. Optional - auto-detected from client workspace.',
       },
       timeout: {
         type: 'number',
@@ -70,10 +70,7 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
     });
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ 
-        task_id: taskId,
-        hint: 'Use get_status to check progress. Wait at least 30 seconds before first check.'
-      }) }],
+      content: [{ type: 'text', text: JSON.stringify({ task_id: taskId }) }],
     };
   } catch (error) {
     return {

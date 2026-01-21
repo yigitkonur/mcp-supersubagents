@@ -1,12 +1,16 @@
 import { execa } from 'execa';
 import { existsSync } from 'fs';
 import { taskManager } from './task-manager.js';
+import { clientContext } from './client-context.js';
 import { TaskStatus } from '../types.js';
 import { DEFAULT_MODEL } from '../models.js';
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 export async function spawnCopilotProcess(options) {
     const prompt = options.prompt?.trim() || '';
-    const cwd = options.cwd && existsSync(options.cwd) ? options.cwd : process.cwd();
+    // Use provided cwd, or client's first root, or server cwd as fallback
+    const cwd = options.cwd && existsSync(options.cwd)
+        ? options.cwd
+        : clientContext.getDefaultCwd();
     const model = options.model || DEFAULT_MODEL;
     const task = taskManager.createTask(prompt, cwd, model, {
         autonomous: options.autonomous ?? true,
@@ -24,7 +28,7 @@ export async function spawnCopilotProcess(options) {
         args.push('--no-ask-user');
     }
     setImmediate(() => {
-        runProcess(task.id, args, cwd, options.timeout ?? 600000); // 10 minutes default
+        runProcess(task.id, args, cwd, options.timeout ?? 600000);
     });
     return task.id;
 }
