@@ -39,6 +39,7 @@ export interface TaskState {
   dependsOn?: string[];
   timeout?: number;
   timeoutAt?: string;
+  labels?: string[];
 }
 
 export interface SpawnOptions {
@@ -50,4 +51,5 @@ export interface SpawnOptions {
   resumeSessionId?: string;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
+  labels?: string[];
 }

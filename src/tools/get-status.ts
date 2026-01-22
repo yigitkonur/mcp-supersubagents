@@ -69,6 +69,7 @@ interface TaskStatusResult {
     timeout_at: string;
     time_remaining_ms: number;
   };
+  labels?: string[];
 }
 
 // Track check counts per task for exponential backoff
@@ -153,6 +154,11 @@ function getTaskStatus(taskId: string): TaskStatusResult {
       timeout_at: task.timeoutAt,
       time_remaining_ms: Math.max(0, timeRemaining),
     };
+  }
+
+  // Add labels if present
+  if (task.labels && task.labels.length > 0) {
+    result.labels = task.labels;
   }
 
   return result;

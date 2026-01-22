@@ -10,6 +10,7 @@ const TaskDefinitionSchema = z.object({
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
   model: z.enum(MODEL_IDS as [string, ...string[]]).optional(),
   depends_on: z.array(z.string()).optional().describe('Array of local IDs from this batch'),
+  labels: z.array(z.string().min(1).max(50)).max(10).optional().describe('Optional labels for filtering'),
 });
 
 const BatchSpawnSchema = z.object({
@@ -80,6 +81,11 @@ export const batchSpawnTool = {
               type: 'array', 
               items: { type: 'string' },
               description: 'Local IDs this task depends on (from this batch or existing task IDs)' 
+            },
+            labels: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional labels for filtering (max 10)',
             },
           },
           required: ['id', 'prompt'],
@@ -181,12 +187,14 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
       }
       
       // Spawn the task
+      const labels = taskDef.labels?.filter(l => l.trim()) || [];
       const taskId = await spawnCopilotProcess({
         prompt: finalPrompt,
         cwd: parsed.cwd,
         model: taskDef.model,
         autonomous: parsed.autonomous,
         dependsOn: realDependsOn,
+        labels: labels.length > 0 ? labels : undefined,
       });
       
       // Map local ID to real task ID

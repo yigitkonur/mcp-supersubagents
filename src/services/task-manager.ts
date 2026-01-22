@@ -388,13 +388,14 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[] }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[] }): TaskState {
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
     
     // Determine initial status based on dependencies
     let initialStatus = TaskStatus.PENDING;
     const dependsOn = options?.dependsOn?.filter(d => d.trim()) || [];
+    const labels = options?.labels?.filter(l => l.trim()) || [];
     
     if (dependsOn.length > 0) {
       // Check if all dependencies are already completed
@@ -414,6 +415,7 @@ class TaskManager {
       isResume: options?.isResume,
       retryInfo: options?.retryInfo,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
+      labels: labels.length > 0 ? labels : undefined,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');

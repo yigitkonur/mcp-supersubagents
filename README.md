@@ -368,6 +368,41 @@ Tasks that exceed their timeout are automatically killed and marked as `timed_ou
 }
 ```
 
+## Task Labels
+
+Add optional labels to tasks for filtering and organization.
+
+**Adding labels to tasks:**
+```json
+{
+  "prompt": "Build API",
+  "labels": ["backend", "v2.0", "urgent"]
+}
+```
+
+**Filtering by label:**
+```json
+// list_tasks
+{ "label": "backend" }
+
+// Combined with status filter
+{ "status": "running", "label": "urgent" }
+```
+
+**Labels in batch_spawn:**
+```json
+{
+  "tasks": [
+    { "id": "api", "prompt": "Build API", "labels": ["backend"] },
+    { "id": "web", "prompt": "Build Web", "labels": ["frontend"] }
+  ]
+}
+```
+
+**Constraints:**
+- Max 10 labels per task
+- Each label max 50 characters
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.

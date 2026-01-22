@@ -23,6 +23,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     isResume: !!options.resumeSessionId,
     retryInfo: options.retryInfo,
     dependsOn: options.dependsOn,
+    labels: options.labels,
   });
 
   // If task is waiting for dependencies, don't start execution yet

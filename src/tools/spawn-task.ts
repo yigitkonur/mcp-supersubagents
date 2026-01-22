@@ -53,6 +53,11 @@ export const spawnTaskTool = {
         items: { type: 'string' },
         description: 'Optional array of task IDs this task depends on. Task will wait until all dependencies complete successfully before running.',
       },
+      labels: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional labels for filtering and organization (max 10, each max 50 chars).',
+      },
     },
     required: ['prompt'],
   },
@@ -82,6 +87,8 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
       finalPrompt = applyTemplate(parsed.task_type as TaskType, parsed.prompt);
     }
     
+    const labels = parsed.labels?.filter((l: string) => l.trim()) || [];
+    
     const taskId = await spawnCopilotProcess({
       prompt: finalPrompt,
       timeout: parsed.timeout,
@@ -89,6 +96,7 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
       model: parsed.model,
       autonomous: parsed.autonomous,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
+      labels: labels.length > 0 ? labels : undefined,
     });
 
     const task = taskManager.getTask(taskId);

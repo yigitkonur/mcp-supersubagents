@@ -23,7 +23,11 @@ export const listTasksTool = {
       status: { 
         type: 'string', 
         enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited', 'timed_out'],
-        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "timed_out" to see tasks that exceeded their timeout.',
+        description: 'Filter tasks by status. Optional - omit to list all tasks.',
+      },
+      label: {
+        type: 'string',
+        description: 'Filter tasks by label. Only tasks with this label will be returned.',
       },
     },
     required: [],
@@ -35,9 +39,17 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
     const parsed = ListTasksSchema.parse(args || {});
     const allTasks = taskManager.getAllTasks();
     
-    const filtered = parsed.status 
-      ? allTasks.filter(t => t.status === parsed.status)
-      : allTasks;
+    let filtered = allTasks;
+    
+    // Filter by status if provided
+    if (parsed.status) {
+      filtered = filtered.filter(t => t.status === parsed.status);
+    }
+    
+    // Filter by label if provided
+    if (parsed.label) {
+      filtered = filtered.filter(t => t.labels?.includes(parsed.label!));
+    }
 
     const tasks = filtered.map(t => {
       const taskInfo: Record<string, unknown> = {
@@ -63,6 +75,11 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
             taskInfo.deps_failed = depStatus.failed.length > 0 ? depStatus.failed : undefined;
           }
         }
+      }
+      
+      // Add labels if present
+      if (t.labels && t.labels.length > 0) {
+        taskInfo.labels = t.labels;
       }
       
       return taskInfo;
