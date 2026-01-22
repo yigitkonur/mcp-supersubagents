@@ -1,4 +1,31 @@
+# Dependencies
 node_modules/
+
+# Build output
 build/
+dist/
+
+# Logs
 *.log
+npm-debug.log*
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Agent workspace (temporary files)
+.agent-workspace/
+
+# Test files
+test-*.mjs
+test-*.js
+
+# Environment
+.env
+.env.local

@@ -1,1 +1,0 @@
-{"version":3,"file":"get-status.d.ts","sourceRoot":"","sources":["../../src/tools/get-status.ts"],"names":[],"mappings":"AAeA,eAAO,MAAM,iBAAiB;;;;;;;;;;;;;;;;;;;;;;;CAyB7B,CAAC;AA2DF,wBAAsB,mBAAmB,CAAC,IAAI,EAAE,OAAO,GAAG,OAAO,CAAC;IAAE,OAAO,EAAE,KAAK,CAAC;QAAE,IAAI,EAAE,MAAM,CAAC;QAAC,IAAI,EAAE,MAAM,CAAA;KAAE,CAAC,CAAA;CAAE,CAAC,CA0BpH"}

@@ -30,7 +30,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     args.push('-p', prompt);
   }
   
-  args.push('--allow-all-tools', '-s', '--model', model);
+  args.push('--allow-all', '-s', '--model', model);
   
   if (options.autonomous !== false) {
     args.push('--no-ask-user');
