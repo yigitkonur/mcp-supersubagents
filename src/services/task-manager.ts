@@ -183,6 +183,40 @@ class TaskManager {
   }
 
   /**
+   * Force start a waiting task, bypassing failed/missing dependencies
+   */
+  async forceStartTask(taskId: string): Promise<{ success: boolean; taskId?: string; bypassedDeps?: string[]; error?: string }> {
+    const normalizedId = normalizeTaskId(taskId);
+    const task = this.tasks.get(normalizedId);
+    
+    if (!task) {
+      return { success: false, error: 'Task not found' };
+    }
+    
+    if (task.status !== TaskStatus.WAITING) {
+      return { success: false, error: `Task is not waiting (status: ${task.status})` };
+    }
+    
+    if (!this.executeCallback) {
+      return { success: false, error: 'No execute callback registered' };
+    }
+    
+    const bypassedDeps = task.dependsOn || [];
+    
+    // Clear dependencies and execute
+    console.error(`[task-manager] Force starting ${task.id}, bypassing deps: ${bypassedDeps.join(', ')}`);
+    
+    // Execute the task
+    await this.executeCallback(task);
+    
+    return { 
+      success: true, 
+      taskId: task.id,
+      bypassedDeps,
+    };
+  }
+
+  /**
    * Process rate-limited tasks and trigger retries for those ready
    */
   private processRateLimitedTasks(): void {

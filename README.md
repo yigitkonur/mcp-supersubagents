@@ -239,6 +239,32 @@ Tasks can optionally depend on other tasks. A dependent task waits until all its
 - Dependency deleted before run → task stays `waiting` (shows in `missing`)
 - Dependency fails → task stays `waiting` forever (shows in `failed`)
 - User can cancel waiting tasks manually
+- User can force start waiting tasks with `force_start`
+
+### `force_start`
+
+Force start a waiting task, bypassing failed or missing dependencies.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | string | Yes | The task ID to force start |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "task_id": "happy-panda-88",
+  "bypassed_deps": ["brave-tiger-42", "clever-fox-99"],
+  "new_status": "pending",
+  "message": "Task happy-panda-88 force started, bypassing 2 dependencies"
+}
+```
+
+**Use cases:**
+- A dependency failed but you want to proceed anyway
+- A dependency was deleted/cleared but the task should still run
+- You've manually resolved the issue the dependency was supposed to handle
 
 ## Rate Limit Auto-Retry
 
