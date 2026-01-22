@@ -325,6 +325,49 @@ Create multiple tasks at once with dependency chains in a single call.
 - No duplicate local IDs allowed
 - Max 20 tasks per batch
 
+## Task Timeout Auto-Cancel
+
+Tasks that exceed their timeout are automatically killed and marked as `timed_out`.
+
+**Default timeout:** 10 minutes (600000ms)
+**Max timeout:** 1 hour (3600000ms)
+
+**How it works:**
+1. Task starts running with timeout configured
+2. If execution exceeds timeout → process is killed
+3. Task marked as `timed_out` (not `failed`)
+4. Error message shows timeout duration
+
+**Status response for running tasks:**
+```json
+{
+  "task_id": "brave-tiger-42",
+  "status": "running",
+  "timeout_info": {
+    "timeout_ms": 600000,
+    "timeout_at": "2024-01-22T17:10:00.000Z",
+    "time_remaining_ms": 300000
+  }
+}
+```
+
+**Status response for timed out tasks:**
+```json
+{
+  "task_id": "brave-tiger-42",
+  "status": "timed_out",
+  "error": "Task timed out after 600000ms"
+}
+```
+
+**Customizing timeout:**
+```json
+{
+  "prompt": "Long running task",
+  "timeout": 1800000
+}
+```
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.

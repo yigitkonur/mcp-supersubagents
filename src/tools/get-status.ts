@@ -64,6 +64,11 @@ interface TaskStatusResult {
     failed: string[];
     missing: string[];
   };
+  timeout_info?: {
+    timeout_ms: number;
+    timeout_at: string;
+    time_remaining_ms: number;
+  };
 }
 
 // Track check counts per task for exponential backoff
@@ -138,6 +143,16 @@ function getTaskStatus(taskId: string): TaskStatusResult {
     const waitSeconds = RETRY_INTERVALS[intervalIndex];
     result.retry_after_seconds = waitSeconds;
     result.retry_command = getRetryCommand(task, waitSeconds);
+  }
+
+  // Add timeout info for running tasks
+  if (task.status === TaskStatus.RUNNING && task.timeout && task.timeoutAt) {
+    const timeRemaining = new Date(task.timeoutAt).getTime() - Date.now();
+    result.timeout_info = {
+      timeout_ms: task.timeout,
+      timeout_at: task.timeoutAt,
+      time_remaining_ms: Math.max(0, timeRemaining),
+    };
   }
 
   return result;

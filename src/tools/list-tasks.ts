@@ -6,7 +6,7 @@ export const listTasksTool = {
   name: 'list_tasks',
   description: `List all spawned tasks with their current status.
 
-**Filter by status:** pending | waiting | running | completed | failed | cancelled | rate_limited
+**Filter by status:** pending | waiting | running | completed | failed | cancelled | rate_limited | timed_out
 
 **Use cases:**
 - Check which tasks are still running before spawning new ones
@@ -14,6 +14,7 @@ export const listTasksTool = {
 - Monitor multiple concurrent tasks
 - Check rate-limited tasks queued for auto-retry
 - Check waiting tasks blocked on dependencies
+- Check timed out tasks that exceeded their timeout
 
 **Response includes:** count, tasks[], next_action (either 'get_status' or 'spawn_task'), next_action_hint`,
   inputSchema: {
@@ -21,8 +22,8 @@ export const listTasksTool = {
     properties: {
       status: { 
         type: 'string', 
-        enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited'],
-        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "waiting" to see tasks blocked on dependencies.',
+        enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited', 'timed_out'],
+        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "timed_out" to see tasks that exceeded their timeout.',
       },
     },
     required: [],

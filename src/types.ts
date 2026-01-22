@@ -8,6 +8,7 @@ export enum TaskStatus {
   FAILED = 'failed',
   CANCELLED = 'cancelled',
   RATE_LIMITED = 'rate_limited',
+  TIMED_OUT = 'timed_out',
 }
 
 export interface RetryInfo {
@@ -36,6 +37,8 @@ export interface TaskState {
   process?: ResultPromise;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
+  timeout?: number;
+  timeoutAt?: string;
 }
 
 export interface SpawnOptions {

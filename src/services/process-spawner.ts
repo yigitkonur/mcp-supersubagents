@@ -106,10 +106,13 @@ async function runProcess(
       stderr: 'pipe',
     });
 
+    const timeoutAt = new Date(Date.now() + timeout).toISOString();
     taskManager.updateTask(taskId, {
       status: TaskStatus.RUNNING,
       pid: proc.pid,
       process: proc,
+      timeout,
+      timeoutAt,
     });
 
     if (proc.stdout) {
@@ -147,6 +150,19 @@ async function runProcess(
 
     const currentTask = taskManager.getTask(taskId);
     if (currentTask?.status === TaskStatus.CANCELLED) {
+      return;
+    }
+
+    // Check if task timed out
+    if (result.timedOut) {
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.TIMED_OUT,
+        exitCode: result.exitCode ?? 1,
+        endTime: new Date().toISOString(),
+        error: `Task timed out after ${timeout}ms`,
+        process: undefined,
+      });
+      console.error(`[process-spawner] Task ${taskId} timed out after ${timeout}ms`);
       return;
     }
 
