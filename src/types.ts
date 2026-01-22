@@ -6,6 +6,15 @@ export enum TaskStatus {
   COMPLETED = 'completed',
   FAILED = 'failed',
   CANCELLED = 'cancelled',
+  RATE_LIMITED = 'rate_limited',
+}
+
+export interface RetryInfo {
+  reason: string;
+  retryCount: number;
+  nextRetryTime: string;
+  maxRetries: number;
+  originalTaskId?: string;
 }
 
 export interface TaskState {
@@ -24,6 +33,7 @@ export interface TaskState {
   autonomous?: boolean;
   isResume?: boolean;
   process?: ResultPromise;
+  retryInfo?: RetryInfo;
 }
 
 export interface SpawnOptions {
@@ -33,4 +43,5 @@ export interface SpawnOptions {
   model?: string;
   autonomous?: boolean;
   resumeSessionId?: string;
+  retryInfo?: RetryInfo;
 }

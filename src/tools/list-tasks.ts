@@ -6,12 +6,13 @@ export const listTasksTool = {
   name: 'list_tasks',
   description: `List all spawned tasks with their current status.
 
-**Filter by status:** pending | running | completed | failed | cancelled
+**Filter by status:** pending | running | completed | failed | cancelled | rate_limited
 
 **Use cases:**
 - Check which tasks are still running before spawning new ones
 - Find task IDs you may have lost
 - Monitor multiple concurrent tasks
+- Check rate-limited tasks queued for auto-retry
 
 **Response includes:** count, tasks[], next_action (either 'get_status' or 'spawn_task'), next_action_hint`,
   inputSchema: {
@@ -19,8 +20,8 @@ export const listTasksTool = {
     properties: {
       status: { 
         type: 'string', 
-        enum: ['pending', 'running', 'completed', 'failed', 'cancelled'],
-        description: 'Filter tasks by status. Optional - omit to list all tasks.',
+        enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'rate_limited'],
+        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "rate_limited" to see tasks queued for auto-retry.',
       },
     },
     required: [],
@@ -36,11 +37,22 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
       ? allTasks.filter(t => t.status === parsed.status)
       : allTasks;
 
-    const tasks = filtered.map(t => ({
-      task_id: t.id,
-      status: t.status,
-      session_id: t.sessionId || undefined,
-    }));
+    const tasks = filtered.map(t => {
+      const taskInfo: Record<string, unknown> = {
+        task_id: t.id,
+        status: t.status,
+        session_id: t.sessionId || undefined,
+      };
+      
+      // Add retry info for rate-limited tasks
+      if (t.status === TaskStatus.RATE_LIMITED && t.retryInfo) {
+        taskInfo.retry_count = t.retryInfo.retryCount;
+        taskInfo.next_retry = t.retryInfo.nextRetryTime;
+        taskInfo.will_auto_retry = t.retryInfo.retryCount < t.retryInfo.maxRetries;
+      }
+      
+      return taskInfo;
+    });
 
     return {
       content: [{
@@ -62,7 +74,7 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
         text: JSON.stringify({ 
           error: error instanceof Error ? error.message : 'Unknown',
           suggested_action: 'list_tasks',
-          suggestion: 'Check status filter is valid: pending, running, completed, failed, cancelled'
+          suggestion: 'Check status filter is valid: pending, running, completed, failed, cancelled, rate_limited'
         }) 
       }] 
     };

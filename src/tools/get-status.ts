@@ -50,6 +50,13 @@ interface TaskStatusResult {
   retry_after_seconds?: number;
   retry_command?: string;
   suggested_action?: string;
+  retry_info?: {
+    reason: string;
+    retry_count: number;
+    max_retries: number;
+    next_retry_time: string;
+    will_auto_retry: boolean;
+  };
 }
 
 // Track check counts per task for exponential backoff
@@ -72,7 +79,7 @@ function getTaskStatus(taskId: string): TaskStatusResult {
   const checkCount = (taskCheckCounts.get(normalizedId) || 0) + 1;
   taskCheckCounts.set(normalizedId, checkCount);
 
-  // Clean up check counts for completed tasks
+  // Clean up check counts for terminal states
   if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
     taskCheckCounts.delete(normalizedId);
   }
@@ -92,6 +99,18 @@ function getTaskStatus(taskId: string): TaskStatusResult {
     const waitSeconds = RETRY_INTERVALS[intervalIndex];
     result.retry_after_seconds = waitSeconds;
     result.retry_command = getRetryCommand(task, waitSeconds);
+  }
+
+  // Add retry info for rate-limited tasks
+  if (task.status === TaskStatus.RATE_LIMITED && task.retryInfo) {
+    result.retry_info = {
+      reason: task.retryInfo.reason,
+      retry_count: task.retryInfo.retryCount,
+      max_retries: task.retryInfo.maxRetries,
+      next_retry_time: task.retryInfo.nextRetryTime,
+      will_auto_retry: task.retryInfo.retryCount < task.retryInfo.maxRetries,
+    };
+    result.error = task.error;
   }
 
   return result;

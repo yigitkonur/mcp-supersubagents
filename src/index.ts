@@ -8,6 +8,7 @@ import { spawnTaskTool, handleSpawnTask } from './tools/spawn-task.js';
 import { getTaskStatusTool, handleGetTaskStatus } from './tools/get-status.js';
 import { listTasksTool, handleListTasks } from './tools/list-tasks.js';
 import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
+import { clearTasksTool, handleClearTasks } from './tools/clear-tasks.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled } from './services/process-spawner.js';
@@ -17,7 +18,24 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-// Fetch client roots after initialization
+// Register retry callback for rate-limited tasks
+taskManager.onRetry(async (task) => {
+  const { spawnCopilotProcess } = await import('./services/process-spawner.js');
+  
+  console.error(`[index] Retrying task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
+  
+  // Spawn a new process with the same parameters, carrying forward retry info
+  spawnCopilotProcess({
+    prompt: task.prompt,
+    cwd: task.cwd,
+    model: task.model,
+    autonomous: task.autonomous ?? true,
+    retryInfo: task.retryInfo,
+  }).catch(err => {
+    console.error(`[index] Failed to retry task ${task.id}:`, err);
+  });
+});
+
 server.oninitialized = async () => {
   try {
     const result = await server.listRoots();
@@ -27,9 +45,13 @@ server.oninitialized = async () => {
   } catch {
     // Client may not support roots - use server cwd as fallback
   }
+  
+  // Load persisted tasks for this workspace (also triggers auto-retry for rate-limited tasks)
+  const cwd = clientContext.getDefaultCwd();
+  taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool];
+const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -42,6 +64,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'get_status': return handleGetTaskStatus(args);
     case 'list_tasks': return handleListTasks(args);
     case 'resume_task': return handleResumeTask(args);
+    case 'clear_tasks': return handleClearTasks(args);
     default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
   }
 });

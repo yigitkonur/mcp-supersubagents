@@ -125,6 +125,66 @@ Resume a previously interrupted session.
 }
 ```
 
+### `clear_tasks`
+
+Clear all persisted tasks for the current workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `confirm` | boolean | ✅ | Must be `true` to confirm deletion (safety measure) |
+
+**Response:**
+```json
+{
+  "success": true,
+  "cleared_tasks": 5,
+  "workspace": "/Users/alice/project",
+  "workspace_hash": "a1b2c3d4e5f6...",
+  "storage_path": "~/.super-agents/a1b2c3d4e5f6....json",
+  "message": "Cleared 5 tasks for workspace"
+}
+```
+
+**⚠️ CAUTION:** This permanently deletes all task history for the current workspace.
+
+## Rate Limit Auto-Retry
+
+Tasks that fail due to rate limiting are automatically detected and scheduled for retry.
+
+**Detection patterns:**
+- "rate limit" / "too many requests"
+- "try again in X hours/minutes"
+- "exceeded quota" / "throttl"
+
+**Retry behavior:**
+- Rate-limited tasks are marked as `rate_limited` (not `failed`)
+- On server reconnect, rate-limited tasks are automatically retried
+- Uses exponential backoff: 5min → 10min → 20min → 40min → 1hr → 2hr
+- Max 6 retry attempts before marking as permanently `failed`
+
+**Status response for rate-limited tasks:**
+```json
+{
+  "task_id": "brave-tiger-42",
+  "status": "rate_limited",
+  "error": "Sorry, you've hit a rate limit...",
+  "retry_info": {
+    "reason": "Rate limit exceeded",
+    "retry_count": 2,
+    "max_retries": 6,
+    "next_retry_time": "2024-01-22T17:00:00.000Z",
+    "will_auto_retry": true
+  }
+}
+```
+
+**How it works:**
+1. Task fails with rate-limit error → marked as `rate_limited` with retry schedule
+2. Server connection closes (normal MCP lifecycle)
+3. Server reconnects → loads persisted tasks
+4. Rate-limited tasks past their `next_retry_time` are automatically re-spawned
+5. Repeat until success or max retries exceeded
+
 ## Task Templates
 
 | Template | Use Case |
@@ -166,6 +226,22 @@ The server automatically detects the client's workspace:
 ```
 spawn_task() → pending → running → completed | failed | cancelled
 ```
+
+## Task Persistence
+
+Tasks are automatically persisted to disk and survive server restarts.
+
+**Storage location:** `~/.super-agents/{md5(cwd)}.json`
+
+Each workspace gets its own isolated task history based on the MD5 hash of the working directory path. This allows multiple users and workspaces to use the same MCP server without conflicts.
+
+**Behavior:**
+- Tasks are saved after every state change (debounced to reduce disk I/O)
+- On server restart, previously running tasks are marked as `failed` with error `"Server restarted"`
+- Completed tasks expire after 1 hour (configurable via `TASK_TTL_MS`)
+- Corrupted storage files are handled gracefully (starts fresh with empty task list)
+
+**Atomic writes:** Uses temp file + rename pattern to prevent corruption from concurrent access or crashes.
 
 ## Environment Variables
 

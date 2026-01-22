@@ -4,6 +4,7 @@ import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { TaskStatus, SpawnOptions } from '../types.js';
 import { DEFAULT_MODEL } from '../models.js';
+import { isRateLimitError, createRetryInfo } from './retry-queue.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 
@@ -20,6 +21,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
   const task = taskManager.createTask(prompt, cwd, model, {
     autonomous: options.autonomous ?? true,
     isResume: !!options.resumeSessionId,
+    retryInfo: options.retryInfo,
   });
 
   const args: string[] = [];
@@ -121,21 +123,55 @@ async function runProcess(
         process: undefined,
       });
     } else {
+      // Check if this is a rate limit error
+      const currentTask = taskManager.getTask(taskId);
+      const errorText = result.stderr || result.shortMessage || 'Unknown error';
+      
+      if (currentTask && isRateLimitError(currentTask.output, errorText)) {
+        // Mark as rate-limited for automatic retry
+        const retryInfo = createRetryInfo(currentTask, 'Rate limit exceeded', currentTask.retryInfo);
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.RATE_LIMITED,
+          exitCode: result.exitCode ?? 1,
+          endTime: new Date().toISOString(),
+          error: errorText,
+          retryInfo,
+          process: undefined,
+        });
+        console.error(`[process-spawner] Task ${taskId} rate-limited, scheduled retry #${retryInfo.retryCount} at ${retryInfo.nextRetryTime}`);
+      } else {
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.FAILED,
+          exitCode: result.exitCode ?? 1,
+          endTime: new Date().toISOString(),
+          error: errorText,
+          process: undefined,
+        });
+      }
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const currentTask = taskManager.getTask(taskId);
+    
+    // Check if exception message indicates rate limiting
+    if (currentTask && isRateLimitError(currentTask.output, errorMessage)) {
+      const retryInfo = createRetryInfo(currentTask, 'Rate limit exceeded', currentTask.retryInfo);
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.RATE_LIMITED,
+        endTime: new Date().toISOString(),
+        error: errorMessage,
+        retryInfo,
+        process: undefined,
+      });
+      console.error(`[process-spawner] Task ${taskId} rate-limited (exception), scheduled retry #${retryInfo.retryCount}`);
+    } else {
       taskManager.updateTask(taskId, {
         status: TaskStatus.FAILED,
-        exitCode: result.exitCode ?? 1,
         endTime: new Date().toISOString(),
-        error: result.stderr || result.shortMessage || 'Unknown error',
+        error: errorMessage,
         process: undefined,
       });
     }
-  } catch (error) {
-    taskManager.updateTask(taskId, {
-      status: TaskStatus.FAILED,
-      endTime: new Date().toISOString(),
-      error: error instanceof Error ? error.message : 'Unknown error',
-      process: undefined,
-    });
   }
 }
 

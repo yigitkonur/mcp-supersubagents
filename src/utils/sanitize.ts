@@ -23,5 +23,5 @@ export const GetTaskStatusSchema = z.object({
 });
 
 export const ListTasksSchema = z.object({
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled']).optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'rate_limited']).optional(),
 });
