@@ -3,27 +3,21 @@ import { spawnCopilotProcess } from '../services/process-spawner.js';
 
 export const resumeTaskTool = {
   name: 'resume_task',
-  description: `Resume a previously interrupted Copilot session using its session_id.
-
-**When to use:** If a task was interrupted or you need to continue where it left off, use this to resume from the exact state.
-
-**Getting session_id:** Call get_status on a completed/failed task - the response includes session_id if the session can be resumed.
-
-**Response includes:** task_id, resumed_session, next_action='get_status', next_action_args={task_id}`,
+  description: `Resume an interrupted Copilot session. Get session_id from get_status response.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       session_id: { 
         type: 'string', 
-        description: 'Session ID from a previous task (found in get_status response).' 
+        description: 'Session ID from previous task.' 
       },
       cwd: { 
         type: 'string', 
-        description: 'Working directory. Optional - auto-detected from client workspace.' 
+        description: 'Working directory. Auto-detected if omitted.' 
       },
       timeout: { 
         type: 'number', 
-        description: 'Max execution time in ms. Optional, defaults to 600000 (10 minutes). Max 1 hour.' 
+        description: 'Max execution time in ms. Default: 600000.' 
       },
     },
     required: ['session_id'],

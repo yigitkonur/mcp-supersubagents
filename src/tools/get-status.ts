@@ -15,25 +15,16 @@ function getRetryCommand(task: { status: TaskStatus }, waitSeconds: number): str
 
 export const getTaskStatusTool = {
   name: 'get_status',
-  description: `Check task status. Returns status, output, session_id, exit_code, and retry hints.
-
-**IMPORTANT - Avoid Excessive Polling:**
-- For running/pending tasks, response includes "retry_after_seconds" and "retry_command"
-- Backoff: 30s → 60s → 120s → 180s (then stays at 180s)
-- Execute retry_command before next check (e.g., run_command with retry_command value)
-
-**Supports batch checking:** Pass array of task_ids to check multiple tasks at once.
-
-**Task IDs are case-insensitive** - "Brave-Tiger-42" equals "brave-tiger-42"`,
+  description: `Check task status. Returns status, output, session_id, exit_code. Supports batch checking with array of task_ids. Includes retry_after_seconds for polling guidance. Task IDs are case-insensitive.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         oneOf: [
           { type: 'string', description: 'Single task ID' },
-          { type: 'array', items: { type: 'string' }, description: 'Array of task IDs to check' },
+          { type: 'array', items: { type: 'string' }, description: 'Array of task IDs' },
         ],
-        description: 'Task ID(s) from spawn_task - can be a single ID or array of IDs',
+        description: 'Task ID(s) to check.',
       },
     },
     required: ['task_id'],

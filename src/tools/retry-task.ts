@@ -8,24 +8,13 @@ const RetryTaskSchema = z.object({
 
 export const retryTaskTool = {
   name: 'retry_task',
-  description: `Manually trigger immediate retry of a rate-limited task.
-
-**Use cases:**
-- Skip the scheduled retry wait time
-- Retry a task after you know rate limit has lifted
-- Force retry of a task that's been waiting
-
-**Requirements:**
-- Task must be in \`rate_limited\` status
-- Task must not have exceeded max retries
-
-**Response includes:** success status, new_task_id (the retry task), original_task_id`,
+  description: `Immediately retry a rate-limited task. Creates new task with same prompt.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         type: 'string',
-        description: 'The task ID to retry immediately',
+        description: 'Rate-limited task ID to retry.',
       },
     },
     required: ['task_id'],

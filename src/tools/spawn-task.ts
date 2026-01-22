@@ -6,57 +6,48 @@ import { TASK_TYPE_IDS, TASK_TYPES, applyTemplate, isValidTaskType, type TaskTyp
 
 export const spawnTaskTool = {
   name: 'spawn_task',
-  description: `Execute a task using GitHub Copilot CLI agent. Returns a human-readable task_id for tracking.
+  description: `Spawn a Copilot CLI agent task. Returns task_id for tracking.
 
-**Quick Start:** Only "prompt" is required. Everything else has sensible defaults.
-
-**Task Types (pick one that matches your goal):**
-- **super-coder**: Implementation tasks - writing code, fixing bugs, refactoring
-- **super-planner**: Architecture and planning - design decisions, breaking down complex work
-- **super-researcher**: Investigation tasks - codebase exploration, understanding systems
-- **super-tester**: Testing tasks - writing tests, QA verification
-
-**Models:** ${MODEL_IDS.map(m => m === DEFAULT_MODEL ? `${m} (default)` : m).join(', ')}
-
-**Response includes:** task_id, next_action='get_status', next_action_args={task_id}`,
+Task types: super-coder (implementation), super-planner (architecture), super-researcher (investigation), super-tester (QA).
+Models: ${MODEL_IDS.join(', ')}. Default: ${DEFAULT_MODEL}.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       prompt: {
         type: 'string',
-        description: 'What should the agent do? Be specific: include file paths, requirements, and expected outcomes.',
+        description: 'Task instructions. Be specific with file paths and requirements.',
       },
       task_type: {
         type: 'string',
         enum: TASK_TYPE_IDS,
-        description: 'Agent template optimizing for specific task types. Optional - omit for general tasks.',
+        description: 'Agent template for specific task types.',
       },
       model: {
         type: 'string',
         enum: MODEL_IDS,
-        description: `AI model to use. Optional, defaults to ${DEFAULT_MODEL}.`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}.`,
       },
       cwd: {
         type: 'string',
-        description: 'Working directory. Optional - auto-detected from client workspace.',
+        description: 'Working directory. Auto-detected if omitted.',
       },
       timeout: {
         type: 'number',
-        description: 'Max execution time in ms. Optional, defaults to 600000 (10 minutes). Max 1 hour.',
+        description: 'Max execution time in ms. Default: 600000 (10 min). Max: 3600000.',
       },
       autonomous: {
         type: 'boolean',
-        description: 'Run without user prompts. Optional, defaults to true.',
+        description: 'Run without prompts. Default: true.',
       },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Optional array of task IDs this task depends on. Task will wait until all dependencies complete successfully before running.',
+        description: 'Task IDs to wait for before running.',
       },
       labels: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Optional labels for filtering and organization (max 10, each max 50 chars).',
+        description: 'Labels for filtering (max 10).',
       },
     },
     required: ['prompt'],

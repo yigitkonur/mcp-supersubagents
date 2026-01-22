@@ -21,42 +21,7 @@ const BatchSpawnSchema = z.object({
 
 export const batchSpawnTool = {
   name: 'batch_spawn',
-  description: `Create multiple tasks at once with dependency chains.
-
-**Use cases:**
-- Create a pipeline: build → test → deploy
-- Fan-out/fan-in: parallel tasks that merge into one
-- Complex workflows in a single call
-
-**Key feature:** Use local \`id\` fields to reference tasks within the same batch for \`depends_on\`.
-
-**Example - Build Pipeline:**
-\`\`\`json
-{
-  "tasks": [
-    { "id": "build", "prompt": "Build the project" },
-    { "id": "test", "prompt": "Run tests", "depends_on": ["build"] },
-    { "id": "deploy", "prompt": "Deploy to staging", "depends_on": ["test"] }
-  ]
-}
-\`\`\`
-
-**Example - Fan-out/Fan-in:**
-\`\`\`json
-{
-  "tasks": [
-    { "id": "setup", "prompt": "Setup environment" },
-    { "id": "api", "prompt": "Build API", "depends_on": ["setup"] },
-    { "id": "web", "prompt": "Build Web", "depends_on": ["setup"] },
-    { "id": "mobile", "prompt": "Build Mobile", "depends_on": ["setup"] },
-    { "id": "integrate", "prompt": "Integration tests", "depends_on": ["api", "web", "mobile"] }
-  ]
-}
-\`\`\`
-
-**Limits:** Max 20 tasks per batch. Use multiple batches for larger workflows.
-
-**Response includes:** Array of created tasks with local_id → real task_id mapping`,
+  description: `Create multiple tasks with dependency chains in one call. Use local 'id' fields for depends_on references within the batch. Max 20 tasks. Returns id_map of local_id → task_id.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -65,37 +30,21 @@ export const batchSpawnTool = {
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: 'Local reference ID (used in depends_on within this batch)' },
-            prompt: { type: 'string', description: 'Task prompt' },
-            task_type: { 
-              type: 'string', 
-              enum: TASK_TYPE_IDS,
-              description: 'Optional task template' 
-            },
-            model: { 
-              type: 'string', 
-              enum: MODEL_IDS,
-              description: 'Optional model override' 
-            },
-            depends_on: { 
-              type: 'array', 
-              items: { type: 'string' },
-              description: 'Local IDs this task depends on (from this batch or existing task IDs)' 
-            },
-            labels: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Optional labels for filtering (max 10)',
-            },
+            id: { type: 'string', description: 'Local ID for dependency references.' },
+            prompt: { type: 'string', description: 'Task instructions.' },
+            task_type: { type: 'string', enum: TASK_TYPE_IDS, description: 'Task template.' },
+            model: { type: 'string', enum: MODEL_IDS, description: 'Model override.' },
+            depends_on: { type: 'array', items: { type: 'string' }, description: 'Local or existing task IDs.' },
+            labels: { type: 'array', items: { type: 'string' }, description: 'Labels (max 10).' },
           },
           required: ['id', 'prompt'],
         },
-        description: 'Array of task definitions (max 20)',
+        description: 'Task definitions (max 20).',
         minItems: 1,
         maxItems: 20,
       },
-      cwd: { type: 'string', description: 'Working directory for all tasks' },
-      autonomous: { type: 'boolean', description: 'Run without user prompts (default: true)' },
+      cwd: { type: 'string', description: 'Working directory.' },
+      autonomous: { type: 'boolean', description: 'Run without prompts. Default: true.' },
     },
     required: ['tasks'],
   },

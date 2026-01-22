@@ -4,30 +4,18 @@ import { TaskStatus } from '../types.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
-  description: `List all spawned tasks with their current status.
-
-**Filter by status:** pending | waiting | running | completed | failed | cancelled | rate_limited | timed_out
-
-**Use cases:**
-- Check which tasks are still running before spawning new ones
-- Find task IDs you may have lost
-- Monitor multiple concurrent tasks
-- Check rate-limited tasks queued for auto-retry
-- Check waiting tasks blocked on dependencies
-- Check timed out tasks that exceeded their timeout
-
-**Response includes:** count, tasks[], next_action (either 'get_status' or 'spawn_task'), next_action_hint`,
+  description: `List all tasks. Filter by status or label. Returns count and task array.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       status: { 
         type: 'string', 
         enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited', 'timed_out'],
-        description: 'Filter tasks by status. Optional - omit to list all tasks.',
+        description: 'Filter by status.',
       },
       label: {
         type: 'string',
-        description: 'Filter tasks by label. Only tasks with this label will be returned.',
+        description: 'Filter by label.',
       },
     },
     required: [],

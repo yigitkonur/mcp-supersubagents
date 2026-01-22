@@ -9,23 +9,13 @@ const ClearTasksSchema = z.object({
 
 export const clearTasksTool = {
   name: 'clear_tasks',
-  description: `Clear all persisted tasks for the current workspace.
-
-**Use cases:**
-- Clean up old tasks after testing
-- Reset task history for a fresh start
-- Free up disk space
-
-**CAUTION:** This permanently deletes all task history for the current workspace.
-Requires \`confirm: true\` to execute.
-
-**Response includes:** success status, deleted file path, workspace hash`,
+  description: `Delete all persisted tasks for current workspace. Requires confirm: true.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       confirm: {
         type: 'boolean',
-        description: 'Must be true to confirm deletion. Safety measure to prevent accidental data loss.',
+        description: 'Must be true to confirm deletion.',
       },
     },
     required: ['confirm'],

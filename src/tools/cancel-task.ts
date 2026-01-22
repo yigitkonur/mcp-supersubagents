@@ -8,24 +8,13 @@ const CancelTaskSchema = z.object({
 
 export const cancelTaskTool = {
   name: 'cancel_task',
-  description: `Cancel a running or pending task by killing its process.
-
-**Use cases:**
-- Stop a long-running task that's no longer needed
-- Kill a stuck or unresponsive task
-- Cancel a pending task before it starts
-
-**Requirements:**
-- Task must be in \`running\` or \`pending\` status
-- Sends SIGTERM to the process
-
-**Response includes:** success status, task_id, previous_status`,
+  description: `Cancel a running or pending task by killing its process (SIGTERM).`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         type: 'string',
-        description: 'The task ID to cancel',
+        description: 'Task ID to cancel.',
       },
     },
     required: ['task_id'],

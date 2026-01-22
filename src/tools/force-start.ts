@@ -8,24 +8,13 @@ const ForceStartSchema = z.object({
 
 export const forceStartTool = {
   name: 'force_start',
-  description: `Force start a waiting task, bypassing failed or missing dependencies.
-
-**Use cases:**
-- A dependency failed but you want to proceed anyway
-- A dependency was deleted/cleared but the task should still run
-- You've manually resolved the issue the dependency was supposed to handle
-
-**Requirements:**
-- Task must be in \`waiting\` status
-- Will clear dependency info and start execution immediately
-
-**Response includes:** success status, task_id, bypassed_deps, new_status`,
+  description: `Force start a waiting task, bypassing its dependencies.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         type: 'string',
-        description: 'The task ID to force start',
+        description: 'Waiting task ID to force start.',
       },
     },
     required: ['task_id'],
