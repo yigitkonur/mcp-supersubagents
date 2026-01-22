@@ -1,5 +1,6 @@
 import { SpawnTaskSchema } from '../utils/sanitize.js';
 import { spawnCopilotProcess } from '../services/process-spawner.js';
+import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS, MODELS, DEFAULT_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, TASK_TYPES, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 
@@ -47,6 +48,11 @@ export const spawnTaskTool = {
         type: 'boolean',
         description: 'Run without user prompts. Optional, defaults to true.',
       },
+      depends_on: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional array of task IDs this task depends on. Task will wait until all dependencies complete successfully before running.',
+      },
     },
     required: ['prompt'],
   },
@@ -55,6 +61,21 @@ export const spawnTaskTool = {
 export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const parsed = SpawnTaskSchema.parse(args);
+    
+    // Validate dependencies if provided
+    const dependsOn = parsed.depends_on?.filter((d: string) => d.trim()) || [];
+    if (dependsOn.length > 0) {
+      const validationError = taskManager.validateDependencies(dependsOn);
+      if (validationError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ 
+            error: validationError,
+            suggested_action: 'list_tasks',
+            suggestion: 'Ensure all dependency task IDs exist before creating dependent task'
+          }) }],
+        };
+      }
+    }
     
     let finalPrompt = parsed.prompt;
     if (parsed.task_type && isValidTaskType(parsed.task_type)) {
@@ -67,11 +88,18 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
       cwd: parsed.cwd,
       model: parsed.model,
       autonomous: parsed.autonomous,
+      dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
     });
+
+    const task = taskManager.getTask(taskId);
+    const isWaiting = task?.status === 'waiting';
 
     return {
       content: [{ type: 'text', text: JSON.stringify({ 
         task_id: taskId,
+        status: task?.status || 'pending',
+        depends_on: dependsOn.length > 0 ? dependsOn : undefined,
+        message: isWaiting ? `Task queued, waiting for dependencies: ${dependsOn.join(', ')}` : undefined,
         next_action: 'get_status',
         next_action_args: { task_id: taskId }
       }) }],

@@ -6,13 +6,14 @@ export const listTasksTool = {
   name: 'list_tasks',
   description: `List all spawned tasks with their current status.
 
-**Filter by status:** pending | running | completed | failed | cancelled | rate_limited
+**Filter by status:** pending | waiting | running | completed | failed | cancelled | rate_limited
 
 **Use cases:**
 - Check which tasks are still running before spawning new ones
 - Find task IDs you may have lost
 - Monitor multiple concurrent tasks
 - Check rate-limited tasks queued for auto-retry
+- Check waiting tasks blocked on dependencies
 
 **Response includes:** count, tasks[], next_action (either 'get_status' or 'spawn_task'), next_action_hint`,
   inputSchema: {
@@ -20,8 +21,8 @@ export const listTasksTool = {
     properties: {
       status: { 
         type: 'string', 
-        enum: ['pending', 'running', 'completed', 'failed', 'cancelled', 'rate_limited'],
-        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "rate_limited" to see tasks queued for auto-retry.',
+        enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited'],
+        description: 'Filter tasks by status. Optional - omit to list all tasks. Use "waiting" to see tasks blocked on dependencies.',
       },
     },
     required: [],
@@ -49,6 +50,18 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
         taskInfo.retry_count = t.retryInfo.retryCount;
         taskInfo.next_retry = t.retryInfo.nextRetryTime;
         taskInfo.will_auto_retry = t.retryInfo.retryCount < t.retryInfo.maxRetries;
+      }
+      
+      // Add dependency info for waiting tasks
+      if (t.dependsOn && t.dependsOn.length > 0) {
+        taskInfo.depends_on = t.dependsOn;
+        if (t.status === TaskStatus.WAITING) {
+          const depStatus = taskManager.getDependencyStatus(t.id);
+          if (depStatus) {
+            taskInfo.deps_pending = depStatus.pending;
+            taskInfo.deps_failed = depStatus.failed.length > 0 ? depStatus.failed : undefined;
+          }
+        }
       }
       
       return taskInfo;

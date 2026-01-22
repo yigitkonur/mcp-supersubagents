@@ -42,6 +42,14 @@ taskManager.onRetry(async (task) => {
   }
 });
 
+// Register execute callback for waiting tasks (dependencies satisfied)
+taskManager.onExecute(async (task) => {
+  const { executeWaitingTask } = await import('./services/process-spawner.js');
+  
+  console.error(`[index] Executing waiting task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
+  await executeWaitingTask(task);
+});
+
 server.oninitialized = async () => {
   try {
     const result = await server.listRoots();

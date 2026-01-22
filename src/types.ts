@@ -2,6 +2,7 @@ import type { ResultPromise } from 'execa';
 
 export enum TaskStatus {
   PENDING = 'pending',
+  WAITING = 'waiting',
   RUNNING = 'running',
   COMPLETED = 'completed',
   FAILED = 'failed',
@@ -34,6 +35,7 @@ export interface TaskState {
   isResume?: boolean;
   process?: ResultPromise;
   retryInfo?: RetryInfo;
+  dependsOn?: string[];
 }
 
 export interface SpawnOptions {
@@ -44,4 +46,5 @@ export interface SpawnOptions {
   autonomous?: boolean;
   resumeSessionId?: string;
   retryInfo?: RetryInfo;
+  dependsOn?: string[];
 }

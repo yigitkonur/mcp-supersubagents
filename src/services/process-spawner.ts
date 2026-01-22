@@ -2,7 +2,7 @@ import { execa } from 'execa';
 import { existsSync } from 'fs';
 import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
-import { TaskStatus, SpawnOptions } from '../types.js';
+import { TaskStatus, SpawnOptions, TaskState } from '../types.js';
 import { DEFAULT_MODEL } from '../models.js';
 import { isRateLimitError, createRetryInfo } from './retry-queue.js';
 
@@ -22,7 +22,14 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     autonomous: options.autonomous ?? true,
     isResume: !!options.resumeSessionId,
     retryInfo: options.retryInfo,
+    dependsOn: options.dependsOn,
   });
+
+  // If task is waiting for dependencies, don't start execution yet
+  if (task.status === TaskStatus.WAITING) {
+    console.error(`[process-spawner] Task ${task.id} waiting for dependencies: ${task.dependsOn?.join(', ')}`);
+    return task.id;
+  }
 
   const args: string[] = [];
   
@@ -43,6 +50,34 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
   });
 
   return task.id;
+}
+
+/**
+ * Execute a waiting task (called when dependencies are satisfied)
+ */
+export async function executeWaitingTask(task: TaskState): Promise<void> {
+  const prompt = task.prompt?.trim() || '';
+  const cwd = task.cwd || clientContext.getDefaultCwd();
+  const model = task.model || DEFAULT_MODEL;
+
+  const args: string[] = [];
+  
+  if (prompt) {
+    args.push('-p', prompt);
+  }
+  
+  args.push('--allow-all', '-s', '--model', model);
+  
+  if (task.autonomous !== false) {
+    args.push('--no-ask-user');
+  }
+
+  // Update status to PENDING before running
+  taskManager.updateTask(task.id, { status: TaskStatus.PENDING });
+
+  setImmediate(() => {
+    runProcess(task.id, args, cwd, 600000);
+  });
 }
 
 async function runProcess(

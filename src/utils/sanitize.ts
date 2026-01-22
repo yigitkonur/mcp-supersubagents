@@ -9,6 +9,7 @@ export const SpawnTaskSchema = z.object({
   model: z.enum(MODEL_IDS as [string, ...string[]]).optional(),
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
   autonomous: z.boolean().optional().default(true),
+  depends_on: z.array(z.string().min(1)).optional(),
 });
 
 export const ResumeTaskSchema = z.object({
@@ -23,5 +24,5 @@ export const GetTaskStatusSchema = z.object({
 });
 
 export const ListTasksSchema = z.object({
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'rate_limited']).optional(),
+  status: z.enum(['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited']).optional(),
 });

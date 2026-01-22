@@ -57,6 +57,13 @@ interface TaskStatusResult {
     next_retry_time: string;
     will_auto_retry: boolean;
   };
+  dependency_info?: {
+    depends_on: string[];
+    satisfied: boolean;
+    pending: string[];
+    failed: string[];
+    missing: string[];
+  };
 }
 
 // Track check counts per task for exponential backoff
@@ -111,6 +118,26 @@ function getTaskStatus(taskId: string): TaskStatusResult {
       will_auto_retry: task.retryInfo.retryCount < task.retryInfo.maxRetries,
     };
     result.error = task.error;
+  }
+
+  // Add dependency info for tasks with dependencies
+  if (task.dependsOn && task.dependsOn.length > 0) {
+    const depStatus = taskManager.getDependencyStatus(task.id);
+    result.dependency_info = {
+      depends_on: task.dependsOn,
+      satisfied: depStatus?.satisfied ?? false,
+      pending: depStatus?.pending ?? [],
+      failed: depStatus?.failed ?? [],
+      missing: depStatus?.missing ?? [],
+    };
+  }
+
+  // Add retry hints for waiting tasks
+  if (task.status === TaskStatus.WAITING) {
+    const intervalIndex = Math.min(checkCount - 1, RETRY_INTERVALS.length - 1);
+    const waitSeconds = RETRY_INTERVALS[intervalIndex];
+    result.retry_after_seconds = waitSeconds;
+    result.retry_command = getRetryCommand(task, waitSeconds);
   }
 
   return result;

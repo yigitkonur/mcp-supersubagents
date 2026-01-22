@@ -198,6 +198,48 @@ Cancel a running or pending task by killing its process.
 - Task must be in `running` or `pending` status
 - Sends SIGTERM to kill the process
 
+## Task Dependencies
+
+Tasks can optionally depend on other tasks. A dependent task waits until all its dependencies complete successfully before running.
+
+**Usage:**
+```json
+{
+  "prompt": "Run integration tests",
+  "depends_on": ["brave-tiger-42", "clever-fox-99"]
+}
+```
+
+**Behavior:**
+- Task starts in `waiting` status if dependencies are not yet completed
+- Automatically starts when ALL dependencies complete successfully
+- If any dependency fails/cancels → task stays `waiting` (won't auto-run)
+- No dependencies or all deps already completed → starts immediately
+
+**Validation at creation:**
+- All dependency task IDs must exist → error if not found
+- Circular dependencies detected and rejected (A→B→A)
+
+**Status response for waiting tasks:**
+```json
+{
+  "task_id": "happy-panda-88",
+  "status": "waiting",
+  "dependency_info": {
+    "depends_on": ["brave-tiger-42", "clever-fox-99"],
+    "satisfied": false,
+    "pending": ["clever-fox-99"],
+    "failed": [],
+    "missing": []
+  }
+}
+```
+
+**Edge cases:**
+- Dependency deleted before run → task stays `waiting` (shows in `missing`)
+- Dependency fails → task stays `waiting` forever (shows in `failed`)
+- User can cancel waiting tasks manually
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.

@@ -4,6 +4,70 @@ import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
 
 const MAX_TASKS = 100;
+
+/**
+ * Check if adding dependencies would create a circular dependency
+ * @param newTaskId - The ID of the task being created
+ * @param dependsOn - Array of task IDs this task depends on
+ * @param tasks - Map of all existing tasks
+ * @returns true if circular dependency would be created
+ */
+function hasCircularDependency(newTaskId: string, dependsOn: string[], tasks: Map<string, TaskState>): boolean {
+  const visited = new Set<string>();
+  const toCheck = [...dependsOn];
+  
+  while (toCheck.length > 0) {
+    const depId = toCheck.pop()!;
+    const normalizedDepId = normalizeTaskId(depId);
+    
+    if (normalizedDepId === normalizeTaskId(newTaskId)) {
+      return true; // Circular dependency found
+    }
+    
+    if (visited.has(normalizedDepId)) {
+      continue;
+    }
+    visited.add(normalizedDepId);
+    
+    const depTask = tasks.get(normalizedDepId);
+    if (depTask?.dependsOn) {
+      toCheck.push(...depTask.dependsOn);
+    }
+  }
+  return false;
+}
+
+/**
+ * Check if all dependencies for a task are satisfied (completed successfully)
+ */
+function areDependenciesSatisfied(task: TaskState, tasks: Map<string, TaskState>): { satisfied: boolean; missing: string[]; failed: string[]; pending: string[] } {
+  if (!task.dependsOn || task.dependsOn.length === 0) {
+    return { satisfied: true, missing: [], failed: [], pending: [] };
+  }
+  
+  const missing: string[] = [];
+  const failed: string[] = [];
+  const pending: string[] = [];
+  
+  for (const depId of task.dependsOn) {
+    const normalizedDepId = normalizeTaskId(depId);
+    const depTask = tasks.get(normalizedDepId);
+    
+    if (!depTask) {
+      missing.push(depId);
+    } else if (depTask.status === TaskStatus.COMPLETED) {
+      // Good - dependency completed successfully
+    } else if (depTask.status === TaskStatus.FAILED || depTask.status === TaskStatus.CANCELLED) {
+      failed.push(depId);
+    } else {
+      // PENDING, WAITING, RUNNING, RATE_LIMITED
+      pending.push(depId);
+    }
+  }
+  
+  const satisfied = missing.length === 0 && failed.length === 0 && pending.length === 0;
+  return { satisfied, missing, failed, pending };
+}
 const TASK_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LINES = 2000;
@@ -17,6 +81,7 @@ class TaskManager {
   private outputPersistDebounceMs = 1000;
   private lastPersistTrigger: 'state' | 'output' = 'state';
   private retryCallback: ((task: TaskState) => Promise<string | undefined>) | null = null;
+  private executeCallback: ((task: TaskState) => Promise<void>) | null = null;
 
   constructor() {
     this.startCleanup();
@@ -49,6 +114,72 @@ class TaskManager {
    */
   onRetry(callback: (task: TaskState) => Promise<string | undefined>): void {
     this.retryCallback = callback;
+  }
+
+  /**
+   * Register a callback to execute a waiting task when dependencies are satisfied
+   */
+  onExecute(callback: (task: TaskState) => Promise<void>): void {
+    this.executeCallback = callback;
+  }
+
+  /**
+   * Process waiting tasks and start those with satisfied dependencies
+   */
+  private processWaitingTasks(): void {
+    const waitingTasks = Array.from(this.tasks.values())
+      .filter(t => t.status === TaskStatus.WAITING);
+    
+    if (waitingTasks.length === 0) {
+      return;
+    }
+
+    for (const task of waitingTasks) {
+      const { satisfied } = areDependenciesSatisfied(task, this.tasks);
+      
+      if (satisfied && this.executeCallback) {
+        console.error(`[task-manager] Dependencies satisfied for ${task.id}, starting execution`);
+        this.executeCallback(task).catch(err => {
+          console.error(`[task-manager] Failed to execute task ${task.id}:`, err);
+        });
+      }
+    }
+  }
+
+  /**
+   * Validate dependencies for a new task
+   * Returns error message if invalid, null if valid
+   */
+  validateDependencies(dependsOn: string[], newTaskId?: string): string | null {
+    if (!dependsOn || dependsOn.length === 0) {
+      return null;
+    }
+
+    // Check if all dependencies exist
+    for (const depId of dependsOn) {
+      const normalizedDepId = normalizeTaskId(depId);
+      if (!this.tasks.has(normalizedDepId)) {
+        return `Dependency task '${depId}' not found`;
+      }
+    }
+
+    // Check for circular dependencies (only if newTaskId provided)
+    if (newTaskId && hasCircularDependency(newTaskId, dependsOn, this.tasks)) {
+      return 'Circular dependency detected';
+    }
+
+    return null;
+  }
+
+  /**
+   * Get dependency status info for a task
+   */
+  getDependencyStatus(taskId: string): { satisfied: boolean; missing: string[]; failed: string[]; pending: string[] } | null {
+    const task = this.getTask(taskId);
+    if (!task || !task.dependsOn) {
+      return null;
+    }
+    return areDependenciesSatisfied(task, this.tasks);
   }
 
   /**
@@ -223,12 +354,23 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[] }): TaskState {
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
+    
+    // Determine initial status based on dependencies
+    let initialStatus = TaskStatus.PENDING;
+    const dependsOn = options?.dependsOn?.filter(d => d.trim()) || [];
+    
+    if (dependsOn.length > 0) {
+      // Check if all dependencies are already completed
+      const { satisfied } = areDependenciesSatisfied({ dependsOn } as TaskState, this.tasks);
+      initialStatus = satisfied ? TaskStatus.PENDING : TaskStatus.WAITING;
+    }
+    
     const task: TaskState = {
       id,
-      status: TaskStatus.PENDING,
+      status: initialStatus,
       prompt,
       output: [],
       startTime: new Date().toISOString(),
@@ -237,6 +379,7 @@ class TaskManager {
       autonomous: options?.autonomous,
       isResume: options?.isResume,
       retryInfo: options?.retryInfo,
+      dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');
@@ -255,9 +398,16 @@ class TaskManager {
       return null;
     }
 
+    const previousStatus = task.status;
     const updated = { ...task, ...updates };
     this.tasks.set(normalizedId, updated);
     this.schedulePersist('state');
+    
+    // When a task completes, check if any waiting tasks can now run
+    if (updates.status === TaskStatus.COMPLETED && previousStatus !== TaskStatus.COMPLETED) {
+      this.processWaitingTasks();
+    }
+    
     return updated;
   }
 
