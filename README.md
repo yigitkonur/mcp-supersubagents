@@ -266,6 +266,65 @@ Force start a waiting task, bypassing failed or missing dependencies.
 - A dependency was deleted/cleared but the task should still run
 - You've manually resolved the issue the dependency was supposed to handle
 
+### `batch_spawn`
+
+Create multiple tasks at once with dependency chains in a single call.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tasks` | array | Yes | Array of task definitions (max 20) |
+| `tasks[].id` | string | Yes | Local reference ID for dependencies |
+| `tasks[].prompt` | string | Yes | Task prompt |
+| `tasks[].task_type` | string | No | Task template |
+| `tasks[].model` | string | No | Model override |
+| `tasks[].depends_on` | string[] | No | Local IDs or existing task IDs |
+| `cwd` | string | No | Working directory for all tasks |
+| `autonomous` | boolean | No | Run without prompts (default: true) |
+
+**Example - Build Pipeline:**
+```json
+{
+  "tasks": [
+    { "id": "build", "prompt": "Build the project" },
+    { "id": "test", "prompt": "Run tests", "depends_on": ["build"] },
+    { "id": "deploy", "prompt": "Deploy to staging", "depends_on": ["test"] }
+  ]
+}
+```
+
+**Example - Fan-out/Fan-in:**
+```json
+{
+  "tasks": [
+    { "id": "setup", "prompt": "Setup environment" },
+    { "id": "api", "prompt": "Build API", "depends_on": ["setup"] },
+    { "id": "web", "prompt": "Build Web", "depends_on": ["setup"] },
+    { "id": "mobile", "prompt": "Build Mobile", "depends_on": ["setup"] },
+    { "id": "integrate", "prompt": "Integration tests", "depends_on": ["api", "web", "mobile"] }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "created": 3,
+  "tasks": [
+    { "local_id": "build", "task_id": "brave-tiger-42", "status": "pending" },
+    { "local_id": "test", "task_id": "clever-fox-99", "status": "waiting", "depends_on": ["brave-tiger-42"] },
+    { "local_id": "deploy", "task_id": "happy-panda-88", "status": "waiting", "depends_on": ["clever-fox-99"] }
+  ],
+  "id_map": { "build": "brave-tiger-42", "test": "clever-fox-99", "deploy": "happy-panda-88" }
+}
+```
+
+**Validation:**
+- Dependencies must reference earlier tasks in the batch or existing task IDs
+- No duplicate local IDs allowed
+- Max 20 tasks per batch
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.
