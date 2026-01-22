@@ -9,6 +9,7 @@ import { getTaskStatusTool, handleGetTaskStatus } from './tools/get-status.js';
 import { listTasksTool, handleListTasks } from './tools/list-tasks.js';
 import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
 import { clearTasksTool, handleClearTasks } from './tools/clear-tasks.js';
+import { retryTaskTool, handleRetryTask } from './tools/retry-task.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled } from './services/process-spawner.js';
@@ -24,16 +25,20 @@ taskManager.onRetry(async (task) => {
   
   console.error(`[index] Retrying task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
   
-  // Spawn a new process with the same parameters, carrying forward retry info
-  spawnCopilotProcess({
-    prompt: task.prompt,
-    cwd: task.cwd,
-    model: task.model,
-    autonomous: task.autonomous ?? true,
-    retryInfo: task.retryInfo,
-  }).catch(err => {
+  try {
+    // Spawn a new process with the same parameters, carrying forward retry info
+    const newTaskId = await spawnCopilotProcess({
+      prompt: task.prompt,
+      cwd: task.cwd,
+      model: task.model,
+      autonomous: task.autonomous ?? true,
+      retryInfo: task.retryInfo,
+    });
+    return newTaskId;
+  } catch (err) {
     console.error(`[index] Failed to retry task ${task.id}:`, err);
-  });
+    return undefined;
+  }
 });
 
 server.oninitialized = async () => {
@@ -51,7 +56,7 @@ server.oninitialized = async () => {
   taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool];
+const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -64,7 +69,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'get_status': return handleGetTaskStatus(args);
     case 'list_tasks': return handleListTasks(args);
     case 'resume_task': return handleResumeTask(args);
-    case 'clear_tasks': return handleClearTasks(args);
+    case 'clear_tasks': return handleClearTasks(request.params.arguments);
+    case 'retry_task': return handleRetryTask(request.params.arguments);
     default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
   }
 });

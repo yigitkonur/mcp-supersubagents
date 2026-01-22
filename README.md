@@ -147,6 +147,32 @@ Clear all persisted tasks for the current workspace.
 
 **⚠️ CAUTION:** This permanently deletes all task history for the current workspace.
 
+### `retry_task`
+
+Manually trigger immediate retry of a rate-limited task without waiting for the scheduled retry time.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | string | Yes | The rate-limited task ID to retry |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "original_task_id": "brave-tiger-42",
+  "new_task_id": "clever-fox-99",
+  "retry_count": 2,
+  "message": "Retry triggered. New task clever-fox-99 created.",
+  "next_action": "get_status",
+  "next_action_args": { "task_id": "clever-fox-99" }
+}
+```
+
+**Requirements:**
+- Task must be in `rate_limited` status
+- Task must not have exceeded max retries (6)
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.

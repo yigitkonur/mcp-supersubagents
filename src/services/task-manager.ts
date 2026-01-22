@@ -16,7 +16,7 @@ class TaskManager {
   private persistDebounceMs = 100;
   private outputPersistDebounceMs = 1000;
   private lastPersistTrigger: 'state' | 'output' = 'state';
-  private retryCallback: ((task: TaskState) => void) | null = null;
+  private retryCallback: ((task: TaskState) => Promise<string | undefined>) | null = null;
 
   constructor() {
     this.startCleanup();
@@ -45,8 +45,9 @@ class TaskManager {
 
   /**
    * Register a callback to be called when a rate-limited task should be retried
+   * Callback should return the new task ID
    */
-  onRetry(callback: (task: TaskState) => void): void {
+  onRetry(callback: (task: TaskState) => Promise<string | undefined>): void {
     this.retryCallback = callback;
   }
 
@@ -112,6 +113,41 @@ class TaskManager {
     const count = this.tasks.size;
     this.tasks.clear();
     return count;
+  }
+
+  /**
+   * Manually trigger retry of a rate-limited task
+   * Returns the new task ID on success
+   */
+  async triggerManualRetry(taskId: string): Promise<{ success: boolean; newTaskId?: string; error?: string }> {
+    const normalizedId = normalizeTaskId(taskId);
+    const task = this.tasks.get(normalizedId);
+    
+    if (!task) {
+      return { success: false, error: 'Task not found' };
+    }
+    
+    if (task.status !== TaskStatus.RATE_LIMITED) {
+      return { success: false, error: `Task is not rate-limited (status: ${task.status})` };
+    }
+    
+    if (!this.retryCallback) {
+      return { success: false, error: 'No retry callback registered' };
+    }
+    
+    // Mark original task as failed (manually retried)
+    this.updateTask(task.id, {
+      status: TaskStatus.FAILED,
+      error: `Manually retried (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
+    });
+    
+    // Trigger the retry callback - it will spawn a new task and return its ID
+    const newTaskId = await this.retryCallback(task);
+    
+    return { 
+      success: true, 
+      newTaskId: newTaskId || 'unknown',
+    };
   }
 
   /**
