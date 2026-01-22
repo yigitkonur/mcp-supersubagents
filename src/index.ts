@@ -10,6 +10,7 @@ import { listTasksTool, handleListTasks } from './tools/list-tasks.js';
 import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
 import { clearTasksTool, handleClearTasks } from './tools/clear-tasks.js';
 import { retryTaskTool, handleRetryTask } from './tools/retry-task.js';
+import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled } from './services/process-spawner.js';
@@ -56,7 +57,7 @@ server.oninitialized = async () => {
   taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool];
+const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -71,6 +72,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'resume_task': return handleResumeTask(args);
     case 'clear_tasks': return handleClearTasks(request.params.arguments);
     case 'retry_task': return handleRetryTask(request.params.arguments);
+    case 'cancel_task': return handleCancelTask(request.params.arguments);
     default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
   }
 });

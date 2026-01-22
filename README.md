@@ -173,6 +173,31 @@ Manually trigger immediate retry of a rate-limited task without waiting for the 
 - Task must be in `rate_limited` status
 - Task must not have exceeded max retries (6)
 
+### `cancel_task`
+
+Cancel a running or pending task by killing its process.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task_id` | string | Yes | The task ID to cancel |
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "task_id": "brave-tiger-42",
+  "previous_status": "running",
+  "new_status": "cancelled",
+  "message": "Task brave-tiger-42 cancelled successfully",
+  "had_process": true
+}
+```
+
+**Requirements:**
+- Task must be in `running` or `pending` status
+- Sends SIGTERM to kill the process
+
 ## Rate Limit Auto-Retry
 
 Tasks that fail due to rate limiting are automatically detected and scheduled for retry.
