@@ -32,6 +32,7 @@ npm install && npm run build
 | `cancel_task` | Kill a running/pending task (SIGTERM). |
 | `force_start` | Start a waiting task, bypassing dependencies. |
 | `clear_tasks` | Delete all tasks for workspace. Requires `confirm: true`. |
+| `stream_output` | Get incremental output with offset. Efficient for streaming. |
 
 ## Task Statuses
 
@@ -83,6 +84,17 @@ Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 4
 
 ### Persistence
 Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts.
+
+### Output Streaming
+```json
+// First call
+{ "task_id": "brave-tiger-42", "offset": 0 }
+// Response: { "lines": [...], "next_offset": 50, "has_more": true }
+
+// Subsequent calls
+{ "task_id": "brave-tiger-42", "offset": 50 }
+```
+Use `next_offset` from response to get new lines without re-fetching.
 
 ### Polling Backoff
 Response includes `retry_after_seconds` (30s → 60s → 120s → 180s) to prevent excessive polling.

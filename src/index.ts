@@ -13,6 +13,7 @@ import { retryTaskTool, handleRetryTask } from './tools/retry-task.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { forceStartTool, handleForceStart } from './tools/force-start.js';
 import { batchSpawnTool, handleBatchSpawn } from './tools/batch-spawn.js';
+import { streamOutputTool, handleStreamOutput } from './tools/stream-output.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled } from './services/process-spawner.js';
@@ -67,7 +68,7 @@ server.oninitialized = async () => {
   taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool];
+const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool, streamOutputTool];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -85,6 +86,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'cancel_task': return handleCancelTask(request.params.arguments);
     case 'force_start': return handleForceStart(request.params.arguments);
     case 'batch_spawn': return handleBatchSpawn(request.params.arguments);
+    case 'stream_output': return handleStreamOutput(request.params.arguments);
     default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
   }
 });
