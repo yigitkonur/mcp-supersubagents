@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { TaskStatus, SpawnOptions, TaskState } from '../types.js';
-import { DEFAULT_MODEL } from '../models.js';
+import { resolveModel } from '../models.js';
 import { isRateLimitError, createRetryInfo } from './retry-queue.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
@@ -18,7 +18,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     ? options.cwd
     : clientContext.getDefaultCwd();
 
-  const model = options.model || DEFAULT_MODEL;
+  const model = resolveModel(options.model);
 
   const task = taskManager.createTask(prompt, cwd, model, {
     autonomous: options.autonomous ?? true,
@@ -63,7 +63,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
 export async function executeWaitingTask(task: TaskState): Promise<void> {
   const prompt = task.prompt?.trim() || '';
   const cwd = task.cwd || clientContext.getDefaultCwd();
-  const model = task.model || DEFAULT_MODEL;
+  const model = resolveModel(task.model);
 
   const args: string[] = [];
 
@@ -338,6 +338,17 @@ async function runProcess(
       await handleRateLimit(taskId, cwd, timeout, 1, 'Simulated: too many requests');
       return;
     }
+
+    // Event-driven status update: detect process exit immediately
+    proc.on('exit', (code, signal) => {
+      const currentTask = taskManager.getTask(taskId);
+      // Only update if still marked as RUNNING (avoid overwriting intentional cancellations)
+      if (currentTask?.status === TaskStatus.RUNNING) {
+        console.error(`[process-spawner] Process exit event for ${taskId}: code=${code}, signal=${signal}`);
+        // Let the main await handle the actual status update with proper error detection
+        // This ensures rate limit detection still works
+      }
+    });
 
     if (proc.stdout) {
       let buffer = '';

@@ -112,19 +112,23 @@ interface TaskStatusResult {
 // Track check counts per task for exponential backoff
 const taskCheckCounts = new Map<string, number>();
 
-function getTaskStatus(taskId: string): TaskStatusResult {
-  const normalizedId = taskId.toLowerCase().trim();
-  const task = taskManager.getTask(normalizedId);
-
-  if (!task) {
-    return {
-      task_id: taskId,
-      status: 'not_found',
-      error: 'Task not found',
-      suggested_action: 'list_tasks'
-    };
+/**
+ * Check if a process is actually alive using signal 0
+ */
+function isProcessAlive(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0); // Signal 0 = check if process exists
+    return true;
+  } catch {
+    return false;
   }
+}
 
+/**
+ * Build TaskStatusResult from a task object
+ */
+function getTaskStatusFromTask(task: NonNullable<ReturnType<typeof taskManager.getTask>>, normalizedId: string): TaskStatusResult {
   // Increment check count for this task
   const checkCount = (taskCheckCounts.get(normalizedId) || 0) + 1;
   taskCheckCounts.set(normalizedId, checkCount);
@@ -141,6 +145,7 @@ function getTaskStatus(taskId: string): TaskStatusResult {
     session_id: task.sessionId || undefined,
     exit_code: task.exitCode,
     output: output.length > 50000 ? output.slice(-50000) : output,
+    error: task.error,
   };
 
   // Add retry command for non-terminal states
@@ -207,6 +212,41 @@ function getTaskStatus(taskId: string): TaskStatusResult {
   }
 
   return result;
+}
+
+function getTaskStatus(taskId: string): TaskStatusResult {
+  const normalizedId = taskId.toLowerCase().trim();
+  const task = taskManager.getTask(normalizedId);
+
+  if (!task) {
+    return {
+      task_id: taskId,
+      status: 'not_found',
+      error: 'Task not found',
+      suggested_action: 'list_tasks'
+    };
+  }
+
+  // Verify process liveness for RUNNING tasks
+  if (task.status === TaskStatus.RUNNING && task.pid) {
+    if (!isProcessAlive(task.pid)) {
+      // Process died but status wasn't updated - mark as failed
+      console.error(`[get-status] Detected dead process for task ${task.id} (pid=${task.pid})`);
+      taskManager.updateTask(task.id, {
+        status: TaskStatus.FAILED,
+        endTime: new Date().toISOString(),
+        error: 'Process exited unexpectedly (detected via liveness check)',
+        process: undefined,
+      });
+      // Re-fetch the updated task
+      const updatedTask = taskManager.getTask(normalizedId);
+      if (updatedTask) {
+        return getTaskStatusFromTask(updatedTask, normalizedId);
+      }
+    }
+  }
+
+  return getTaskStatusFromTask(task, normalizedId);
 }
 
 function formatSingleTaskStatus(result: TaskStatusResult): string {

@@ -20,6 +20,9 @@ import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled, checkClaudeCliInstalled } from './services/process-spawner.js';
 import { mcpText } from './utils/format.js';
 
+// Feature flags (off by default for cost control)
+const ENABLE_STREAMING = process.env.ENABLE_STREAMING === 'true';
+
 const server = new Server(
   { name: 'copilot-agent', version: '1.0.0' },
   { capabilities: { tools: {} } }
@@ -71,7 +74,12 @@ server.oninitialized = async () => {
   taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool, streamOutputTool, simulateRateLimitTool];
+const tools = [
+  spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool,
+  clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool,
+  ...(ENABLE_STREAMING ? [streamOutputTool] : []),
+  simulateRateLimitTool,
+];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -89,7 +97,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'cancel_task': return handleCancelTask(request.params.arguments);
     case 'force_start': return handleForceStart(request.params.arguments);
     case 'batch_spawn': return handleBatchSpawn(request.params.arguments);
-    case 'stream_output': return handleStreamOutput(request.params.arguments);
+    case 'stream_output': return ENABLE_STREAMING
+      ? handleStreamOutput(request.params.arguments)
+      : mcpText('**Error:** `stream_output` is disabled (experimental). Set `ENABLE_STREAMING=true` to enable.');
     case 'simulate_rate_limit': return handleSimulateRateLimit(request.params.arguments);
     default: return mcpText(`**Error:** Unknown tool \`${name}\``);
   }

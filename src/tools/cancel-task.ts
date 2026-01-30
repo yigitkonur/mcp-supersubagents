@@ -35,20 +35,20 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
 
     const previousStatus = task.status;
 
-    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING) {
+    const cancelResult = taskManager.cancelTask(taskId);
+
+    if (!cancelResult.success) {
       return mcpText(formatError(
-        `Cannot cancel task (status: ${displayStatus(task.status)})`,
-        'Only `running` or `pending` tasks can be cancelled.'
+        cancelResult.error || `Failed to cancel task **${task.id}**`,
+        'Only `running`, `pending`, or `waiting` tasks can be cancelled.'
       ));
     }
 
-    const cancelled = taskManager.cancelTask(taskId);
-
-    if (!cancelled) {
-      return mcpText(formatError(`Failed to cancel task **${task.id}**`));
+    let message = `Task **${task.id}** cancelled (was: ${displayStatus(previousStatus)}).`;
+    if (cancelResult.alreadyDead) {
+      message += '\nNote: process had already exited before cancellation.';
     }
-
-    return mcpText(`Task **${task.id}** cancelled (was: ${displayStatus(previousStatus)}).`);
+    return mcpText(message);
   } catch (error) {
     return mcpText(formatError(
       error instanceof Error ? error.message : 'Unknown error',

@@ -70,11 +70,26 @@ function areDependenciesSatisfied(task: TaskState, tasks: Map<string, TaskState>
 }
 const TASK_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const HEALTH_CHECK_INTERVAL_MS = 5 * 1000; // Check process health every 5 seconds
 const MAX_OUTPUT_LINES = 2000;
+
+/**
+ * Check if a process is actually alive using signal 0
+ */
+function isProcessAlive(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0); // Signal 0 = check if process exists
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 class TaskManager {
   private tasks: Map<string, TaskState> = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
   private currentCwd: string | null = null;
   private persistTimeout: NodeJS.Timeout | null = null;
   private persistDebounceMs = 100;
@@ -85,6 +100,7 @@ class TaskManager {
 
   constructor() {
     this.startCleanup();
+    this.startHealthCheck();
   }
 
   /**
@@ -357,6 +373,35 @@ class TaskManager {
     }, CLEANUP_INTERVAL_MS);
   }
 
+  /**
+   * Start periodic health check for running processes
+   * Detects zombie processes that exited without proper status update
+   */
+  private startHealthCheck(): void {
+    this.healthCheckInterval = setInterval(() => {
+      this.checkProcessHealth();
+    }, HEALTH_CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Check all RUNNING tasks to verify their processes are still alive
+   */
+  private checkProcessHealth(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status === TaskStatus.RUNNING && task.pid) {
+        if (!isProcessAlive(task.pid)) {
+          console.error(`[task-manager] Health check: detected dead process for task ${task.id} (pid=${task.pid})`);
+          this.updateTask(task.id, {
+            status: TaskStatus.FAILED,
+            endTime: new Date().toISOString(),
+            error: 'Process exited unexpectedly (detected via health check)',
+            process: undefined,
+          });
+        }
+      }
+    }
+  }
+
   private cleanup(): void {
     const now = Date.now();
     const toDelete: string[] = [];
@@ -480,35 +525,53 @@ class TaskManager {
     return tasks;
   }
 
-  cancelTask(id: string): boolean {
+  cancelTask(id: string): { success: boolean; alreadyDead?: boolean; error?: string } {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (!task) {
-      return false;
+      return { success: false, error: 'Task not found' };
     }
 
-    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING) {
-      return false;
+    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING && task.status !== TaskStatus.WAITING) {
+      return { success: false, error: `Task is not cancellable (status: ${task.status})` };
     }
 
+    let alreadyDead = false;
     if (task.process) {
-      try {
-        task.process.kill('SIGTERM');
-      } catch {
-        // Process may already be dead
+      // First check if process is actually alive
+      if (task.pid && !isProcessAlive(task.pid)) {
+        alreadyDead = true;
+        console.error(`[task-manager] Cancel: process for task ${task.id} was already dead (pid=${task.pid})`);
+      } else {
+        try {
+          task.process.kill('SIGTERM');
+        } catch (err) {
+          // Process may already be dead
+          alreadyDead = true;
+          console.error(`[task-manager] Cancel: kill failed for task ${task.id}: ${err}`);
+        }
       }
     }
 
     task.status = TaskStatus.CANCELLED;
     task.endTime = new Date().toISOString();
+    if (alreadyDead) {
+      task.error = 'Process had already exited before cancellation';
+    }
+    task.process = undefined;
     this.schedulePersist('state');
-    return true;
+    return { success: true, alreadyDead };
   }
 
   shutdown(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
+    }
+
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
     }
 
     if (this.persistTimeout) {
