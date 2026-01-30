@@ -1,5 +1,7 @@
 import type { ResultPromise } from 'execa';
 
+export type Provider = 'copilot' | 'claude-cli';
+
 export enum TaskStatus {
   PENDING = 'pending',
   WAITING = 'waiting',
@@ -40,6 +42,8 @@ export interface TaskState {
   timeout?: number;
   timeoutAt?: string;
   labels?: string[];
+  provider?: Provider;
+  fallbackAttempted?: boolean;
 }
 
 export interface SpawnOptions {
@@ -52,4 +56,6 @@ export interface SpawnOptions {
   retryInfo?: RetryInfo;
   dependsOn?: string[];
   labels?: string[];
+  provider?: Provider;
+  fallbackAttempted?: boolean;
 }

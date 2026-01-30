@@ -388,7 +388,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[] }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean }): TaskState {
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
     
@@ -416,6 +416,8 @@ class TaskManager {
       retryInfo: options?.retryInfo,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
+      provider: options?.provider,
+      fallbackAttempted: options?.fallbackAttempted,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');

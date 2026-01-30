@@ -14,9 +14,10 @@ import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { forceStartTool, handleForceStart } from './tools/force-start.js';
 import { batchSpawnTool, handleBatchSpawn } from './tools/batch-spawn.js';
 import { streamOutputTool, handleStreamOutput } from './tools/stream-output.js';
+import { simulateRateLimitTool, handleSimulateRateLimit } from './tools/simulate-rate-limit.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
-import { checkCopilotInstalled } from './services/process-spawner.js';
+import { checkCopilotInstalled, checkClaudeCliInstalled } from './services/process-spawner.js';
 
 const server = new Server(
   { name: 'copilot-agent', version: '1.0.0' },
@@ -37,6 +38,7 @@ taskManager.onRetry(async (task) => {
       model: task.model,
       autonomous: task.autonomous ?? true,
       retryInfo: task.retryInfo,
+      fallbackAttempted: task.fallbackAttempted,
     });
     return newTaskId;
   } catch (err) {
@@ -68,7 +70,7 @@ server.oninitialized = async () => {
   taskManager.setCwd(cwd);
 };
 
-const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool, streamOutputTool];
+const tools = [spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool, clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool, streamOutputTool, simulateRateLimitTool];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
@@ -87,12 +89,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'force_start': return handleForceStart(request.params.arguments);
     case 'batch_spawn': return handleBatchSpawn(request.params.arguments);
     case 'stream_output': return handleStreamOutput(request.params.arguments);
+    case 'simulate_rate_limit': return handleSimulateRateLimit(request.params.arguments);
     default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
   }
 });
 
 async function main() {
   if (!checkCopilotInstalled()) console.error('Warning: Copilot CLI not found');
+  if (!checkClaudeCliInstalled()) {
+    console.error('Warning: Claude CLI not found - fallback on rate limit will not be available');
+  } else {
+    console.error('Info: Claude CLI available for rate limit fallback');
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.on('SIGINT', () => { taskManager.shutdown(); process.exit(0); });

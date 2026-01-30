@@ -61,6 +61,8 @@ interface TaskStatusResult {
     time_remaining_ms: number;
   };
   labels?: string[];
+  provider?: string;
+  fallback_attempted?: boolean;
 }
 
 // Track check counts per task for exponential backoff
@@ -150,6 +152,14 @@ function getTaskStatus(taskId: string): TaskStatusResult {
   // Add labels if present
   if (task.labels && task.labels.length > 0) {
     result.labels = task.labels;
+  }
+
+  // Add provider info
+  if (task.provider) {
+    result.provider = task.provider;
+  }
+  if (task.fallbackAttempted) {
+    result.fallback_attempted = true;
   }
 
   return result;

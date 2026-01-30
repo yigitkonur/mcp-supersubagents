@@ -69,7 +69,15 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
       if (t.labels && t.labels.length > 0) {
         taskInfo.labels = t.labels;
       }
-      
+
+      // Add provider info
+      if (t.provider) {
+        taskInfo.provider = t.provider;
+      }
+      if (t.fallbackAttempted) {
+        taskInfo.fallback_attempted = true;
+      }
+
       return taskInfo;
     });
 
