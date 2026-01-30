@@ -10,6 +10,41 @@ import {
 // Retry timing configuration (exponential backoff)
 const RETRY_INTERVALS = [30, 60, 120, 180]; // seconds: 30s -> 1m -> 2m -> 3m (then stick with 3m)
 
+// Polling throttle: block agents that spam get_status too fast
+const THROTTLE_WINDOW_MS = 30_000;  // 30-second sliding window
+const THROTTLE_THRESHOLD = 3;        // 3 calls within window triggers throttle
+const THROTTLE_SLEEP_MS  = 59_000;  // sleep 59 seconds when triggered
+const callTimestamps: number[] = [];
+
+async function applyThrottle(): Promise<string | null> {
+  const now = Date.now();
+
+  // Evict timestamps older than the window
+  while (callTimestamps.length > 0 && callTimestamps[0] < now - THROTTLE_WINDOW_MS) {
+    callTimestamps.shift();
+  }
+
+  // Record this call
+  callTimestamps.push(now);
+
+  // If threshold exceeded, sleep then return throttle message
+  if (callTimestamps.length >= THROTTLE_THRESHOLD) {
+    const sleepSeconds = Math.ceil(THROTTLE_SLEEP_MS / 1000);
+    await new Promise(resolve => setTimeout(resolve, THROTTLE_SLEEP_MS));
+    // Reset window after sleeping
+    callTimestamps.length = 0;
+    return [
+      `**Throttled.** You called \`get_status\` ${THROTTLE_THRESHOLD}+ times in ${THROTTLE_WINDOW_MS / 1000}s.`,
+      `Waited ${sleepSeconds}s before responding.`,
+      '',
+      `You MUST run \`sleep ${sleepSeconds}\` before calling \`get_status\` again.`,
+      'Do not poll rapidly -- tasks take time to complete.',
+    ].join('\n');
+  }
+
+  return null;
+}
+
 function getRetryCommand(task: { status: TaskStatus }, waitSeconds: number): string | undefined {
   if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
     return undefined;
@@ -290,6 +325,12 @@ function formatBatchTaskStatus(results: TaskStatusResult[]): string {
 }
 
 export async function handleGetTaskStatus(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+  // Throttle rapid polling -- may sleep 59s and return early
+  const throttleMsg = await applyThrottle();
+  if (throttleMsg) {
+    return mcpText(throttleMsg);
+  }
+
   try {
     const rawTaskId = (args as any)?.task_id || (args as any)?.taskId;
 
