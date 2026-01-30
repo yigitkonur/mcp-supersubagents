@@ -55,16 +55,20 @@ function getRetryCommand(task: { status: TaskStatus }, waitSeconds: number): str
 
 export const getTaskStatusTool = {
   name: 'get_status',
-  description: `Check task status. Returns status, output, session_id, exit_code. Supports batch checking with array of task_ids. Includes retry_after_seconds for polling guidance. Task IDs are case-insensitive.`,
+  description: `Check task status. Returns status, output, session_id, exit_code. Supports batch checking with array of task_ids. Task IDs are case-insensitive.
+
+IMPORTANT: Do NOT poll this rapidly. The response includes a \`sleep N\` command -- you MUST run it before calling get_status again. If you call get_status 3+ times within 30 seconds, the server will force a 59-second wait before responding. Always run the suggested sleep command between status checks. Tasks take time -- be patient.
+
+To check multiple tasks at once, pass an array of task_ids instead of calling get_status repeatedly for each one.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         oneOf: [
           { type: 'string', description: 'Single task ID' },
-          { type: 'array', items: { type: 'string' }, description: 'Array of task IDs' },
+          { type: 'array', items: { type: 'string' }, description: 'Array of task IDs -- use this to check multiple tasks in a single call instead of calling get_status multiple times' },
         ],
-        description: 'Task ID(s) to check.',
+        description: 'Task ID(s) to check. Pass an array to check multiple tasks in one call.',
       },
     },
     required: ['task_id'],

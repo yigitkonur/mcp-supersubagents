@@ -5,7 +5,7 @@ import { mcpText, formatError, formatLabels, formatTable, displayStatus, join } 
 
 export const listTasksTool = {
   name: 'list_tasks',
-  description: `List all tasks. Filter by status or label. Returns count and task array.`,
+  description: `List all tasks. Filter by status or label. Use this to see what tasks exist before spawning new ones, and to find task IDs for get_status.`,
   inputSchema: {
     type: 'object' as const,
     properties: {

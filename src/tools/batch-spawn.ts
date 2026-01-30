@@ -22,7 +22,17 @@ const BatchSpawnSchema = z.object({
 
 export const batchSpawnTool = {
   name: 'batch_spawn',
-  description: `Create multiple tasks with dependency chains in one call. Use local 'id' fields for depends_on references within the batch. Max 20 tasks. Returns id_map of local_id → task_id.`,
+  description: `Create multiple tasks with dependency chains in ONE atomic call.
+
+WHEN TO USE: Only when you have 2+ small, well-defined tasks that have explicit cross-dependencies and must be set up together (e.g. "build step" -> "test step" -> "deploy step"). This is for DAG-style pipelines where task B literally cannot start until task A completes.
+
+WHEN NOT TO USE (prefer spawn_task instead):
+- For independent tasks with no dependencies -- just call spawn_task multiple times
+- For complex tasks that need detailed, unique prompts -- spawn_task lets you craft each prompt individually
+- For most work -- individual spawn_task calls give you better control and produce better results
+- When tasks are large or nuanced -- batch prompts tend to be rushed and vague
+
+Each task in the batch still runs as an isolated agent with NO shared context. Every prompt must be fully self-contained with all file paths, context, and instructions -- just like spawn_task.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -31,20 +41,26 @@ export const batchSpawnTool = {
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: 'Local ID for dependency references.' },
-            prompt: { type: 'string', description: 'Task instructions.' },
-            task_type: { type: 'string', enum: TASK_TYPE_IDS, description: 'Task template.' },
-            model: { type: 'string', enum: MODEL_IDS, description: 'Model override.' },
-            depends_on: { type: 'array', items: { type: 'string' }, description: 'Local or existing task IDs.' },
-            labels: { type: 'array', items: { type: 'string' }, description: 'Labels (max 10).' },
+            id: { type: 'string', description: 'Local ID used to reference this task in depends_on of other tasks within this batch.' },
+            prompt: {
+              type: 'string',
+              description: `Complete, self-contained instructions for this agent. Same rules as spawn_task: the agent has NO conversation history or shared context. Include all file paths (absolute), full context, and success criteria. Do NOT write vague one-liners -- each task needs a detailed brief.`,
+            },
+            task_type: { type: 'string', enum: TASK_TYPE_IDS, description: 'Agent template: super-coder, super-planner, super-researcher, or super-tester.' },
+            model: { type: 'string', enum: MODEL_IDS, description: 'Model override for this specific task.' },
+            depends_on: { type: 'array', items: { type: 'string' }, description: 'Local IDs (from this batch) or existing task IDs that must complete first. Dependencies must appear earlier in the array.' },
+            labels: { type: 'array', items: { type: 'string' }, description: 'Labels for filtering (max 10).' },
           },
           required: ['id', 'prompt'],
         },
-        description: 'Task definitions (max 20).',
+        description: 'Task definitions in dependency order (max 20). Tasks listed first can be depended on by tasks listed later.',
         minItems: 1,
         maxItems: 20,
       },
-      cwd: { type: 'string', description: 'Working directory.' },
+      cwd: {
+        type: 'string',
+        description: `Shared working directory for ALL tasks in this batch. Pass the absolute path to your current working directory. For git worktrees, pass the actual worktree path, not the main repo root.`,
+      },
       autonomous: { type: 'boolean', description: 'Run without prompts. Default: true.' },
     },
     required: ['tasks'],

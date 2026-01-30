@@ -11,7 +11,7 @@ const StreamOutputSchema = z.object({
 
 export const streamOutputTool = {
   name: 'stream_output',
-  description: `Get incremental output from a task. Use offset to get new lines since last call. Efficient for streaming without re-fetching entire output.`,
+  description: `Get incremental output from a task. Use offset to get new lines since last call. This is the preferred way to monitor task output -- unlike get_status, this tool is not throttled and returns only the new output lines you haven't seen yet.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
