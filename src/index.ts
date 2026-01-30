@@ -18,6 +18,7 @@ import { simulateRateLimitTool, handleSimulateRateLimit } from './tools/simulate
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled, checkClaudeCliInstalled } from './services/process-spawner.js';
+import { mcpText } from './utils/format.js';
 
 const server = new Server(
   { name: 'copilot-agent', version: '1.0.0' },
@@ -90,7 +91,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'batch_spawn': return handleBatchSpawn(request.params.arguments);
     case 'stream_output': return handleStreamOutput(request.params.arguments);
     case 'simulate_rate_limit': return handleSimulateRateLimit(request.params.arguments);
-    default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
+    default: return mcpText(`**Error:** Unknown tool \`${name}\``);
   }
 });
 

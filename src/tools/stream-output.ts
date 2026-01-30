@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
+import { mcpText, formatError, displayStatus, join } from '../utils/format.js';
 
 const StreamOutputSchema = z.object({
   task_id: z.string().min(1),
@@ -35,28 +36,19 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
   try {
     const parsed = StreamOutputSchema.parse(args || {});
     const taskId = parsed.task_id.toLowerCase().trim();
-    
+
     const task = taskManager.getTask(taskId);
-    
+
     if (!task) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: 'Task not found',
-            task_id: parsed.task_id,
-            suggested_action: 'list_tasks',
-          }),
-        }],
-      };
+      return mcpText(formatError('Task not found', 'Use `list_tasks` to find valid task IDs.'));
     }
 
     const totalLines = task.output.length;
     const offset = Math.min(parsed.offset, totalLines);
-    const lines = task.output.slice(offset, offset + parsed.limit);
-    const nextOffset = offset + lines.length;
+    const outputLines = task.output.slice(offset, offset + parsed.limit);
+    const nextOffset = offset + outputLines.length;
     const hasMore = nextOffset < totalLines;
-    
+
     const isTerminal = [
       TaskStatus.COMPLETED,
       TaskStatus.FAILED,
@@ -64,31 +56,41 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
       TaskStatus.TIMED_OUT,
     ].includes(task.status);
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          task_id: task.id,
-          status: task.status,
-          lines,
-          offset,
-          next_offset: nextOffset,
-          total_lines: totalLines,
-          has_more: hasMore,
-          is_complete: isTerminal && !hasMore,
-          ...(isTerminal && !hasMore ? { exit_code: task.exitCode } : {}),
-          ...(task.error && isTerminal ? { error: task.error } : {}),
-        }),
-      }],
-    };
+    // Build headline
+    const statusStr = displayStatus(task.status);
+    let rangeStr: string;
+    if (outputLines.length > 0) {
+      rangeStr = `lines ${offset}-${nextOffset - 1} of ${totalLines}`;
+    } else {
+      rangeStr = `${totalLines} lines`;
+    }
+    const exitInfo = isTerminal && task.exitCode !== undefined ? `, exit code: ${task.exitCode}` : '';
+    const headline = `**${task.id}** -- ${statusStr} (${rangeStr}${exitInfo})`;
+
+    // Build body
+    let body: string;
+    if (outputLines.length > 0) {
+      body = outputLines.map(l => `> ${l}`).join('\n');
+    } else {
+      body = 'No output yet.';
+    }
+
+    // Build footer
+    let footer: string;
+    if (hasMore) {
+      const remaining = totalLines - nextOffset;
+      footer = `${remaining} more lines available. Use offset \`${nextOffset}\` to continue.`;
+    } else if (isTerminal) {
+      footer = 'All output retrieved.';
+    } else {
+      footer = 'Waiting for more output...';
+    }
+
+    // Add error if terminal and has error
+    const errorLine = task.error && isTerminal ? `**Error:** ${task.error}` : undefined;
+
+    return mcpText(join(headline, '', body, '', errorLine, footer));
   } catch (error) {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }),
-      }],
-    };
+    return mcpText(formatError(error instanceof Error ? error.message : 'Unknown error'));
   }
 }

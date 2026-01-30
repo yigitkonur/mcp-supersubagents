@@ -1,6 +1,11 @@
 import { GetTaskStatusSchema } from '../utils/sanitize.js';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
+import {
+  mcpText, formatError, formatLabelsLine, formatLabels,
+  formatDuration, formatOutputBlock, formatRetryHint,
+  formatTable, displayStatus, join,
+} from '../utils/format.js';
 
 // Retry timing configuration (exponential backoff)
 const RETRY_INTERVALS = [30, 60, 120, 180]; // seconds: 30s -> 1m -> 2m -> 3m (then stick with 3m)
@@ -9,7 +14,7 @@ function getRetryCommand(task: { status: TaskStatus }, waitSeconds: number): str
   if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
     return undefined;
   }
-  
+
   return `sleep ${waitSeconds}`;
 }
 
@@ -71,11 +76,11 @@ const taskCheckCounts = new Map<string, number>();
 function getTaskStatus(taskId: string): TaskStatusResult {
   const normalizedId = taskId.toLowerCase().trim();
   const task = taskManager.getTask(normalizedId);
-  
+
   if (!task) {
-    return { 
-      task_id: taskId, 
-      status: 'not_found', 
+    return {
+      task_id: taskId,
+      status: 'not_found',
       error: 'Task not found',
       suggested_action: 'list_tasks'
     };
@@ -165,30 +170,139 @@ function getTaskStatus(taskId: string): TaskStatusResult {
   return result;
 }
 
+function formatSingleTaskStatus(result: TaskStatusResult): string {
+  if (result.status === 'not_found') {
+    return formatError('Task not found', 'Use `list_tasks` to find valid task IDs.');
+  }
+
+  const parts: string[] = [];
+
+  // Headline: **task-id** -- status (provider)
+  const statusStr = displayStatus(result.status);
+  const providerStr = result.provider ? ` (${result.provider})` : '';
+  const exitStr = result.exit_code !== undefined ? ` (exit code: ${result.exit_code})` : '';
+  let headline = `**${result.task_id}** -- ${statusStr}${providerStr}${exitStr}`;
+  if (result.fallback_attempted) headline += ' [fallback]';
+  parts.push(headline);
+
+  // Labels
+  const labelsLine = formatLabelsLine(result.labels);
+  if (labelsLine) parts.push(labelsLine);
+
+  // Timeout info
+  if (result.timeout_info) {
+    parts.push(`Timeout: ${formatDuration(result.timeout_info.time_remaining_ms)} remaining`);
+  }
+
+  // Dependencies
+  if (result.dependency_info) {
+    const deps = result.dependency_info.depends_on.map(d => {
+      if (result.dependency_info!.pending.includes(d)) return `\`${d}\` (pending)`;
+      if (result.dependency_info!.failed.includes(d)) return `\`${d}\` (failed)`;
+      if (result.dependency_info!.missing.includes(d)) return `\`${d}\` (missing)`;
+      return `\`${d}\` (done)`;
+    });
+    parts.push(`Depends on: ${deps.join(', ')}`);
+  }
+
+  // Retry info (rate-limited)
+  if (result.retry_info) {
+    parts.push(`Retry ${result.retry_info.retry_count}/${result.retry_info.max_retries} -- next at ${result.retry_info.next_retry_time}`);
+    parts.push(`Will auto-retry: ${result.retry_info.will_auto_retry ? 'yes' : 'no'}`);
+  }
+
+  // Error
+  if (result.error) {
+    parts.push('');
+    parts.push(`**Error:** ${result.error}`);
+  }
+
+  // Output
+  if (result.output && result.output.trim()) {
+    parts.push('');
+    const label = result.status === 'running' ? 'Latest output' : 'Output';
+    parts.push(formatOutputBlock(result.output, label));
+  }
+
+  // Session hint for resume
+  if (result.session_id && (result.status === 'completed' || result.status === 'failed')) {
+    parts.push('');
+    parts.push(`Session \`${result.session_id}\` available for \`resume_task\`.`);
+  }
+
+  // Retry hint
+  const retryHint = formatRetryHint(result.retry_command);
+  if (retryHint) {
+    parts.push('');
+    parts.push(retryHint);
+  }
+
+  // Rate-limited specific hint
+  if (result.status === 'rate_limited') {
+    parts.push('');
+    parts.push('Use `retry_task` to retry manually.');
+  }
+
+  return parts.join('\n');
+}
+
+function formatBatchTaskStatus(results: TaskStatusResult[]): string {
+  const parts: string[] = [];
+  parts.push(`## Task Status (${results.length} tasks)`);
+  parts.push('');
+
+  const rows = results.map(r => {
+    if (r.status === 'not_found') {
+      return [`**${r.task_id}**`, 'not found', '--'];
+    }
+    let statusStr = displayStatus(r.status);
+    if (r.provider) statusStr += ` (${r.provider})`;
+    if (r.exit_code !== undefined && (r.status === 'completed' || r.status === 'failed')) {
+      statusStr += ` (exit: ${r.exit_code})`;
+    }
+    if (r.dependency_info?.pending.length) {
+      statusStr += ` -> ${r.dependency_info.pending.join(', ')}`;
+    }
+    if (r.fallback_attempted) statusStr += ' [fallback]';
+    return [
+      `**${r.task_id}**`,
+      statusStr,
+      formatLabels(r.labels) || '--',
+    ];
+  });
+
+  parts.push(formatTable(['Task', 'Status', 'Labels'], rows));
+
+  // Add retry hint if any non-terminal task exists
+  const nonTerminalResults = results.filter(r =>
+    !['completed', 'failed', 'cancelled', 'timed_out', 'not_found'].includes(r.status)
+  );
+  if (nonTerminalResults.length > 0) {
+    const retrySeconds = nonTerminalResults
+      .filter(r => r.retry_after_seconds)
+      .map(r => r.retry_after_seconds!);
+    const maxRetry = retrySeconds.length > 0 ? Math.max(...retrySeconds) : 30;
+    parts.push('');
+    parts.push(`Run \`sleep ${maxRetry}\` then check again.`);
+  }
+
+  return parts.join('\n');
+}
+
 export async function handleGetTaskStatus(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const rawTaskId = (args as any)?.task_id || (args as any)?.taskId;
-    
+
     // Handle array of task IDs
     if (Array.isArray(rawTaskId)) {
       const results = rawTaskId.map(id => getTaskStatus(String(id)));
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ tasks: results }),
-        }],
-      };
+      return mcpText(formatBatchTaskStatus(results));
     }
-    
+
     // Handle single task ID
     const result = getTaskStatus(String(rawTaskId));
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify(result),
-      }],
-    };
+    return mcpText(formatSingleTaskStatus(result));
   } catch (error) {
-    return { content: [{ type: 'text', text: JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown' }) }] };
+    return mcpText(formatError(error instanceof Error ? error.message : 'Unknown'));
   }
 }

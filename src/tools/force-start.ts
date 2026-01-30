@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
-import { TaskStatus } from '../types.js';
+import { mcpText, formatError, join } from '../utils/format.js';
 
 const ForceStartSchema = z.object({
   task_id: z.string().min(1).describe('Task ID to force start'),
@@ -25,47 +25,24 @@ export async function handleForceStart(args: unknown): Promise<{ content: Array<
   try {
     const parsed = ForceStartSchema.parse(args || {});
     const taskId = parsed.task_id.toLowerCase().trim();
-    
+
     const result = await taskManager.forceStartTask(taskId);
-    
+
     if (!result.success) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: result.error,
-            task_id: parsed.task_id,
-            suggested_action: result.error?.includes('not found') ? 'list_tasks' : 'get_status',
-          }),
-        }],
-      };
+      const hint = result.error?.includes('not found')
+        ? 'Use `list_tasks` to find valid task IDs.'
+        : undefined;
+      return mcpText(formatError(result.error || 'Unknown error', hint));
     }
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          success: true,
-          task_id: result.taskId,
-          bypassed_deps: result.bypassedDeps,
-          new_status: 'pending',
-          message: `Task ${result.taskId} force started, bypassing ${result.bypassedDeps?.length || 0} dependencies`,
-          next_action: 'get_status',
-          next_action_args: { task_id: result.taskId },
-        }),
-      }],
-    };
+    return mcpText(join(
+      `Task **${result.taskId}** force-started, bypassing ${result.bypassedDeps?.length || 0} dependencies.`,
+      'Check status with `get_status`.'
+    ));
   } catch (error) {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          error: error instanceof Error ? error.message : 'Unknown error',
-          suggested_action: 'force_start',
-          suggestion: 'Ensure task_id is provided',
-        }),
-      }],
-    };
+    return mcpText(formatError(
+      error instanceof Error ? error.message : 'Unknown error',
+      'Ensure `task_id` is provided.'
+    ));
   }
 }

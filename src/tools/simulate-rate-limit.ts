@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
 import { createRetryInfo } from '../services/retry-queue.js';
+import { mcpText, formatError, join } from '../utils/format.js';
 
 const SimulateRateLimitSchema = z.object({
   prompt: z.string().min(1).max(50000).optional().default('Test task for rate limit simulation'),
@@ -57,32 +58,27 @@ export async function handleSimulateRateLimit(args: unknown): Promise<{ content:
       fallbackResult = await taskManager.triggerManualRetry(task.id);
     }
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          success: true,
-          task_id: task.id,
-          simulated: true,
-          fallback_triggered: fallbackResult?.success ?? false,
-          new_task_id: fallbackResult?.newTaskId,
-          message: fallbackResult?.success
-            ? `Rate limit simulated. Fallback retry triggered as task ${fallbackResult.newTaskId}. Check its status.`
-            : parsed.skip_fallback
-              ? 'Rate limit simulated. Task left in RATE_LIMITED state for inspection.'
-              : `Rate limit simulated but fallback trigger failed: ${fallbackResult?.error}`,
-          next_action: 'get_status',
-        }),
-      }],
-    };
+    let message: string;
+    if (fallbackResult?.success) {
+      message = join(
+        `[Debug] Rate limit simulated for **${task.id}**.`,
+        `Fallback retry triggered as **${fallbackResult.newTaskId}**.`,
+        'Check status with `get_status`.'
+      );
+    } else if (parsed.skip_fallback) {
+      message = join(
+        `[Debug] Rate limit simulated for **${task.id}**.`,
+        'Task left in `rate_limited` state for inspection.'
+      );
+    } else {
+      message = join(
+        `[Debug] Rate limit simulated for **${task.id}**.`,
+        `Fallback trigger failed: ${fallbackResult?.error || 'unknown error'}`
+      );
+    }
+
+    return mcpText(message);
   } catch (error) {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }),
-      }],
-    };
+    return mcpText(formatError(error instanceof Error ? error.message : 'Unknown error'));
   }
 }

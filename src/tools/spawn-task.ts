@@ -3,6 +3,7 @@ import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS, MODELS, DEFAULT_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, TASK_TYPES, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
+import { mcpText, formatError, join, formatLabels } from '../utils/format.js';
 
 export const spawnTaskTool = {
   name: 'spawn_task',
@@ -57,29 +58,26 @@ Models: ${MODEL_IDS.join(', ')}. Default: ${DEFAULT_MODEL}.`,
 export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const parsed = SpawnTaskSchema.parse(args);
-    
+
     // Validate dependencies if provided
     const dependsOn = parsed.depends_on?.filter((d: string) => d.trim()) || [];
     if (dependsOn.length > 0) {
       const validationError = taskManager.validateDependencies(dependsOn);
       if (validationError) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ 
-            error: validationError,
-            suggested_action: 'list_tasks',
-            suggestion: 'Ensure all dependency task IDs exist before creating dependent task'
-          }) }],
-        };
+        return mcpText(formatError(
+          validationError,
+          'Ensure all dependency task IDs exist.\nUse `list_tasks` to find valid task IDs.'
+        ));
       }
     }
-    
+
     let finalPrompt = parsed.prompt;
     if (parsed.task_type && isValidTaskType(parsed.task_type)) {
       finalPrompt = applyTemplate(parsed.task_type as TaskType, parsed.prompt);
     }
-    
+
     const labels = parsed.labels?.filter((l: string) => l.trim()) || [];
-    
+
     const taskId = await spawnCopilotProcess({
       prompt: finalPrompt,
       timeout: parsed.timeout,
@@ -93,23 +91,25 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
     const task = taskManager.getTask(taskId);
     const isWaiting = task?.status === 'waiting';
 
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ 
-        task_id: taskId,
-        status: task?.status || 'pending',
-        depends_on: dependsOn.length > 0 ? dependsOn : undefined,
-        message: isWaiting ? `Task queued, waiting for dependencies: ${dependsOn.join(', ')}` : undefined,
-        next_action: 'get_status',
-        next_action_args: { task_id: taskId }
-      }) }],
-    };
+    if (isWaiting) {
+      const depsList = dependsOn.map(d => `\`${d}\``).join(', ');
+      return mcpText(join(
+        `Task **${taskId}** spawned (waiting).`,
+        `Depends on: ${depsList}`,
+        '',
+        'Dependencies must complete before this task runs.',
+        'Check status with `get_status`.'
+      ));
+    }
+
+    return mcpText(join(
+      `Task **${taskId}** spawned (${task?.status || 'pending'}).`,
+      'Check status with `get_status`.'
+    ));
   } catch (error) {
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ 
-        error: error instanceof Error ? error.message : 'Unknown error',
-        suggested_action: 'spawn_task',
-        suggestion: 'Check prompt parameter is provided and valid'
-      }) }],
-    };
+    return mcpText(formatError(
+      error instanceof Error ? error.message : 'Unknown error',
+      'Check that the `prompt` parameter is provided and valid.'
+    ));
   }
 }

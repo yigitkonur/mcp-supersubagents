@@ -3,6 +3,7 @@ import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS } from '../models.js';
 import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
+import { mcpText, formatError, formatTable, join } from '../utils/format.js';
 
 const TaskDefinitionSchema = z.object({
   id: z.string().min(1).describe('Local reference ID for this task (used in depends_on)'),
@@ -60,22 +61,17 @@ interface CreatedTask {
 export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const parsed = BatchSpawnSchema.parse(args);
-    
+
     // Validate no duplicate local IDs
     const localIds = parsed.tasks.map(t => t.id);
     const duplicates = localIds.filter((id, i) => localIds.indexOf(id) !== i);
     if (duplicates.length > 0) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: `Duplicate local IDs: ${[...new Set(duplicates)].join(', ')}`,
-            suggestion: 'Each task must have a unique local ID',
-          }),
-        }],
-      };
+      return mcpText(formatError(
+        `Duplicate local IDs: ${[...new Set(duplicates)].join(', ')}`,
+        'Each task must have a unique local ID.'
+      ));
     }
-    
+
     // Validate dependency references (must be earlier in array or existing task)
     for (let i = 0; i < parsed.tasks.length; i++) {
       const task = parsed.tasks[i];
@@ -87,35 +83,25 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
             // Check if it's an existing task
             const existingTask = taskManager.getTask(depId);
             if (!existingTask) {
-              return {
-                content: [{
-                  type: 'text',
-                  text: JSON.stringify({
-                    error: `Task '${task.id}' depends on unknown '${depId}'`,
-                    suggestion: 'Dependencies must reference earlier tasks in batch or existing task IDs',
-                  }),
-                }],
-              };
+              return mcpText(formatError(
+                `Task '${task.id}' depends on unknown '${depId}'`,
+                'Dependencies must reference earlier tasks in batch or existing task IDs.'
+              ));
             }
           } else if (depIndex >= i) {
-            return {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  error: `Task '${task.id}' depends on '${depId}' which comes later in the batch`,
-                  suggestion: 'Reorder tasks so dependencies come before dependents',
-                }),
-              }],
-            };
+            return mcpText(formatError(
+              `Task '${task.id}' depends on '${depId}' which comes later in the batch`,
+              'Reorder tasks so dependencies come before dependents.'
+            ));
           }
         }
       }
     }
-    
+
     // Create tasks in order, mapping local IDs to real task IDs
     const idMap = new Map<string, string>();
     const createdTasks: CreatedTask[] = [];
-    
+
     for (const taskDef of parsed.tasks) {
       // Resolve depends_on from local IDs to real task IDs
       let realDependsOn: string[] | undefined;
@@ -128,13 +114,13 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
           return localId;
         });
       }
-      
+
       // Apply template if specified
       let finalPrompt = taskDef.prompt;
       if (taskDef.task_type && isValidTaskType(taskDef.task_type)) {
         finalPrompt = applyTemplate(taskDef.task_type as TaskType, taskDef.prompt);
       }
-      
+
       // Spawn the task
       const labels = taskDef.labels?.filter(l => l.trim()) || [];
       const taskId = await spawnCopilotProcess({
@@ -145,10 +131,10 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
         dependsOn: realDependsOn,
         labels: labels.length > 0 ? labels : undefined,
       });
-      
+
       // Map local ID to real task ID
       idMap.set(taskDef.id, taskId);
-      
+
       const task = taskManager.getTask(taskId);
       createdTasks.push({
         local_id: taskDef.id,
@@ -157,30 +143,21 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
         depends_on: realDependsOn,
       });
     }
-    
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          success: true,
-          created: createdTasks.length,
-          tasks: createdTasks,
-          id_map: Object.fromEntries(idMap),
-          next_action: 'get_status',
-          next_action_args: { task_id: createdTasks.map(t => t.task_id) },
-        }),
-      }],
-    };
+
+    const header = `## Batch Created (${createdTasks.length} tasks)`;
+    const rows = createdTasks.map(t => [
+      t.local_id,
+      `**${t.task_id}**`,
+      t.status,
+      t.depends_on?.join(', ') || '--',
+    ]);
+    const table = formatTable(['Local ID', 'Task ID', 'Status', 'Depends On'], rows);
+
+    return mcpText(join(header, '', table, '', 'Check all with `get_status`.'));
   } catch (error) {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          error: error instanceof Error ? error.message : 'Unknown error',
-          suggested_action: 'batch_spawn',
-          suggestion: 'Check tasks array format and dependencies',
-        }),
-      }],
-    };
+    return mcpText(formatError(
+      error instanceof Error ? error.message : 'Unknown error',
+      'Check tasks array format and dependencies.'
+    ));
   }
 }

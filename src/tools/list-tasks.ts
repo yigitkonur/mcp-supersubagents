@@ -1,6 +1,7 @@
 import { ListTasksSchema } from '../utils/sanitize.js';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
+import { mcpText, formatError, formatLabels, formatTable, displayStatus, join } from '../utils/format.js';
 
 export const listTasksTool = {
   name: 'list_tasks',
@@ -8,8 +9,8 @@ export const listTasksTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      status: { 
-        type: 'string', 
+      status: {
+        type: 'string',
         enum: ['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited', 'timed_out'],
         description: 'Filter by status.',
       },
@@ -26,84 +27,57 @@ export async function handleListTasks(args: unknown): Promise<{ content: Array<{
   try {
     const parsed = ListTasksSchema.parse(args || {});
     const allTasks = taskManager.getAllTasks();
-    
+
     let filtered = allTasks;
-    
+
     // Filter by status if provided
     if (parsed.status) {
       filtered = filtered.filter(t => t.status === parsed.status);
     }
-    
+
     // Filter by label if provided
     if (parsed.label) {
       filtered = filtered.filter(t => t.labels?.includes(parsed.label!));
     }
 
-    const tasks = filtered.map(t => {
-      const taskInfo: Record<string, unknown> = {
-        task_id: t.id,
-        status: t.status,
-        session_id: t.sessionId || undefined,
-      };
-      
-      // Add retry info for rate-limited tasks
+    if (filtered.length === 0) {
+      if (parsed.status || parsed.label) {
+        const filterParts = [
+          parsed.status ? `status: ${displayStatus(parsed.status)}` : '',
+          parsed.label ? `label: ${parsed.label}` : '',
+        ].filter(Boolean).join(', ');
+        return mcpText(`No tasks matching filter (${filterParts}).\nUse \`list_tasks\` without filters to see all.`);
+      }
+      return mcpText('No tasks found. Use `spawn_task` to create one.');
+    }
+
+    const filterLabel = parsed.status ? displayStatus(parsed.status) : 'total';
+    const header = `## Tasks (${filtered.length} ${filterLabel})`;
+
+    const rows = filtered.map(t => {
+      let statusStr = displayStatus(t.status);
+      if (t.provider) statusStr += ` (${t.provider})`;
+      if (t.status === TaskStatus.WAITING && t.dependsOn?.length) {
+        statusStr += ` -> ${t.dependsOn.join(', ')}`;
+      }
       if (t.status === TaskStatus.RATE_LIMITED && t.retryInfo) {
-        taskInfo.retry_count = t.retryInfo.retryCount;
-        taskInfo.next_retry = t.retryInfo.nextRetryTime;
-        taskInfo.will_auto_retry = t.retryInfo.retryCount < t.retryInfo.maxRetries;
+        statusStr += ` (retry ${t.retryInfo.retryCount}/${t.retryInfo.maxRetries})`;
       }
-      
-      // Add dependency info for waiting tasks
-      if (t.dependsOn && t.dependsOn.length > 0) {
-        taskInfo.depends_on = t.dependsOn;
-        if (t.status === TaskStatus.WAITING) {
-          const depStatus = taskManager.getDependencyStatus(t.id);
-          if (depStatus) {
-            taskInfo.deps_pending = depStatus.pending;
-            taskInfo.deps_failed = depStatus.failed.length > 0 ? depStatus.failed : undefined;
-          }
-        }
-      }
-      
-      // Add labels if present
-      if (t.labels && t.labels.length > 0) {
-        taskInfo.labels = t.labels;
-      }
+      if (t.fallbackAttempted) statusStr += ' [fallback]';
 
-      // Add provider info
-      if (t.provider) {
-        taskInfo.provider = t.provider;
-      }
-      if (t.fallbackAttempted) {
-        taskInfo.fallback_attempted = true;
-      }
-
-      return taskInfo;
+      return [
+        `**${t.id}**`,
+        statusStr,
+        formatLabels(t.labels) || '--',
+      ];
     });
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          count: tasks.length,
-          tasks,
-          next_action: tasks.length > 0 ? 'get_status' : 'spawn_task',
-          next_action_hint: tasks.length > 0 
-            ? 'Use get_status with task_id array to check multiple tasks at once'
-            : 'No tasks found. Use spawn_task to create one.'
-        }),
-      }],
-    };
+    const table = formatTable(['Task', 'Status', 'Labels'], rows);
+    return mcpText(join(header, '', table, '', 'Check details with `get_status`.'));
   } catch (error) {
-    return { 
-      content: [{ 
-        type: 'text', 
-        text: JSON.stringify({ 
-          error: error instanceof Error ? error.message : 'Unknown',
-          suggested_action: 'list_tasks',
-          suggestion: 'Check status filter is valid: pending, running, completed, failed, cancelled, rate_limited'
-        }) 
-      }] 
-    };
+    return mcpText(formatError(
+      error instanceof Error ? error.message : 'Unknown',
+      'Check status filter is valid: pending, running, completed, failed, cancelled, rate_limited.'
+    ));
   }
 }
