@@ -23,15 +23,15 @@ const COPILOT_SWITCH_PATH = process.env.COPILOT_SWITCH_PATH || join(homedir(), '
 const LOCK_PATH  = join(getStorageDir(), 'copilot-switch.lock');
 const STATE_PATH = join(getStorageDir(), 'copilot-switch.json');
 
-// Lock timing
-const LOCK_STALE_MS   = 30_000;   // 30s — lock older than this is stale
+// Lock timing (switch script takes ~30-40s due to interactive expect + test prompt)
+const LOCK_STALE_MS   = 150_000;  // 150s — lock older than this is stale (must exceed command timeout)
 const LOCK_POLL_MS    = 500;      // poll every 500ms when waiting for lock
-const LOCK_TIMEOUT_MS = 15_000;   // give up waiting after 15s
+const LOCK_TIMEOUT_MS = 150_000;  // 150s — give up waiting (must be >= LOCK_STALE_MS)
 
 // Switch window
 const SWITCH_WINDOW_MS           = 5 * 60_000;  // 5-minute tracking window
 const MAX_SWITCHES_IN_WINDOW     = 3;            // 3 accounts
-const RECENT_SWITCH_THRESHOLD_MS = 10_000;       // 10s = "just switched, don't switch again"
+const RECENT_SWITCH_THRESHOLD_MS = 45_000;       // 45s = "just switched, don't switch again" (script takes ~36s)
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -245,7 +245,7 @@ async function runSwitchCommand(): Promise<boolean> {
   try {
     console.error('[copilot-switch] Running account switch...');
     const result = await execa(COPILOT_SWITCH_PATH, ['next'], {
-      timeout: 15_000, // 15s timeout (script normally takes 4-5s)
+      timeout: 120_000, // 120s timeout (script takes ~30-40s due to expect + test prompt)
       reject: false,
     });
 

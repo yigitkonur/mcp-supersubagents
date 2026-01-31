@@ -377,6 +377,8 @@ async function runProcess(
     if (FORCE_RATE_LIMIT) {
       console.error(`[process-spawner] FORCE_RATE_LIMIT: Simulating rate limit for task ${taskId}`);
       try { proc.kill('SIGTERM'); } catch {}
+      // Clear process/PID to prevent health check from marking task as failed during switch
+      taskManager.updateTask(taskId, { process: undefined, pid: undefined });
       taskManager.appendOutput(taskId, '[test] Simulated rate limit: too many requests, try again in 5 minutes');
       await handleRateLimit(taskId, cwd, timeout, 1, 'Simulated: too many requests');
       return;
