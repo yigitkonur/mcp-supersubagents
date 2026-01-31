@@ -5,6 +5,7 @@ import { clientContext } from './client-context.js';
 import { TaskStatus, SpawnOptions, TaskState } from '../types.js';
 import { resolveModel } from '../models.js';
 import { isRateLimitError, createRetryInfo } from './retry-queue.js';
+import { trySwitchAccount } from './copilot-switch.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || 'claude';
@@ -28,6 +29,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     labels: options.labels,
     provider: options.provider || 'copilot',
     fallbackAttempted: options.fallbackAttempted,
+    switchAttempted: options.switchAttempted,
   });
 
   // If task is waiting for dependencies, don't start execution yet
@@ -229,7 +231,10 @@ async function runClaudeFallback(
 }
 
 /**
- * Handle rate limit detection: attempt Claude CLI fallback, or enter exponential backoff.
+ * Handle rate limit detection:
+ * 1. Try Copilot account switch (rotate to next GitHub account)
+ * 2. If switch not possible, try Claude CLI fallback
+ * 3. If both exhausted, enter exponential backoff
  */
 async function handleRateLimit(
   taskId: string,
@@ -241,7 +246,45 @@ async function handleRateLimit(
   const currentTask = taskManager.getTask(taskId);
   if (!currentTask) return;
 
-  // If fallback not yet attempted, try Claude CLI immediately
+  // ── Step 1: Try Copilot account switching ──
+  if (!currentTask.switchAttempted) {
+    const switchResult = await trySwitchAccount();
+    console.error(`[process-spawner] Task ${taskId} account switch result: ${switchResult.outcome}`);
+
+    if (switchResult.outcome === 'switched' || switchResult.outcome === 'recentSwitch') {
+      // Mark switch as attempted, clear stale state
+      taskManager.updateTask(taskId, {
+        switchAttempted: true,
+        process: undefined,
+        error: undefined,
+        endTime: undefined,
+        exitCode: undefined,
+      });
+
+      // Expedite other rate-limited tasks after a real switch
+      if (switchResult.outcome === 'switched') {
+        taskManager.expediteRateLimitedTasks(5000);
+      }
+
+      // Build Copilot args and retry via existing runProcess
+      const task = taskManager.getTask(taskId)!;
+      const model = resolveModel(task.model);
+      const args = ['-p', task.prompt, '--allow-all', '-s', '--model', model];
+      if (task.autonomous !== false) args.push('--no-ask-user');
+
+      taskManager.appendOutput(taskId, `[switch] Account ${switchResult.outcome === 'switched' ? 'switched' : 'recently switched'}, retrying on Copilot...`);
+      await runProcess(taskId, args, cwd, timeout);
+      return;
+    }
+
+    // For exhausted/failed/disabled: mark switch attempted, fall through to Claude CLI
+    taskManager.updateTask(taskId, { switchAttempted: true });
+    if (switchResult.outcome === 'exhausted') {
+      console.error(`[process-spawner] Task ${taskId} all Copilot accounts exhausted, trying Claude CLI`);
+    }
+  }
+
+  // ── Step 2: Try Claude CLI fallback ──
   if (!currentTask.fallbackAttempted) {
     console.error(`[process-spawner] Task ${taskId} rate-limited on Copilot, attempting Claude CLI fallback`);
     taskManager.updateTask(taskId, { process: undefined });
@@ -263,14 +306,14 @@ async function handleRateLimit(
       const updatedTask = taskManager.getTask(taskId);
       const retryInfo = createRetryInfo(
         updatedTask || currentTask,
-        'Rate limit exceeded (both Copilot and Claude CLI)',
+        'Rate limit exceeded (Copilot switch + Claude CLI both failed)',
         currentTask.retryInfo,
       );
       taskManager.updateTask(taskId, {
         status: TaskStatus.RATE_LIMITED,
         exitCode,
         endTime: new Date().toISOString(),
-        error: 'Rate limited on both Copilot and Claude CLI',
+        error: 'Rate limited on all Copilot accounts and Claude CLI',
         retryInfo,
         fallbackAttempted: true,
         process: undefined,
@@ -281,7 +324,7 @@ async function handleRateLimit(
     return;
   }
 
-  // Fallback already attempted — go straight to exponential backoff
+  // ── Step 3: Exponential backoff ──
   const retryInfo = createRetryInfo(currentTask, 'Rate limit exceeded', currentTask.retryInfo);
   taskManager.updateTask(taskId, {
     status: TaskStatus.RATE_LIMITED,

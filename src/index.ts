@@ -18,6 +18,7 @@ import { simulateRateLimitTool, handleSimulateRateLimit } from './tools/simulate
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkCopilotInstalled, checkClaudeCliInstalled } from './services/process-spawner.js';
+import { isSwitchAvailable } from './services/copilot-switch.js';
 import { mcpText } from './utils/format.js';
 
 // Feature flags (off by default for cost control)
@@ -107,6 +108,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 async function main() {
   if (!checkCopilotInstalled()) console.error('Warning: Copilot CLI not found');
+  if (isSwitchAvailable()) {
+    console.error('Info: Copilot account switching available');
+  } else {
+    console.error('Info: Copilot account switching not available (no ~/bin/copilot-switch)');
+  }
   if (!checkClaudeCliInstalled()) {
     console.error('Warning: Claude CLI not found - fallback on rate limit will not be available');
   } else {

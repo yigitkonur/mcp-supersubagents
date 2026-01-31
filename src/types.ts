@@ -44,6 +44,7 @@ export interface TaskState {
   labels?: string[];
   provider?: Provider;
   fallbackAttempted?: boolean;
+  switchAttempted?: boolean;
 }
 
 export interface SpawnOptions {
@@ -58,4 +59,5 @@ export interface SpawnOptions {
   labels?: string[];
   provider?: Provider;
   fallbackAttempted?: boolean;
+  switchAttempted?: boolean;
 }

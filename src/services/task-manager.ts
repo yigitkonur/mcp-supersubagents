@@ -288,6 +288,38 @@ class TaskManager {
   }
 
   /**
+   * Expedite all rate-limited tasks by moving their next retry time up.
+   * Called after a successful Copilot account switch so stalled tasks benefit.
+   * Tasks are staggered to avoid thundering herd.
+   */
+  expediteRateLimitedTasks(baseDelayMs: number = 5000): void {
+    const rateLimitedTasks = Array.from(this.tasks.values())
+      .filter(t => t.status === TaskStatus.RATE_LIMITED && t.retryInfo);
+
+    if (rateLimitedTasks.length === 0) {
+      return;
+    }
+
+    console.error(`[task-manager] Expediting ${rateLimitedTasks.length} rate-limited task(s) after account switch`);
+
+    let delay = baseDelayMs;
+    for (const task of rateLimitedTasks) {
+      if (task.retryInfo) {
+        this.updateTask(task.id, {
+          retryInfo: {
+            ...task.retryInfo,
+            nextRetryTime: new Date(Date.now() + delay).toISOString(),
+          },
+        });
+        delay += 2000; // Stagger by 2 seconds per task
+      }
+    }
+
+    // Schedule retry processing after the base delay
+    setTimeout(() => this.processRateLimitedTasks(), baseDelayMs);
+  }
+
+  /**
    * Clear all tasks from memory (used by clear_tasks tool)
    */
   clearAllTasks(): number {
@@ -433,7 +465,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean; switchAttempted?: boolean }): TaskState {
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
     
@@ -463,6 +495,7 @@ class TaskManager {
       labels: labels.length > 0 ? labels : undefined,
       provider: options?.provider,
       fallbackAttempted: options?.fallbackAttempted,
+      switchAttempted: options?.switchAttempted,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');
