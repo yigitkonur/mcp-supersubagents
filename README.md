@@ -4,6 +4,12 @@ MCP server that spawns GitHub Copilot CLI agents as background tasks with human-
 
 ## Quick Start
 
+Install via install-mcp:
+```bash
+npx install-mcp super-subagents --client claude-desktop
+```
+
+Manual build:
 ```bash
 npm install && npm run build
 ```
