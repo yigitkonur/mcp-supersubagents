@@ -2,7 +2,7 @@
 
 ## Current State (Evidence)
 - Tasks are created in memory with generated IDs and persisted to JSON under the user home directory per workspace.
-- Timeout defaults to 600000 ms for spawn and resume; execa enforces the timeout and sets status to timed_out.
+- Timeout defaults to 1800000 ms for spawn and resume; execa enforces the timeout and sets status to timed_out.
 - Health checks only verify process liveness; no heartbeat or last-activity timestamps exist.
 - get_status provides timeout remaining for running tasks but no timed_out-specific guidance.
 - Session IDs can be captured from output and used by resume_task, but timed_out does not surface that hint.

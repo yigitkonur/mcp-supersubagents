@@ -1,7 +1,7 @@
 # Step 4: Timeout Defaults and Optional Param Guidance
 
 ## Context
-Default timeout is currently 10 minutes. User wants timeout param optional with a 30-minute default and clear guidance not to set it unless needed.
+Default timeout is currently 30 minutes (previously 10 minutes). User wants timeout param optional with a 30-minute default and clear guidance not to set it unless needed.
 
 ## Pre-Work Thinking
 ### Expectations
@@ -26,4 +26,3 @@ Default timeout is currently 10 minutes. User wants timeout param optional with 
 - Blocks: Phase 4 extraction
 
 ## Post-Work (FILLED DURING EXECUTION)
-

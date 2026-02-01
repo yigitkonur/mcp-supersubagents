@@ -419,7 +419,7 @@ function formatBatchTaskStatus(results: TaskStatusResult[]): string {
 
   const rows = results.map(r => {
     if (r.status === 'not_found') {
-      return [`**${r.task_id}**`, 'not found', '--'];
+      return [`**${r.task_id}**`, 'not found', '--', '--', '--'];
     }
     let statusStr = displayStatus(r.status);
     if (r.provider) statusStr += ` (${r.provider})`;
@@ -430,14 +430,20 @@ function formatBatchTaskStatus(results: TaskStatusResult[]): string {
       statusStr += ` -> ${r.dependency_info.pending.join(', ')}`;
     }
     if (r.fallback_attempted) statusStr += ' [fallback]';
+    const reason = r.status === 'timed_out'
+      ? displayStatus(r.timeout_reason || 'unknown')
+      : '--';
+    const nextAction = r.suggested_action ? `\`${r.suggested_action}\`` : '--';
     return [
       `**${r.task_id}**`,
       statusStr,
+      reason,
+      nextAction,
       formatLabels(r.labels) || '--',
     ];
   });
 
-  parts.push(formatTable(['Task', 'Status', 'Labels'], rows));
+  parts.push(formatTable(['Task', 'Status', 'Reason', 'Next', 'Labels'], rows));
 
   // Add retry hint if any non-terminal task exists
   const nonTerminalResults = results.filter(r =>
@@ -450,6 +456,20 @@ function formatBatchTaskStatus(results: TaskStatusResult[]): string {
     const maxRetry = retrySeconds.length > 0 ? Math.max(...retrySeconds) : 30;
     parts.push('');
     parts.push(`Run \`sleep ${maxRetry}\` then check again.`);
+  }
+
+  const timedOutResults = results.filter(r => r.status === 'timed_out');
+  if (timedOutResults.length > 0) {
+    parts.push('');
+    parts.push('### Timed out details');
+    for (const r of timedOutResults) {
+      const reason = displayStatus(r.timeout_reason || 'unknown');
+      const action = r.suggested_action ? `Suggested action: \`${r.suggested_action}\`` : 'Suggested action: `spawn_task`';
+      const lastOutputAge = r.timeout_context?.last_output_age_ms ?? r.last_output_age_ms;
+      const lastOutputNote = lastOutputAge !== undefined ? `Last output: ${formatDuration(lastOutputAge)} ago` : undefined;
+      const details = [action, lastOutputNote].filter(Boolean).join(' • ');
+      parts.push(`- **${r.task_id}** — ${reason}. ${details}`);
+    }
   }
 
   return parts.join('\n');
