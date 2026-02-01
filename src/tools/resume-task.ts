@@ -18,7 +18,7 @@ export const resumeTaskTool = {
       },
       timeout: {
         type: 'number',
-        description: 'Max execution time in ms. Default: 600000 (configurable via MCP_TASK_TIMEOUT_MS).'
+        description: 'Optional. Max execution time in ms. Default: 1800000 (30 min, configurable via MCP_TASK_TIMEOUT_MS). Do NOT set unless necessary; prefer the default and only override for known long/short tasks.'
       },
     },
     required: ['session_id'],

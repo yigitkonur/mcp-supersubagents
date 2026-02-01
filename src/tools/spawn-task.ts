@@ -54,7 +54,7 @@ The more detailed your prompt, the better the agent performs. Treat it as a comp
       },
       timeout: {
         type: 'number',
-        description: 'Max execution time in ms. Default: 600000 (10 min, configurable via MCP_TASK_TIMEOUT_MS). Max: 3600000 (configurable via MCP_TASK_TIMEOUT_MAX_MS). Increase for large tasks.',
+        description: 'Optional. Max execution time in ms. Default: 1800000 (30 min, configurable via MCP_TASK_TIMEOUT_MS). Max: 3600000 (configurable via MCP_TASK_TIMEOUT_MAX_MS). Do NOT set unless necessary; prefer the default and only override for known long/short tasks.',
       },
       autonomous: {
         type: 'boolean',

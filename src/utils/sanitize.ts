@@ -9,7 +9,7 @@ import {
 
 export const SpawnTaskSchema = z.object({
   prompt: z.string().min(1).max(50000),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 10 minutes default
+  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 30 minutes default
   cwd: z.string().optional(),
   model: z.enum(MODEL_IDS as [string, ...string[]]).optional(),
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
@@ -20,7 +20,7 @@ export const SpawnTaskSchema = z.object({
 
 export const ResumeTaskSchema = z.object({
   sessionId: z.string().min(1),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 10 minutes default
+  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 30 minutes default
   cwd: z.string().optional(),
   autonomous: z.boolean().optional().default(true),
 });

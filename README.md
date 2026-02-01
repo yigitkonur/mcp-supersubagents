@@ -84,8 +84,8 @@ Local `id` fields map to real `task_id` in response.
 `claude-sonnet-4.5` (default), `claude-haiku-4.5`. Opus blocked by default (set `ENABLE_OPUS=true` to allow).
 
 ### Timeout
-Default: 10 min (600000ms). Max: 1 hour. Tasks exceeding timeout get `timed_out` status.
-Configurable via `MCP_TASK_TIMEOUT_MS`, `MCP_TASK_TIMEOUT_MIN_MS`, and `MCP_TASK_TIMEOUT_MAX_MS`.
+Default: 30 min (1800000ms). Max: 1 hour. Tasks exceeding timeout get `timed_out` status.
+Configurable via `MCP_TASK_TIMEOUT_MS`, `MCP_TASK_TIMEOUT_MIN_MS`, and `MCP_TASK_TIMEOUT_MAX_MS`. Prefer the default unless you have a clear reason to override.
 Stall warnings are based on `MCP_TASK_STALL_WARN_MS`. Timed out tasks may include a reason and can be recovered via `recover_task` or `resume_task` when a session is available.
 
 ### Rate Limit Auto-Retry
@@ -116,7 +116,7 @@ Response includes `retry_after_seconds` (30s → 60s → 120s → 180s) to preve
 | `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Copilot CLI path |
 | `ENABLE_OPUS` | `false` | Allow opus model (cost control) |
 | `ENABLE_STREAMING` | `false` | Enable experimental `stream_output` tool |
-| `MCP_TASK_TIMEOUT_MS` | `600000` | Default task timeout (ms) |
+| `MCP_TASK_TIMEOUT_MS` | `1800000` | Default task timeout (ms) |
 | `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum allowed task timeout (ms) |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum allowed task timeout (ms) |
 | `MCP_TASK_STALL_WARN_MS` | `300000` | No-output stall warning threshold (ms) |
