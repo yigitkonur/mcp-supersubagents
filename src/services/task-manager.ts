@@ -76,7 +76,7 @@ const MAX_OUTPUT_LINES = 2000;
 /**
  * Check if a process is actually alive using signal 0
  */
-function isProcessAlive(pid: number | undefined): boolean {
+export function isProcessAlive(pid: number | undefined): boolean {
   if (!pid) return false;
   try {
     process.kill(pid, 0); // Signal 0 = check if process exists

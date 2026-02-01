@@ -6,6 +6,7 @@ interface ProgressBinding {
   progressCount: number;
   lastSendTime: number;
   pendingMessage: string | null;
+  pendingTotal: number | undefined;
   flushTimer: NodeJS.Timeout | null;
 }
 
@@ -27,6 +28,7 @@ class ProgressRegistry {
       progressCount: 0,
       lastSendTime: 0,
       pendingMessage: null,
+      pendingTotal: undefined,
       flushTimer: null,
     });
   }
@@ -57,6 +59,11 @@ class ProgressRegistry {
     const now = Date.now();
     const elapsed = now - binding.lastSendTime;
 
+    // Always update pendingTotal to the most recent value
+    if (total !== undefined) {
+      binding.pendingTotal = total;
+    }
+
     if (elapsed >= THROTTLE_MS) {
       // Send immediately
       if (binding.flushTimer) {
@@ -68,7 +75,9 @@ class ProgressRegistry {
         ? `${binding.pendingMessage}\n${message}`
         : message;
       binding.pendingMessage = null;
-      this.doSend(binding, fullMessage, total);
+      const sendTotal = binding.pendingTotal;
+      binding.pendingTotal = undefined;
+      this.doSend(binding, fullMessage, sendTotal);
     } else {
       // Buffer the message
       binding.pendingMessage = binding.pendingMessage
@@ -82,7 +91,9 @@ class ProgressRegistry {
           if (binding.pendingMessage) {
             const msg = binding.pendingMessage;
             binding.pendingMessage = null;
-            this.doSend(binding, msg, total);
+            const sendTotal = binding.pendingTotal;
+            binding.pendingTotal = undefined;
+            this.doSend(binding, msg, sendTotal);
           }
         }, THROTTLE_MS);
       }
