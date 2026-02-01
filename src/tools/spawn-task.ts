@@ -3,6 +3,8 @@ import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS, MODELS, DEFAULT_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, TASK_TYPES, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
+import { progressRegistry } from '../services/progress-registry.js';
+import type { ToolContext } from '../types.js';
 import { mcpText, formatError, join, formatLabels } from '../utils/format.js';
 
 export const spawnTaskTool = {
@@ -75,7 +77,7 @@ The more detailed your prompt, the better the agent performs. Treat it as a comp
   },
 };
 
-export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const parsed = SpawnTaskSchema.parse(args);
 
@@ -110,6 +112,11 @@ export async function handleSpawnTask(args: unknown): Promise<{ content: Array<{
 
     const task = taskManager.getTask(taskId);
     const isWaiting = task?.status === 'waiting';
+
+    if (ctx?.progressToken != null) {
+      progressRegistry.register(taskId, ctx.progressToken, ctx.sendNotification);
+      progressRegistry.sendProgress(taskId, `Task created: ${taskId}, status: ${task?.status || 'pending'}`);
+    }
 
     if (isWaiting) {
       const depsList = dependsOn.map(d => `\`${d}\``).join(', ');

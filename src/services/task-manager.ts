@@ -77,7 +77,7 @@ const MAX_OUTPUT_LINES = 2000;
 /**
  * Check if a process is actually alive using signal 0
  */
-function isProcessAlive(pid: number | undefined): boolean {
+export function isProcessAlive(pid: number | undefined): boolean {
   if (!pid) return false;
   try {
     process.kill(pid, 0); // Signal 0 = check if process exists
@@ -86,6 +86,7 @@ function isProcessAlive(pid: number | undefined): boolean {
     return false;
   }
 }
+
 
 class TaskManager {
   private tasks: Map<string, TaskState> = new Map();
@@ -98,6 +99,10 @@ class TaskManager {
   private lastPersistTrigger: 'state' | 'output' = 'state';
   private retryCallback: ((task: TaskState) => Promise<string | undefined>) | null = null;
   private executeCallback: ((task: TaskState) => Promise<void>) | null = null;
+  private statusChangeCallback: ((task: TaskState, previousStatus: TaskStatus) => void) | null = null;
+  private outputCallback: ((taskId: string, line: string) => void) | null = null;
+  private taskCreatedCallback: ((task: TaskState) => void) | null = null;
+  private taskDeletedCallback: ((taskId: string) => void) | null = null;
 
   constructor() {
     this.startCleanup();
@@ -138,6 +143,22 @@ class TaskManager {
    */
   onExecute(callback: (task: TaskState) => Promise<void>): void {
     this.executeCallback = callback;
+  }
+
+  onStatusChange(callback: (task: TaskState, previousStatus: TaskStatus) => void): void {
+    this.statusChangeCallback = callback;
+  }
+
+  onOutput(callback: (taskId: string, line: string) => void): void {
+    this.outputCallback = callback;
+  }
+
+  onTaskCreated(callback: (task: TaskState) => void): void {
+    this.taskCreatedCallback = callback;
+  }
+
+  onTaskDeleted(callback: (taskId: string) => void): void {
+    this.taskDeletedCallback = callback;
   }
 
   /**
@@ -325,6 +346,11 @@ class TaskManager {
    */
   clearAllTasks(): number {
     const count = this.tasks.size;
+    if (this.taskDeletedCallback) {
+      for (const id of this.tasks.keys()) {
+        try { this.taskDeletedCallback(id); } catch {}
+      }
+    }
     this.tasks.clear();
     return count;
   }
@@ -462,6 +488,7 @@ class TaskManager {
     }
   }
 
+
   private cleanup(): void {
     const now = Date.now();
     const toDelete: string[] = [];
@@ -478,6 +505,7 @@ class TaskManager {
     }
 
     for (const id of toDelete) {
+      try { this.taskDeletedCallback?.(id); } catch {}
       this.tasks.delete(id);
     }
 
@@ -488,6 +516,7 @@ class TaskManager {
 
       const toRemove = sorted.slice(0, this.tasks.size - MAX_TASKS);
       for (const [id] of toRemove) {
+        try { this.taskDeletedCallback?.(id); } catch {}
         this.tasks.delete(id);
       }
     }
@@ -529,6 +558,7 @@ class TaskManager {
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');
+    try { this.taskCreatedCallback?.(task); } catch {}
     return task;
   }
 
@@ -548,12 +578,17 @@ class TaskManager {
     const updated = { ...task, ...updates };
     this.tasks.set(normalizedId, updated);
     this.schedulePersist('state');
-    
+
+    // Fire status change callback
+    if (updates.status && updates.status !== previousStatus) {
+      try { this.statusChangeCallback?.(updated, previousStatus); } catch {}
+    }
+
     // When a task completes, check if any waiting tasks can now run
     if (updates.status === TaskStatus.COMPLETED && previousStatus !== TaskStatus.COMPLETED) {
       this.processWaitingTasks();
     }
-    
+
     return updated;
   }
 
@@ -569,6 +604,7 @@ class TaskManager {
         task.timeoutContext = undefined;
       }
       task.output.push(line);
+      try { this.outputCallback?.(id, line); } catch {}
       
       if (task.output.length > MAX_OUTPUT_LINES) {
         task.output = task.output.slice(-MAX_OUTPUT_LINES);
@@ -623,6 +659,7 @@ class TaskManager {
       }
     }
 
+    const previousStatus = task.status;
     task.status = TaskStatus.CANCELLED;
     task.endTime = new Date().toISOString();
     if (alreadyDead) {
@@ -630,6 +667,7 @@ class TaskManager {
     }
     task.process = undefined;
     this.schedulePersist('state');
+    try { this.statusChangeCallback?.(task, previousStatus); } catch {}
     return { success: true, alreadyDead };
   }
 

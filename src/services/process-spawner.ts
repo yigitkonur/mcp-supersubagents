@@ -416,6 +416,17 @@ async function runProcess(
       }
     });
 
+    // Event-driven status update: detect process exit immediately
+    proc.on('exit', (code, signal) => {
+      const currentTask = taskManager.getTask(taskId);
+      // Only update if still marked as RUNNING (avoid overwriting intentional cancellations)
+      if (currentTask?.status === TaskStatus.RUNNING) {
+        console.error(`[process-spawner] Process exit event for ${taskId}: code=${code}, signal=${signal}`);
+        // Let the main await handle the actual status update with proper error detection
+        // This ensures rate limit detection still works
+      }
+    });
+
     if (proc.stdout) {
       let buffer = '';
       proc.stdout.on('data', (chunk: Buffer) => {

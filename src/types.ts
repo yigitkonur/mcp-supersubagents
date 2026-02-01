@@ -84,3 +84,10 @@ export interface SpawnOptions {
   fallbackAttempted?: boolean;
   switchAttempted?: boolean;
 }
+
+import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
+
+export interface ToolContext {
+  progressToken?: string | number;
+  sendNotification: (notification: ServerNotification) => Promise<void>;
+}

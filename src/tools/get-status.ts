@@ -1,5 +1,5 @@
 import { GetTaskStatusSchema } from '../utils/sanitize.js';
-import { taskManager } from '../services/task-manager.js';
+import { taskManager, isProcessAlive } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
 import {
   mcpText, formatError, formatLabelsLine, formatLabels,
@@ -125,19 +125,6 @@ interface TaskStatusResult {
 
 // Track check counts per task for exponential backoff
 const taskCheckCounts = new Map<string, number>();
-
-/**
- * Check if a process is actually alive using signal 0
- */
-function isProcessAlive(pid: number | undefined): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0); // Signal 0 = check if process exists
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Build TaskStatusResult from a task object
@@ -474,6 +461,7 @@ function formatBatchTaskStatus(results: TaskStatusResult[]): string {
 
   return parts.join('\n');
 }
+
 
 export async function handleGetTaskStatus(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   // Throttle rapid polling -- may sleep 59s and return early

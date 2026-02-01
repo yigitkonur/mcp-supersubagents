@@ -47,6 +47,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     let message = `Task **${task.id}** cancelled (was: ${displayStatus(previousStatus)}).`;
     if (cancelResult.alreadyDead) {
       message += '\nNote: process had already exited before cancellation.';
+
     }
     return mcpText(message);
   } catch (error) {
