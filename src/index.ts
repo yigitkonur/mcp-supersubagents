@@ -11,6 +11,7 @@ import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
 import { clearTasksTool, handleClearTasks } from './tools/clear-tasks.js';
 import { retryTaskTool, handleRetryTask } from './tools/retry-task.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
+import { recoverTaskTool, handleRecoverTask } from './tools/recover-task.js';
 import { forceStartTool, handleForceStart } from './tools/force-start.js';
 import { batchSpawnTool, handleBatchSpawn } from './tools/batch-spawn.js';
 import { streamOutputTool, handleStreamOutput } from './tools/stream-output.js';
@@ -77,7 +78,7 @@ server.oninitialized = async () => {
 
 const tools = [
   spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool,
-  clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool,
+  clearTasksTool, retryTaskTool, cancelTaskTool, recoverTaskTool, forceStartTool, batchSpawnTool,
   ...(ENABLE_STREAMING ? [streamOutputTool] : []),
   simulateRateLimitTool,
 ];
@@ -96,6 +97,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'clear_tasks': return handleClearTasks(request.params.arguments);
     case 'retry_task': return handleRetryTask(request.params.arguments);
     case 'cancel_task': return handleCancelTask(request.params.arguments);
+    case 'recover_task': return handleRecoverTask(args);
     case 'force_start': return handleForceStart(request.params.arguments);
     case 'batch_spawn': return handleBatchSpawn(request.params.arguments);
     case 'stream_output': return ENABLE_STREAMING

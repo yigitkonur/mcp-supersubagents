@@ -2,6 +2,7 @@ import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
 import { TaskState, TaskStatus } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
+import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 
 const MAX_TASKS = 100;
 
@@ -428,7 +429,34 @@ class TaskManager {
             endTime: new Date().toISOString(),
             error: 'Process exited unexpectedly (detected via health check)',
             process: undefined,
+            timeoutReason: 'process_dead',
+            timeoutContext: {
+              pidAlive: false,
+              lastHeartbeatAt: task.lastHeartbeatAt,
+              lastOutputAt: task.lastOutputAt,
+              detectedBy: 'health_check',
+            },
           });
+        } else {
+          const now = Date.now();
+          const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
+          if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
+            this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
+          }
+          if (task.lastOutputAt) {
+            const lastOutputAgeMs = now - new Date(task.lastOutputAt).getTime();
+            if (lastOutputAgeMs >= TASK_STALL_WARN_MS && task.timeoutReason !== 'stall') {
+              this.updateTask(task.id, {
+                timeoutReason: 'stall',
+                timeoutContext: {
+                  lastOutputAt: task.lastOutputAt,
+                  lastOutputAgeMs,
+                  lastHeartbeatAt: task.lastHeartbeatAt,
+                  detectedBy: 'health_check',
+                },
+              });
+            }
+          }
         }
       }
     }
@@ -480,12 +508,14 @@ class TaskManager {
       initialStatus = satisfied ? TaskStatus.PENDING : TaskStatus.WAITING;
     }
     
+    const startTime = new Date().toISOString();
     const task: TaskState = {
       id,
       status: initialStatus,
       prompt,
       output: [],
-      startTime: new Date().toISOString(),
+      startTime,
+      lastHeartbeatAt: startTime,
       cwd,
       model,
       autonomous: options?.autonomous,
@@ -531,6 +561,13 @@ class TaskManager {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (task) {
+      const now = new Date().toISOString();
+      task.lastOutputAt = now;
+      task.lastHeartbeatAt = now;
+      if (task.timeoutReason === 'stall') {
+        task.timeoutReason = undefined;
+        task.timeoutContext = undefined;
+      }
       task.output.push(line);
       
       if (task.output.length > MAX_OUTPUT_LINES) {

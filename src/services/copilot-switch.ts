@@ -14,6 +14,12 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { execa } from 'execa';
 import { getStorageDir } from './task-persistence.js';
+import {
+  COPILOT_SWITCH_COMMAND_TIMEOUT_MS,
+  COPILOT_SWITCH_LOCK_POLL_MS,
+  COPILOT_SWITCH_LOCK_STALE_MS,
+  COPILOT_SWITCH_LOCK_TIMEOUT_MS,
+} from '../config/timeouts.js';
 
 // ── Configuration ──────────────────────────────────────────────────
 
@@ -24,9 +30,9 @@ const LOCK_PATH  = join(getStorageDir(), 'copilot-switch.lock');
 const STATE_PATH = join(getStorageDir(), 'copilot-switch.json');
 
 // Lock timing (switch script takes ~30-40s due to interactive expect + test prompt)
-const LOCK_STALE_MS   = 150_000;  // 150s — lock older than this is stale (must exceed command timeout)
-const LOCK_POLL_MS    = 500;      // poll every 500ms when waiting for lock
-const LOCK_TIMEOUT_MS = 150_000;  // 150s — give up waiting (must be >= LOCK_STALE_MS)
+const LOCK_STALE_MS   = COPILOT_SWITCH_LOCK_STALE_MS;  // lock older than this is stale (must exceed command timeout)
+const LOCK_POLL_MS    = COPILOT_SWITCH_LOCK_POLL_MS;   // poll interval when waiting for lock
+const LOCK_TIMEOUT_MS = COPILOT_SWITCH_LOCK_TIMEOUT_MS; // give up waiting (must be >= LOCK_STALE_MS)
 
 // Switch window
 const SWITCH_WINDOW_MS           = 5 * 60_000;  // 5-minute tracking window
@@ -245,7 +251,7 @@ async function runSwitchCommand(): Promise<boolean> {
   try {
     console.error('[copilot-switch] Running account switch...');
     const result = await execa(COPILOT_SWITCH_PATH, ['next'], {
-      timeout: 120_000, // 120s timeout (script takes ~30-40s due to expect + test prompt)
+      timeout: COPILOT_SWITCH_COMMAND_TIMEOUT_MS, // switch command timeout
       reject: false,
     });
 

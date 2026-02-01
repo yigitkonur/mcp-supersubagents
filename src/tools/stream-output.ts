@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
-import { mcpText, formatError, displayStatus, join } from '../utils/format.js';
+import { mcpText, formatError, displayStatus, formatDuration, join } from '../utils/format.js';
+import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 
 const StreamOutputSchema = z.object({
   task_id: z.string().min(1),
@@ -48,6 +49,8 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
     const outputLines = task.output.slice(offset, offset + parsed.limit);
     const nextOffset = offset + outputLines.length;
     const hasMore = nextOffset < totalLines;
+    const now = Date.now();
+    const lastOutputAgeMs = task.lastOutputAt ? now - new Date(task.lastOutputAt).getTime() : undefined;
 
     const isTerminal = [
       TaskStatus.COMPLETED,
@@ -82,6 +85,8 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
       footer = `${remaining} more lines available. Use offset \`${nextOffset}\` to continue.`;
     } else if (isTerminal) {
       footer = 'All output retrieved.';
+    } else if (lastOutputAgeMs !== undefined && lastOutputAgeMs >= TASK_STALL_WARN_MS) {
+      footer = `No output for ${formatDuration(lastOutputAgeMs)}. Task may be stalled.`;
     } else {
       footer = 'Waiting for more output...';
     }

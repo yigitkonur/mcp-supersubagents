@@ -30,6 +30,7 @@ npm install && npm run build
 | `resume_task` | Resume interrupted session by `session_id`. |
 | `retry_task` | Immediately retry a rate-limited task. |
 | `cancel_task` | Kill a running/pending task (SIGTERM). |
+| `recover_task` | Recover a timed_out task (resume if session is available). |
 | `force_start` | Start a waiting task, bypassing dependencies. |
 | `clear_tasks` | Delete all tasks for workspace. Requires `confirm: true`. |
 | `stream_output` | *(experimental)* Get incremental output with offset. Requires `ENABLE_STREAMING=true`. |
@@ -78,6 +79,8 @@ Local `id` fields map to real `task_id` in response.
 
 ### Timeout
 Default: 10 min (600000ms). Max: 1 hour. Tasks exceeding timeout get `timed_out` status.
+Configurable via `MCP_TASK_TIMEOUT_MS`, `MCP_TASK_TIMEOUT_MIN_MS`, and `MCP_TASK_TIMEOUT_MAX_MS`.
+Stall warnings are based on `MCP_TASK_STALL_WARN_MS`. Timed out tasks may include a reason and can be recovered via `recover_task` or `resume_task` when a session is available.
 
 ### Rate Limit Auto-Retry
 Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 40m → 1h → 2h). Max 6 retries.
@@ -107,6 +110,14 @@ Response includes `retry_after_seconds` (30s → 60s → 120s → 180s) to preve
 | `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Copilot CLI path |
 | `ENABLE_OPUS` | `false` | Allow opus model (cost control) |
 | `ENABLE_STREAMING` | `false` | Enable experimental `stream_output` tool |
+| `MCP_TASK_TIMEOUT_MS` | `600000` | Default task timeout (ms) |
+| `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum allowed task timeout (ms) |
+| `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum allowed task timeout (ms) |
+| `MCP_TASK_STALL_WARN_MS` | `300000` | No-output stall warning threshold (ms) |
+| `MCP_COPILOT_SWITCH_TIMEOUT_MS` | `120000` | Timeout for copilot-switch command (ms) |
+| `MCP_COPILOT_SWITCH_LOCK_STALE_MS` | `150000` | Stale lock threshold for copilot-switch (ms) |
+| `MCP_COPILOT_SWITCH_LOCK_TIMEOUT_MS` | `150000` | Wait timeout for copilot-switch lock (ms) |
+| `MCP_COPILOT_SWITCH_LOCK_POLL_MS` | `500` | Lock poll interval for copilot-switch (ms) |
 
 ## License
 

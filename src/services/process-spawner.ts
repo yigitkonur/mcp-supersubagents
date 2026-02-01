@@ -6,6 +6,7 @@ import { TaskStatus, SpawnOptions, TaskState } from '../types.js';
 import { resolveModel } from '../models.js';
 import { isRateLimitError, createRetryInfo } from './retry-queue.js';
 import { trySwitchAccount } from './copilot-switch.js';
+import { TASK_STALL_WARN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || 'claude';
@@ -53,7 +54,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
   }
 
   setImmediate(() => {
-    runProcess(task.id, args, cwd, options.timeout ?? 600000);
+    runProcess(task.id, args, cwd, options.timeout ?? TASK_TIMEOUT_DEFAULT_MS);
   });
 
   return task.id;
@@ -83,7 +84,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
   taskManager.updateTask(task.id, { status: TaskStatus.PENDING });
 
   setImmediate(() => {
-    runProcess(task.id, args, cwd, 600000);
+    runProcess(task.id, args, cwd, TASK_TIMEOUT_DEFAULT_MS);
   });
 }
 
@@ -136,6 +137,8 @@ async function runClaudeFallback(
     taskManager.updateTask(taskId, {
       pid: proc.pid,
       process: proc,
+      timeout,
+      timeoutAt: new Date(Date.now() + timeout).toISOString(),
     });
 
     if (proc.stdout) {
@@ -176,12 +179,30 @@ async function runClaudeFallback(
     }
 
     if (result.timedOut) {
+      const now = Date.now();
+      const lastOutputAt = currentTask?.lastOutputAt;
+      const lastOutputAgeMs = lastOutputAt ? now - new Date(lastOutputAt).getTime() : undefined;
+      const reason = currentTask?.timeoutReason === 'stall' ||
+        (lastOutputAgeMs !== undefined && lastOutputAgeMs >= TASK_STALL_WARN_MS)
+        ? 'stall'
+        : 'hard_timeout';
+      const timeoutContext = {
+        timeoutMs: timeout,
+        timeoutAt: currentTask?.timeoutAt,
+        elapsedMs: currentTask?.startTime ? now - new Date(currentTask.startTime).getTime() : undefined,
+        lastOutputAt,
+        lastOutputAgeMs,
+        lastHeartbeatAt: currentTask?.lastHeartbeatAt,
+        detectedBy: 'execa' as const,
+      };
       taskManager.updateTask(taskId, {
         status: TaskStatus.TIMED_OUT,
         exitCode: result.exitCode ?? 1,
         endTime: new Date().toISOString(),
         error: `Claude CLI fallback timed out after ${timeout}ms`,
         process: undefined,
+        timeoutReason: reason,
+        timeoutContext,
       });
       return { success: false, rateLimited: false };
     }
@@ -435,12 +456,30 @@ async function runProcess(
 
     // Check if task timed out
     if (result.timedOut) {
+      const now = Date.now();
+      const lastOutputAt = currentTask?.lastOutputAt;
+      const lastOutputAgeMs = lastOutputAt ? now - new Date(lastOutputAt).getTime() : undefined;
+      const reason = currentTask?.timeoutReason === 'stall' ||
+        (lastOutputAgeMs !== undefined && lastOutputAgeMs >= TASK_STALL_WARN_MS)
+        ? 'stall'
+        : 'hard_timeout';
+      const timeoutContext = {
+        timeoutMs: timeout,
+        timeoutAt: currentTask?.timeoutAt,
+        elapsedMs: currentTask?.startTime ? now - new Date(currentTask.startTime).getTime() : undefined,
+        lastOutputAt,
+        lastOutputAgeMs,
+        lastHeartbeatAt: currentTask?.lastHeartbeatAt,
+        detectedBy: 'execa' as const,
+      };
       taskManager.updateTask(taskId, {
         status: TaskStatus.TIMED_OUT,
         exitCode: result.exitCode ?? 1,
         endTime: new Date().toISOString(),
         error: `Task timed out after ${timeout}ms`,
         process: undefined,
+        timeoutReason: reason,
+        timeoutContext,
       });
       console.error(`[process-spawner] Task ${taskId} timed out after ${timeout}ms`);
       return;

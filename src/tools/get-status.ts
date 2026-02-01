@@ -6,6 +6,7 @@ import {
   formatDuration, formatOutputBlock, formatRetryHint,
   formatTable, displayStatus, join,
 } from '../utils/format.js';
+import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 
 // Retry timing configuration (exponential backoff)
 const RETRY_INTERVALS = [30, 60, 120, 180]; // seconds: 30s -> 1m -> 2m -> 3m (then stick with 3m)
@@ -104,6 +105,19 @@ interface TaskStatusResult {
     timeout_at: string;
     time_remaining_ms: number;
   };
+  timeout_reason?: string;
+  timeout_context?: {
+    timeout_ms?: number;
+    timeout_at?: string;
+    elapsed_ms?: number;
+    last_output_at?: string;
+    last_output_age_ms?: number;
+    last_heartbeat_at?: string;
+    pid_alive?: boolean;
+    detected_by?: string;
+  };
+  last_output_age_ms?: number;
+  last_heartbeat_age_ms?: number;
   labels?: string[];
   provider?: string;
   fallback_attempted?: boolean;
@@ -138,6 +152,10 @@ function getTaskStatusFromTask(task: NonNullable<ReturnType<typeof taskManager.g
     taskCheckCounts.delete(normalizedId);
   }
 
+  const now = Date.now();
+  const lastOutputAgeMs = task.lastOutputAt ? now - new Date(task.lastOutputAt).getTime() : undefined;
+  const lastHeartbeatAgeMs = task.lastHeartbeatAt ? now - new Date(task.lastHeartbeatAt).getTime() : undefined;
+
   const output = task.output.join('\n');
   const result: TaskStatusResult = {
     task_id: task.id,
@@ -146,6 +164,19 @@ function getTaskStatusFromTask(task: NonNullable<ReturnType<typeof taskManager.g
     exit_code: task.exitCode,
     output: output.length > 50000 ? output.slice(-50000) : output,
     error: task.error,
+    timeout_reason: task.timeoutReason,
+    timeout_context: task.timeoutContext ? {
+      timeout_ms: task.timeoutContext.timeoutMs,
+      timeout_at: task.timeoutContext.timeoutAt,
+      elapsed_ms: task.timeoutContext.elapsedMs,
+      last_output_at: task.timeoutContext.lastOutputAt,
+      last_output_age_ms: task.timeoutContext.lastOutputAgeMs,
+      last_heartbeat_at: task.timeoutContext.lastHeartbeatAt,
+      pid_alive: task.timeoutContext.pidAlive,
+      detected_by: task.timeoutContext.detectedBy,
+    } : undefined,
+    last_output_age_ms: lastOutputAgeMs,
+    last_heartbeat_age_ms: lastHeartbeatAgeMs,
   };
 
   // Add retry command for non-terminal states
@@ -211,6 +242,13 @@ function getTaskStatusFromTask(task: NonNullable<ReturnType<typeof taskManager.g
     result.fallback_attempted = true;
   }
 
+  // Suggested actions
+  if (task.status === TaskStatus.TIMED_OUT) {
+    result.suggested_action = task.sessionId ? 'resume_task' : 'spawn_task';
+  } else if (task.status === TaskStatus.RUNNING && lastOutputAgeMs !== undefined && lastOutputAgeMs >= TASK_STALL_WARN_MS) {
+    result.suggested_action = 'stream_output';
+  }
+
   return result;
 }
 
@@ -237,6 +275,13 @@ function getTaskStatus(taskId: string): TaskStatusResult {
         endTime: new Date().toISOString(),
         error: 'Process exited unexpectedly (detected via liveness check)',
         process: undefined,
+        timeoutReason: 'process_dead',
+        timeoutContext: {
+          pidAlive: false,
+          lastHeartbeatAt: task.lastHeartbeatAt,
+          lastOutputAt: task.lastOutputAt,
+          detectedBy: 'manual',
+        },
       });
       // Re-fetch the updated task
       const updatedTask = taskManager.getTask(normalizedId);
@@ -272,6 +317,15 @@ function formatSingleTaskStatus(result: TaskStatusResult): string {
   if (result.timeout_info) {
     parts.push(`Timeout: ${formatDuration(result.timeout_info.time_remaining_ms)} remaining`);
   }
+  if (result.last_output_age_ms !== undefined) {
+    parts.push(`Last output: ${formatDuration(result.last_output_age_ms)} ago`);
+  }
+  if (result.last_heartbeat_age_ms !== undefined && result.status === 'running') {
+    parts.push(`Last heartbeat: ${formatDuration(result.last_heartbeat_age_ms)} ago`);
+  }
+  if (result.status === 'running' && result.last_output_age_ms !== undefined && result.last_output_age_ms >= TASK_STALL_WARN_MS) {
+    parts.push('No output for a while — task may be stalled.');
+  }
 
   // Dependencies
   if (result.dependency_info) {
@@ -296,6 +350,39 @@ function formatSingleTaskStatus(result: TaskStatusResult): string {
     parts.push(`**Error:** ${result.error}`);
   }
 
+  if (result.timeout_reason) {
+    parts.push('');
+    parts.push(`Timeout reason: ${displayStatus(result.timeout_reason)}`);
+  }
+  if (result.timeout_context?.last_output_age_ms !== undefined) {
+    parts.push(`Last output before timeout: ${formatDuration(result.timeout_context.last_output_age_ms)} ago`);
+  }
+
+  if (result.status === 'timed_out') {
+    parts.push('');
+    switch (result.timeout_reason) {
+      case 'stall':
+        parts.push('Likely stalled (no output for a long time). Consider resuming or rerunning with a higher timeout.');
+        break;
+      case 'hard_timeout':
+        parts.push('Hit the configured timeout. Consider resuming or rerunning with a higher timeout.');
+        break;
+      case 'server_restart':
+        parts.push('Server restarted during execution. You can resume if a session is available.');
+        break;
+      case 'process_dead':
+        parts.push('Process exited unexpectedly. Consider rerunning the task.');
+        break;
+      default:
+        parts.push('Task timed out. Consider resuming or rerunning.');
+        break;
+    }
+  }
+
+  if (result.suggested_action) {
+    parts.push(`Suggested action: \`${result.suggested_action}\``);
+  }
+
   // Output
   if (result.output && result.output.trim()) {
     parts.push('');
@@ -304,7 +391,7 @@ function formatSingleTaskStatus(result: TaskStatusResult): string {
   }
 
   // Session hint for resume
-  if (result.session_id && (result.status === 'completed' || result.status === 'failed')) {
+  if (result.session_id && (result.status === 'completed' || result.status === 'failed' || result.status === 'timed_out')) {
     parts.push('');
     parts.push(`Session \`${result.session_id}\` available for \`resume_task\`.`);
   }
