@@ -3,6 +3,8 @@ import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS } from '../models.js';
 import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
+import { progressRegistry } from '../services/progress-registry.js';
+import type { ToolContext } from '../types.js';
 
 const TaskDefinitionSchema = z.object({
   id: z.string().min(1).describe('Local reference ID for this task (used in depends_on)'),
@@ -57,7 +59,7 @@ interface CreatedTask {
   depends_on?: string[];
 }
 
-export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleBatchSpawn(args: unknown, ctx?: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const parsed = BatchSpawnSchema.parse(args);
     
@@ -148,7 +150,12 @@ export async function handleBatchSpawn(args: unknown): Promise<{ content: Array<
       
       // Map local ID to real task ID
       idMap.set(taskDef.id, taskId);
-      
+
+      if (ctx?.progressToken != null) {
+        progressRegistry.register(taskId, ctx.progressToken, ctx.sendNotification);
+        progressRegistry.sendProgress(taskId, `Batch task ${createdTasks.length + 1}/${parsed.tasks.length}: ${taskDef.id} → ${taskId}`);
+      }
+
       const task = taskManager.getTask(taskId);
       createdTasks.push({
         local_id: taskDef.id,

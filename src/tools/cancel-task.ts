@@ -44,32 +44,19 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     }
 
     const previousStatus = task.status;
-    
-    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING) {
+
+    const cancelResult = taskManager.cancelTask(taskId);
+
+    if (!cancelResult.success) {
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             success: false,
-            error: `Task cannot be cancelled (status: ${task.status})`,
+            error: cancelResult.error || 'Failed to cancel task',
             task_id: task.id,
             current_status: task.status,
-            suggestion: 'Only running or pending tasks can be cancelled.',
-          }),
-        }],
-      };
-    }
-
-    const cancelled = taskManager.cancelTask(taskId);
-    
-    if (!cancelled) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: false,
-            error: 'Failed to cancel task',
-            task_id: task.id,
+            suggestion: 'Only running, pending, or waiting tasks can be cancelled.',
           }),
         }],
       };
@@ -83,8 +70,11 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
           task_id: task.id,
           previous_status: previousStatus,
           new_status: 'cancelled',
-          message: `Task ${task.id} cancelled successfully`,
+          message: cancelResult.alreadyDead
+            ? `Task ${task.id} cancelled (note: process had already exited)`
+            : `Task ${task.id} cancelled successfully`,
           had_process: !!task.process,
+          process_was_already_dead: cancelResult.alreadyDead || false,
         }),
       }],
     };

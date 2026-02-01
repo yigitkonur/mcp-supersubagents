@@ -1,5 +1,7 @@
 import { ResumeTaskSchema } from '../utils/sanitize.js';
 import { spawnCopilotProcess } from '../services/process-spawner.js';
+import { progressRegistry } from '../services/progress-registry.js';
+import type { ToolContext } from '../types.js';
 
 export const resumeTaskTool = {
   name: 'resume_task',
@@ -24,7 +26,7 @@ export const resumeTaskTool = {
   },
 };
 
-export async function handleResumeTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleResumeTask(args: unknown, ctx?: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {
     const input = args as any;
     const parsed = ResumeTaskSchema.parse({ sessionId: input?.session_id || input?.sessionId, ...input });
@@ -37,7 +39,12 @@ export async function handleResumeTask(args: unknown): Promise<{ content: Array<
       resumeSessionId: parsed.sessionId,
     });
 
-    return { 
+    if (ctx?.progressToken != null) {
+      progressRegistry.register(taskId, ctx.progressToken, ctx.sendNotification);
+      progressRegistry.sendProgress(taskId, `Resumed session ${parsed.sessionId} as task ${taskId}`);
+    }
+
+    return {
       content: [{ 
         type: 'text', 
         text: JSON.stringify({ 

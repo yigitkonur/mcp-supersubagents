@@ -32,7 +32,7 @@ npm install && npm run build
 | `cancel_task` | Kill a running/pending task (SIGTERM). |
 | `force_start` | Start a waiting task, bypassing dependencies. |
 | `clear_tasks` | Delete all tasks for workspace. Requires `confirm: true`. |
-| `stream_output` | Get incremental output with offset. Efficient for streaming. |
+| `stream_output` | *(experimental)* Get incremental output with offset. Requires `ENABLE_STREAMING=true`. |
 
 ## Task Statuses
 
@@ -74,7 +74,7 @@ Local `id` fields map to real `task_id` in response.
 | `super-tester` | Writing tests, QA verification |
 
 ### Models
-`claude-sonnet-4.5` (default), `claude-opus-4.5`, `claude-haiku-4.5`
+`claude-sonnet-4.5` (default), `claude-haiku-4.5`. Opus blocked by default (set `ENABLE_OPUS=true` to allow).
 
 ### Timeout
 Default: 10 min (600000ms). Max: 1 hour. Tasks exceeding timeout get `timed_out` status.
@@ -85,7 +85,8 @@ Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 4
 ### Persistence
 Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts.
 
-### Output Streaming
+### Output Streaming (Experimental)
+Requires `ENABLE_STREAMING=true`. Disabled by default.
 ```json
 // First call
 { "task_id": "brave-tiger-42", "offset": 0 }
@@ -104,6 +105,8 @@ Response includes `retry_after_seconds` (30s → 60s → 120s → 180s) to preve
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Copilot CLI path |
+| `ENABLE_OPUS` | `false` | Allow opus model (cost control) |
+| `ENABLE_STREAMING` | `false` | Enable experimental `stream_output` tool |
 
 ## License
 

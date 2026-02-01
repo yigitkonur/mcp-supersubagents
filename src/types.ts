@@ -53,3 +53,10 @@ export interface SpawnOptions {
   dependsOn?: string[];
   labels?: string[];
 }
+
+import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
+
+export interface ToolContext {
+  progressToken?: string | number;
+  sendNotification: (notification: ServerNotification) => Promise<void>;
+}
