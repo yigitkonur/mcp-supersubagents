@@ -2,6 +2,7 @@ import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
 import { TaskState, TaskStatus } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
+import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 
 const MAX_TASKS = 100;
 
@@ -85,6 +86,7 @@ export function isProcessAlive(pid: number | undefined): boolean {
     return false;
   }
 }
+
 
 class TaskManager {
   private tasks: Map<string, TaskState> = new Map();
@@ -308,6 +310,38 @@ class TaskManager {
   }
 
   /**
+   * Expedite all rate-limited tasks by moving their next retry time up.
+   * Called after a successful Copilot account switch so stalled tasks benefit.
+   * Tasks are staggered to avoid thundering herd.
+   */
+  expediteRateLimitedTasks(baseDelayMs: number = 5000): void {
+    const rateLimitedTasks = Array.from(this.tasks.values())
+      .filter(t => t.status === TaskStatus.RATE_LIMITED && t.retryInfo);
+
+    if (rateLimitedTasks.length === 0) {
+      return;
+    }
+
+    console.error(`[task-manager] Expediting ${rateLimitedTasks.length} rate-limited task(s) after account switch`);
+
+    let delay = baseDelayMs;
+    for (const task of rateLimitedTasks) {
+      if (task.retryInfo) {
+        this.updateTask(task.id, {
+          retryInfo: {
+            ...task.retryInfo,
+            nextRetryTime: new Date(Date.now() + delay).toISOString(),
+          },
+        });
+        delay += 2000; // Stagger by 2 seconds per task
+      }
+    }
+
+    // Schedule retry processing after the base delay
+    setTimeout(() => this.processRateLimitedTasks(), baseDelayMs);
+  }
+
+  /**
    * Clear all tasks from memory (used by clear_tasks tool)
    */
   clearAllTasks(): number {
@@ -421,11 +455,39 @@ class TaskManager {
             endTime: new Date().toISOString(),
             error: 'Process exited unexpectedly (detected via health check)',
             process: undefined,
+            timeoutReason: 'process_dead',
+            timeoutContext: {
+              pidAlive: false,
+              lastHeartbeatAt: task.lastHeartbeatAt,
+              lastOutputAt: task.lastOutputAt,
+              detectedBy: 'health_check',
+            },
           });
+        } else {
+          const now = Date.now();
+          const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
+          if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
+            this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
+          }
+          if (task.lastOutputAt) {
+            const lastOutputAgeMs = now - new Date(task.lastOutputAt).getTime();
+            if (lastOutputAgeMs >= TASK_STALL_WARN_MS && task.timeoutReason !== 'stall') {
+              this.updateTask(task.id, {
+                timeoutReason: 'stall',
+                timeoutContext: {
+                  lastOutputAt: task.lastOutputAt,
+                  lastOutputAgeMs,
+                  lastHeartbeatAt: task.lastHeartbeatAt,
+                  detectedBy: 'health_check',
+                },
+              });
+            }
+          }
         }
       }
     }
   }
+
 
   private cleanup(): void {
     const now = Date.now();
@@ -460,7 +522,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[] }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean; switchAttempted?: boolean }): TaskState {
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
     
@@ -475,12 +537,14 @@ class TaskManager {
       initialStatus = satisfied ? TaskStatus.PENDING : TaskStatus.WAITING;
     }
     
+    const startTime = new Date().toISOString();
     const task: TaskState = {
       id,
       status: initialStatus,
       prompt,
       output: [],
-      startTime: new Date().toISOString(),
+      startTime,
+      lastHeartbeatAt: startTime,
       cwd,
       model,
       autonomous: options?.autonomous,
@@ -488,6 +552,9 @@ class TaskManager {
       retryInfo: options?.retryInfo,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
+      provider: options?.provider,
+      fallbackAttempted: options?.fallbackAttempted,
+      switchAttempted: options?.switchAttempted,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');
@@ -529,6 +596,13 @@ class TaskManager {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (task) {
+      const now = new Date().toISOString();
+      task.lastOutputAt = now;
+      task.lastHeartbeatAt = now;
+      if (task.timeoutReason === 'stall') {
+        task.timeoutReason = undefined;
+        task.timeoutContext = undefined;
+      }
       task.output.push(line);
       try { this.outputCallback?.(id, line); } catch {}
       

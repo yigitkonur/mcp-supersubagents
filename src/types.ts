@@ -1,5 +1,7 @@
 import type { ResultPromise } from 'execa';
 
+export type Provider = 'copilot' | 'claude-cli';
+
 export enum TaskStatus {
   PENDING = 'pending',
   WAITING = 'waiting',
@@ -9,6 +11,24 @@ export enum TaskStatus {
   CANCELLED = 'cancelled',
   RATE_LIMITED = 'rate_limited',
   TIMED_OUT = 'timed_out',
+}
+
+export type TimeoutReason =
+  | 'hard_timeout'
+  | 'stall'
+  | 'process_dead'
+  | 'server_restart'
+  | 'unknown';
+
+export interface TimeoutContext {
+  timeoutMs?: number;
+  timeoutAt?: string;
+  elapsedMs?: number;
+  lastOutputAt?: string;
+  lastOutputAgeMs?: number;
+  lastHeartbeatAt?: string;
+  pidAlive?: boolean;
+  detectedBy?: 'execa' | 'health_check' | 'startup_recovery' | 'manual';
 }
 
 export interface RetryInfo {
@@ -27,6 +47,8 @@ export interface TaskState {
   pid?: number;
   sessionId?: string;
   startTime: string;
+  lastOutputAt?: string;
+  lastHeartbeatAt?: string;
   endTime?: string;
   exitCode?: number;
   error?: string;
@@ -39,7 +61,13 @@ export interface TaskState {
   dependsOn?: string[];
   timeout?: number;
   timeoutAt?: string;
+  timeoutReason?: TimeoutReason;
+  timeoutContext?: TimeoutContext;
   labels?: string[];
+  provider?: Provider;
+  fallbackAttempted?: boolean;
+  switchAttempted?: boolean;
+  recoveryAttempted?: boolean;
 }
 
 export interface SpawnOptions {
@@ -52,6 +80,9 @@ export interface SpawnOptions {
   retryInfo?: RetryInfo;
   dependsOn?: string[];
   labels?: string[];
+  provider?: Provider;
+  fallbackAttempted?: boolean;
+  switchAttempted?: boolean;
 }
 
 import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';

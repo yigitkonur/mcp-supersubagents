@@ -59,23 +59,37 @@ function serializeTasks(tasks: TaskState[]): string {
  * Mark orphaned running/pending tasks as failed (server crashed)
  * Note: RATE_LIMITED tasks are preserved for auto-retry
  */
+function applyTaskDefaults(task: TaskState): TaskState {
+  const startTime = task.startTime || new Date().toISOString();
+  return {
+    ...task,
+    startTime,
+    lastHeartbeatAt: task.lastHeartbeatAt ?? startTime,
+  };
+}
+
 function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
   return tasks.map(task => {
     // Keep rate-limited tasks as-is for auto-retry
     if (task.status === TaskStatus.RATE_LIMITED) {
-      return task;
+      return applyTaskDefaults(task);
     }
     
     // Mark running/pending as failed (server crashed)
     if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING) {
-      return {
+      const updated: TaskState = {
         ...task,
         status: TaskStatus.FAILED,
         endTime: new Date().toISOString(),
         error: 'Server restarted - task was interrupted',
+        timeoutReason: 'server_restart',
+        timeoutContext: {
+          detectedBy: 'startup_recovery',
+        },
       };
+      return applyTaskDefaults(updated);
     }
-    return task;
+    return applyTaskDefaults(task);
   });
 }
 

@@ -2,6 +2,7 @@ import { ResumeTaskSchema } from '../utils/sanitize.js';
 import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { progressRegistry } from '../services/progress-registry.js';
 import type { ToolContext } from '../types.js';
+import { mcpText, formatError, join } from '../utils/format.js';
 
 export const resumeTaskTool = {
   name: 'resume_task',
@@ -9,17 +10,17 @@ export const resumeTaskTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      session_id: { 
-        type: 'string', 
-        description: 'Session ID from previous task.' 
+      session_id: {
+        type: 'string',
+        description: 'Session ID from previous task.'
       },
-      cwd: { 
-        type: 'string', 
-        description: 'Working directory. Auto-detected if omitted.' 
+      cwd: {
+        type: 'string',
+        description: 'Working directory. Auto-detected if omitted.'
       },
-      timeout: { 
-        type: 'number', 
-        description: 'Max execution time in ms. Default: 600000.' 
+      timeout: {
+        type: 'number',
+        description: 'Optional. Max execution time in ms. Default: 1800000 (30 min, configurable via MCP_TASK_TIMEOUT_MS). Do NOT set unless necessary; prefer the default and only override for known long/short tasks.'
       },
     },
     required: ['session_id'],
@@ -30,7 +31,7 @@ export async function handleResumeTask(args: unknown, ctx?: ToolContext): Promis
   try {
     const input = args as any;
     const parsed = ResumeTaskSchema.parse({ sessionId: input?.session_id || input?.sessionId, ...input });
-    
+
     const taskId = await spawnCopilotProcess({
       prompt: '',
       timeout: parsed.timeout,
@@ -44,27 +45,14 @@ export async function handleResumeTask(args: unknown, ctx?: ToolContext): Promis
       progressRegistry.sendProgress(taskId, `Resumed session ${parsed.sessionId} as task ${taskId}`);
     }
 
-    return {
-      content: [{ 
-        type: 'text', 
-        text: JSON.stringify({ 
-          task_id: taskId, 
-          resumed_session: parsed.sessionId,
-          next_action: 'get_status',
-          next_action_args: { task_id: taskId }
-        }) 
-      }] 
-    };
+    return mcpText(join(
+      `Session \`${parsed.sessionId}\` resumed as task **${taskId}**.`,
+      'Check status with `get_status`.'
+    ));
   } catch (error) {
-    return { 
-      content: [{ 
-        type: 'text', 
-        text: JSON.stringify({ 
-          error: error instanceof Error ? error.message : 'Unknown',
-          suggested_action: 'get_status',
-          suggestion: 'Get session_id from completed/failed task before resuming'
-        }) 
-      }] 
-    };
+    return mcpText(formatError(
+      error instanceof Error ? error.message : 'Unknown',
+      'Get `session_id` from a completed or failed task using `get_status` before resuming.'
+    ));
   }
 }

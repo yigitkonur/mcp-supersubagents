@@ -18,15 +18,19 @@ import { resumeTaskTool, handleResumeTask } from './tools/resume-task.js';
 import { clearTasksTool, handleClearTasks } from './tools/clear-tasks.js';
 import { retryTaskTool, handleRetryTask } from './tools/retry-task.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
+import { recoverTaskTool, handleRecoverTask } from './tools/recover-task.js';
 import { forceStartTool, handleForceStart } from './tools/force-start.js';
 import { batchSpawnTool, handleBatchSpawn } from './tools/batch-spawn.js';
 import { streamOutputTool, handleStreamOutput } from './tools/stream-output.js';
+import { simulateRateLimitTool, handleSimulateRateLimit } from './tools/simulate-rate-limit.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
-import { checkCopilotInstalled } from './services/process-spawner.js';
+import { checkCopilotInstalled, checkClaudeCliInstalled } from './services/process-spawner.js';
 import { buildMCPTask } from './services/task-status-mapper.js';
 import { progressRegistry } from './services/progress-registry.js';
 import { subscriptionRegistry, taskIdToUri, uriToTaskId } from './services/subscription-registry.js';
+import { isSwitchAvailable } from './services/copilot-switch.js';
+import { mcpText } from './utils/format.js';
 import { TaskStatus } from './types.js';
 import type { ToolContext } from './types.js';
 
@@ -65,6 +69,7 @@ taskManager.onRetry(async (task) => {
       model: task.model,
       autonomous: task.autonomous ?? true,
       retryInfo: task.retryInfo,
+      fallbackAttempted: task.fallbackAttempted,
     });
     return newTaskId;
   } catch (err) {
@@ -157,8 +162,9 @@ server.oninitialized = async () => {
 
 const tools = [
   spawnTaskTool, getTaskStatusTool, listTasksTool, resumeTaskTool,
-  clearTasksTool, retryTaskTool, cancelTaskTool, forceStartTool, batchSpawnTool,
+  clearTasksTool, retryTaskTool, cancelTaskTool, recoverTaskTool, forceStartTool, batchSpawnTool,
   ...(ENABLE_STREAMING ? [streamOutputTool] : []),
+  simulateRateLimitTool,
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -181,11 +187,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     case 'clear_tasks': return handleClearTasks(args);
     case 'retry_task': return handleRetryTask(args);
     case 'cancel_task': return handleCancelTask(args);
+    case 'recover_task': return handleRecoverTask(args);
     case 'force_start': return handleForceStart(args);
     case 'stream_output': return ENABLE_STREAMING
       ? handleStreamOutput(args)
-      : { content: [{ type: 'text', text: JSON.stringify({ error: 'stream_output disabled (experimental)' }) }] };
-    default: return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown: ${name}` }) }] };
+      : mcpText('**Error:** `stream_output` is disabled (experimental). Set `ENABLE_STREAMING=true` to enable.');
+    case 'simulate_rate_limit': return handleSimulateRateLimit(args);
+    default: return mcpText(`**Error:** Unknown tool \`${name}\``);
   }
 });
 
@@ -299,6 +307,16 @@ server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
 
 async function main() {
   if (!checkCopilotInstalled()) console.error('Warning: Copilot CLI not found');
+  if (isSwitchAvailable()) {
+    console.error('Info: Copilot account switching available');
+  } else {
+    console.error('Info: Copilot account switching not available (no ~/bin/copilot-switch)');
+  }
+  if (!checkClaudeCliInstalled()) {
+    console.error('Warning: Claude CLI not found - fallback on rate limit will not be available');
+  } else {
+    console.error('Info: Claude CLI available for rate limit fallback');
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.on('SIGINT', () => { taskManager.shutdown(); process.exit(0); });

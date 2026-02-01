@@ -1,6 +1,6 @@
 {
-  "name": "copilot-mcp-server",
-  "version": "1.0.0",
+  "name": "super-subagents",
+  "version": "1.0.2",
   "description": "MCP server for spawning and managing GitHub Copilot CLI tasks",
   "type": "module",
   "main": "build/index.js",

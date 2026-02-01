@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { TaskStatus } from '../types.js';
+import { mcpText, formatError, displayStatus, formatDuration, join } from '../utils/format.js';
+import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 
 const StreamOutputSchema = z.object({
   task_id: z.string().min(1),
@@ -10,7 +12,7 @@ const StreamOutputSchema = z.object({
 
 export const streamOutputTool = {
   name: 'stream_output',
-  description: `Get incremental output from a task. Use offset to get new lines since last call. Efficient for streaming without re-fetching entire output.`,
+  description: `Get incremental output from a task. Use offset to get new lines since last call. This is the preferred way to monitor task output -- unlike get_status, this tool is not throttled and returns only the new output lines you haven't seen yet.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -35,28 +37,21 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
   try {
     const parsed = StreamOutputSchema.parse(args || {});
     const taskId = parsed.task_id.toLowerCase().trim();
-    
+
     const task = taskManager.getTask(taskId);
-    
+
     if (!task) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            error: 'Task not found',
-            task_id: parsed.task_id,
-            suggested_action: 'list_tasks',
-          }),
-        }],
-      };
+      return mcpText(formatError('Task not found', 'Use `list_tasks` to find valid task IDs.'));
     }
 
     const totalLines = task.output.length;
     const offset = Math.min(parsed.offset, totalLines);
-    const lines = task.output.slice(offset, offset + parsed.limit);
-    const nextOffset = offset + lines.length;
+    const outputLines = task.output.slice(offset, offset + parsed.limit);
+    const nextOffset = offset + outputLines.length;
     const hasMore = nextOffset < totalLines;
-    
+    const now = Date.now();
+    const lastOutputAgeMs = task.lastOutputAt ? now - new Date(task.lastOutputAt).getTime() : undefined;
+
     const isTerminal = [
       TaskStatus.COMPLETED,
       TaskStatus.FAILED,
@@ -64,31 +59,43 @@ export async function handleStreamOutput(args: unknown): Promise<{ content: Arra
       TaskStatus.TIMED_OUT,
     ].includes(task.status);
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          task_id: task.id,
-          status: task.status,
-          lines,
-          offset,
-          next_offset: nextOffset,
-          total_lines: totalLines,
-          has_more: hasMore,
-          is_complete: isTerminal && !hasMore,
-          ...(isTerminal && !hasMore ? { exit_code: task.exitCode } : {}),
-          ...(task.error && isTerminal ? { error: task.error } : {}),
-        }),
-      }],
-    };
+    // Build headline
+    const statusStr = displayStatus(task.status);
+    let rangeStr: string;
+    if (outputLines.length > 0) {
+      rangeStr = `lines ${offset}-${nextOffset - 1} of ${totalLines}`;
+    } else {
+      rangeStr = `${totalLines} lines`;
+    }
+    const exitInfo = isTerminal && task.exitCode !== undefined ? `, exit code: ${task.exitCode}` : '';
+    const headline = `**${task.id}** -- ${statusStr} (${rangeStr}${exitInfo})`;
+
+    // Build body
+    let body: string;
+    if (outputLines.length > 0) {
+      body = outputLines.map(l => `> ${l}`).join('\n');
+    } else {
+      body = 'No output yet.';
+    }
+
+    // Build footer
+    let footer: string;
+    if (hasMore) {
+      const remaining = totalLines - nextOffset;
+      footer = `${remaining} more lines available. Use offset \`${nextOffset}\` to continue.`;
+    } else if (isTerminal) {
+      footer = 'All output retrieved.';
+    } else if (lastOutputAgeMs !== undefined && lastOutputAgeMs >= TASK_STALL_WARN_MS) {
+      footer = `No output for ${formatDuration(lastOutputAgeMs)}. Task may be stalled.`;
+    } else {
+      footer = 'Waiting for more output...';
+    }
+
+    // Add error if terminal and has error
+    const errorLine = task.error && isTerminal ? `**Error:** ${task.error}` : undefined;
+
+    return mcpText(join(headline, '', body, '', errorLine, footer));
   } catch (error) {
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }),
-      }],
-    };
+    return mcpText(formatError(error instanceof Error ? error.message : 'Unknown error'));
   }
 }
