@@ -494,9 +494,10 @@ class TaskManager {
     const toDelete: string[] = [];
 
     for (const [id, task] of this.tasks) {
-      if (task.status === TaskStatus.COMPLETED || 
-          task.status === TaskStatus.FAILED || 
-          task.status === TaskStatus.CANCELLED) {
+      if (task.status === TaskStatus.COMPLETED ||
+          task.status === TaskStatus.FAILED ||
+          task.status === TaskStatus.CANCELLED ||
+          task.status === TaskStatus.TIMED_OUT) {
         const endTime = task.endTime ? new Date(task.endTime).getTime() : 0;
         if (now - endTime > TASK_TTL_MS) {
           toDelete.push(id);
