@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { taskManager } from '../services/task-manager.js';
+import { taskManager, isProcessAlive } from '../services/task-manager.js';
 import { spawnCopilotProcess } from '../services/process-spawner.js';
 import { TaskStatus } from '../types.js';
 import { mcpText, formatError, join } from '../utils/format.js';
@@ -33,16 +33,6 @@ export const recoverTaskTool = {
     required: ['task_id'],
   },
 };
-
-function isProcessAlive(pid: number | undefined): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export async function handleRecoverTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
   try {

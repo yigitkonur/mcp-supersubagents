@@ -55,6 +55,9 @@ const server = new Server(
   }
 );
 
+// Load persisted tasks immediately using server cwd as a fallback.
+taskManager.setCwd(clientContext.getDefaultCwd());
+
 // Register retry callback for rate-limited tasks
 taskManager.onRetry(async (task) => {
   const { spawnCopilotProcess } = await import('./services/process-spawner.js');

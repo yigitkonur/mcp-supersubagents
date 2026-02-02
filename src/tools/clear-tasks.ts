@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { clientContext } from '../services/client-context.js';
-import { deleteStorage, getStoragePath, hashCwd } from '../services/task-persistence.js';
+import { deleteStorage } from '../services/task-persistence.js';
 import { mcpText, formatError } from '../utils/format.js';
 
 const ClearTasksSchema = z.object({

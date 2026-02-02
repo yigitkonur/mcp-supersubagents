@@ -4,7 +4,7 @@ import { TaskStatus } from '../types.js';
 import {
   mcpText, formatError, formatLabelsLine, formatLabels,
   formatDuration, formatOutputBlock, formatRetryHint,
-  formatTable, displayStatus, join,
+  formatTable, displayStatus,
 } from '../utils/format.js';
 import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
 

@@ -1,4 +1,4 @@
-import { uniqueNamesGenerator, adjectives, colors, animals, names } from 'unique-names-generator';
+import { uniqueNamesGenerator, adjectives, animals } from 'unique-names-generator';
 
 /**
  * Generates human-readable task IDs like "brave-tiger-42" or "cosmic-falcon-17"

@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
-import { TaskStatus } from '../types.js';
 import { mcpText, formatError, displayStatus } from '../utils/format.js';
 
 const CancelTaskSchema = z.object({

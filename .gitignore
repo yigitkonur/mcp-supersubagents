@@ -21,6 +21,7 @@ Thumbs.db
 
 # Agent workspace (temporary files)
 .agent-workspace/
+.windsurf/
 
 # Test files
 test-*.mjs

@@ -125,27 +125,3 @@ export function hasExceededMaxRetries(task: TaskState): boolean {
 /**
  * Get all rate-limited tasks that are ready for retry
  */
-export function getTasksReadyForRetry(tasks: TaskState[]): TaskState[] {
-  return tasks.filter(shouldRetryNow);
-}
-
-/**
- * Format retry status for display
- */
-export function formatRetryStatus(task: TaskState): string {
-  if (!task.retryInfo) {
-    return 'No retry info';
-  }
-  
-  const { retryCount, maxRetries, nextRetryTime, reason } = task.retryInfo;
-  const nextRetry = new Date(nextRetryTime);
-  const now = new Date();
-  const diffMs = nextRetry.getTime() - now.getTime();
-  
-  if (diffMs <= 0) {
-    return `Ready for retry (attempt ${retryCount + 1}/${maxRetries})`;
-  }
-  
-  const diffMinutes = Math.ceil(diffMs / 60000);
-  return `Retry in ${diffMinutes} min (attempt ${retryCount}/${maxRetries}) - ${reason}`;
-}
