@@ -1,6 +1,6 @@
 {
   "name": "super-subagents",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "MCP server for spawning and managing GitHub Copilot CLI tasks",
   "type": "module",
   "main": "build/index.js",
