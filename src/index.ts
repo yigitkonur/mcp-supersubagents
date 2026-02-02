@@ -137,6 +137,7 @@ taskManager.onTaskCreated(() => {
 
 // Task deleted: cleanup subscription + resource list changed
 taskManager.onTaskDeleted((taskId) => {
+  progressRegistry.unregister(taskId);
   subscriptionRegistry.unsubscribe(taskIdToUri(taskId));
   server.sendResourceListChanged().catch(() => {});
 });

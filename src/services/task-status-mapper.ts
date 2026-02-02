@@ -114,6 +114,28 @@ export function computePollInterval(task: TaskState): number | undefined {
 
 const TASK_TTL_MS = 3_600_000; // 1 hour
 
+function getLastUpdatedAt(task: TaskState): string {
+  const candidates = [
+    task.endTime,
+    task.lastOutputAt,
+    task.lastHeartbeatAt,
+    task.startTime,
+  ].filter((value): value is string => Boolean(value));
+
+  let latest = task.startTime;
+  let latestMs = new Date(latest).getTime();
+
+  for (const ts of candidates) {
+    const ms = new Date(ts).getTime();
+    if (Number.isFinite(ms) && ms > latestMs) {
+      latestMs = ms;
+      latest = ts;
+    }
+  }
+
+  return latest;
+}
+
 /**
  * Build an MCP Task object from internal TaskState.
  */
@@ -123,7 +145,7 @@ export function buildMCPTask(task: TaskState): MCPTask {
     status: mapInternalStatusToMCP(task.status),
     ttl: TASK_TTL_MS,
     createdAt: task.startTime,
-    lastUpdatedAt: task.endTime || task.startTime,
+    lastUpdatedAt: getLastUpdatedAt(task),
     pollInterval: computePollInterval(task),
     statusMessage: buildStatusMessage(task),
   };

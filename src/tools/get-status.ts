@@ -47,7 +47,7 @@ async function applyThrottle(): Promise<string | null> {
 }
 
 function getRetryCommand(task: { status: TaskStatus }, waitSeconds: number): string | undefined {
-  if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
+  if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED || task.status === TaskStatus.TIMED_OUT) {
     return undefined;
   }
 
@@ -135,7 +135,7 @@ function getTaskStatusFromTask(task: NonNullable<ReturnType<typeof taskManager.g
   taskCheckCounts.set(normalizedId, checkCount);
 
   // Clean up check counts for terminal states
-  if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED) {
+  if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED || task.status === TaskStatus.TIMED_OUT) {
     taskCheckCounts.delete(normalizedId);
   }
 
@@ -471,7 +471,11 @@ export async function handleGetTaskStatus(args: unknown): Promise<{ content: Arr
   }
 
   try {
-    const rawTaskId = (args as any)?.task_id || (args as any)?.taskId;
+    const input = args as any;
+    const parsed = GetTaskStatusSchema.parse({
+      taskId: input?.task_id ?? input?.taskId,
+    });
+    const rawTaskId = parsed.taskId;
 
     // Handle array of task IDs
     if (Array.isArray(rawTaskId)) {

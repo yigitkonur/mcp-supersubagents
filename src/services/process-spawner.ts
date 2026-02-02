@@ -1,5 +1,6 @@
 import { execa } from 'execa';
-import { existsSync } from 'fs';
+import { accessSync, constants, existsSync } from 'fs';
+import { delimiter, isAbsolute, join as joinPath } from 'path';
 import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { TaskStatus, SpawnOptions, TaskState } from '../types.js';
@@ -11,6 +12,31 @@ import { TASK_STALL_WARN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 const CLAUDE_CLI_PATH = process.env.CLAUDE_CLI_PATH || 'claude';
 const FORCE_RATE_LIMIT = process.env.FORCE_RATE_LIMIT === '1';
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCommandAvailable(cmd: string): boolean {
+  if (!cmd) return false;
+  if (isAbsolute(cmd) || cmd.includes('/')) {
+    return isExecutable(cmd);
+  }
+  const pathEnv = process.env.PATH || '';
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    const fullPath = joinPath(dir, cmd);
+    if (existsSync(fullPath) && isExecutable(fullPath)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export async function spawnCopilotProcess(options: SpawnOptions): Promise<string> {
   const prompt = options.prompt?.trim() || '';
@@ -31,6 +57,7 @@ export async function spawnCopilotProcess(options: SpawnOptions): Promise<string
     provider: options.provider || 'copilot',
     fallbackAttempted: options.fallbackAttempted,
     switchAttempted: options.switchAttempted,
+    timeout: options.timeout,
   });
 
   // If task is waiting for dependencies, don't start execution yet
@@ -83,8 +110,9 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
   // Update status to PENDING before running
   taskManager.updateTask(task.id, { status: TaskStatus.PENDING });
 
+  const timeout = task.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   setImmediate(() => {
-    runProcess(task.id, args, cwd, TASK_TIMEOUT_DEFAULT_MS);
+    runProcess(task.id, args, cwd, timeout);
   });
 }
 
@@ -277,6 +305,7 @@ async function handleRateLimit(
       taskManager.updateTask(taskId, {
         switchAttempted: true,
         process: undefined,
+        pid: undefined,
         error: undefined,
         endTime: undefined,
         exitCode: undefined,
@@ -308,7 +337,7 @@ async function handleRateLimit(
   // ── Step 2: Try Claude CLI fallback ──
   if (!currentTask.fallbackAttempted) {
     console.error(`[process-spawner] Task ${taskId} rate-limited on Copilot, attempting Claude CLI fallback`);
-    taskManager.updateTask(taskId, { process: undefined });
+    taskManager.updateTask(taskId, { process: undefined, pid: undefined });
 
     const fallbackResult = await runClaudeFallback(
       taskId,
@@ -338,6 +367,7 @@ async function handleRateLimit(
         retryInfo,
         fallbackAttempted: true,
         process: undefined,
+        pid: undefined,
       });
       console.error(`[process-spawner] Task ${taskId} scheduled retry #${retryInfo.retryCount} at ${retryInfo.nextRetryTime}`);
     }
@@ -354,6 +384,7 @@ async function handleRateLimit(
     error: errorText,
     retryInfo,
     process: undefined,
+    pid: undefined,
   });
   console.error(`[process-spawner] Task ${taskId} rate-limited, scheduled retry #${retryInfo.retryCount} at ${retryInfo.nextRetryTime}`);
 }
@@ -404,17 +435,6 @@ async function runProcess(
       await handleRateLimit(taskId, cwd, timeout, 1, 'Simulated: too many requests');
       return;
     }
-
-    // Event-driven status update: detect process exit immediately
-    proc.on('exit', (code, signal) => {
-      const currentTask = taskManager.getTask(taskId);
-      // Only update if still marked as RUNNING (avoid overwriting intentional cancellations)
-      if (currentTask?.status === TaskStatus.RUNNING) {
-        console.error(`[process-spawner] Process exit event for ${taskId}: code=${code}, signal=${signal}`);
-        // Let the main await handle the actual status update with proper error detection
-        // This ensures rate limit detection still works
-      }
-    });
 
     // Event-driven status update: detect process exit immediately
     proc.on('exit', (code, signal) => {
@@ -540,7 +560,7 @@ async function runProcess(
 
 export function checkCopilotInstalled(): boolean {
   try {
-    return existsSync(COPILOT_PATH);
+    return isCommandAvailable(COPILOT_PATH);
   } catch {
     return false;
   }
@@ -548,11 +568,7 @@ export function checkCopilotInstalled(): boolean {
 
 export function checkClaudeCliInstalled(): boolean {
   try {
-    if (CLAUDE_CLI_PATH !== 'claude') {
-      return existsSync(CLAUDE_CLI_PATH);
-    }
-    // 'claude' in PATH — assume available
-    return true;
+    return isCommandAvailable(CLAUDE_CLI_PATH);
   } catch {
     return false;
   }
