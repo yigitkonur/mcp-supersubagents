@@ -65,9 +65,15 @@ class AccountManager {
       }
     }
 
-    // Method 3: Single token fallback (GITHUB_TOKEN, GH_TOKEN, or GH_PAT_TOKEN)
+    // Method 3: GH_PAT_TOKEN (supports comma-separated for multi-account)
+    if (tokens.length === 0 && process.env.GH_PAT_TOKEN) {
+      const ghPatTokens = process.env.GH_PAT_TOKEN.split(',').map(t => t.trim()).filter(t => t.length > 0);
+      tokens.push(...ghPatTokens);
+    }
+
+    // Method 4: Single token fallback (GITHUB_TOKEN or GH_TOKEN)
     if (tokens.length === 0) {
-      const singleToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GH_PAT_TOKEN;
+      const singleToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
       if (singleToken && singleToken.trim()) {
         tokens.push(singleToken.trim());
       }
