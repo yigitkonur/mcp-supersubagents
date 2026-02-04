@@ -15,7 +15,6 @@ import { spawnTaskTool, handleSpawnTask } from './tools/spawn-task.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
-import { streamOutputTool, handleStreamOutput } from './tools/stream-output.js';
 import { taskManager } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkSDKAvailable, shutdownSDK, getSDKStats } from './services/sdk-spawner.js';
@@ -29,8 +28,6 @@ import { mcpText } from './utils/format.js';
 import { TaskStatus } from './types.js';
 import type { ToolContext } from './types.js';
 
-// Feature flags (off by default for cost control)
-const ENABLE_STREAMING = process.env.ENABLE_STREAMING === 'true';
 
 const server = new Server(
   { name: 'copilot-agent', version: '1.0.0' },
@@ -169,13 +166,12 @@ server.oninitialized = async () => {
 
 // --- Tool handlers ---
 
-// Only 4 tools - status/listing moved to MCP Resources, handoff automated on backend
+// 4 tools only - status/listing via MCP Resources, handoff automated on backend
 const tools = [
   spawnTaskTool,
   sendMessageTool,
   cancelTaskTool,
   answerQuestionTool,
-  ...(ENABLE_STREAMING ? [streamOutputTool] : []),
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -194,10 +190,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     case 'send_message': return handleSendMessage(args, ctx);
     case 'cancel_task': return handleCancelTask(args);
     case 'answer_question': return handleAnswerQuestion(args);
-    case 'stream_output': return ENABLE_STREAMING
-      ? handleStreamOutput(args)
-      : mcpText('**Error:** `stream_output` is disabled. Set `ENABLE_STREAMING=true` to enable.');
-    default: return mcpText(`**Error:** Unknown tool \`${name}\`. Use MCP Resources for status: task:///all or task:///{id}`);
+    default: return mcpText(`**Error:** Unknown tool \`${name}\`. Use MCP Resources: task:///all or task:///{id}`);
   }
 });
 
@@ -295,7 +288,7 @@ server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
 }));
 
 // Helper: Parse output to execution log entries
-function parseOutputToExecutionLog(output: string[], mode: 'compact' | 'verbose' = 'compact') {
+function parseOutputToExecutionLog(output: string[]) {
   const entries: Array<{ turn: number; tools: Array<{ name: string; duration?: string }> }> = [];
   let currentTurn = 0;
   let currentEntry: { turn: number; tools: Array<{ name: string; duration?: string }> } | null = null;
@@ -323,6 +316,39 @@ function parseOutputToExecutionLog(output: string[], mode: 'compact' | 'verbose'
   }
   if (currentEntry) entries.push(currentEntry);
   return entries;
+}
+
+// Helper: Extract message stats from output for progress tracking
+function extractMessageStats(output: string[]): { 
+  round: number; 
+  lastUserMessage?: string;
+  totalMessages: number;
+} {
+  let round = 0;
+  let lastUserMessage: string | undefined;
+  let totalMessages = 0;
+  
+  for (const line of output) {
+    // Count rounds/turns
+    if (line.includes('[assistant] Message complete') || line.includes('[turn]')) {
+      round++;
+      totalMessages++;
+    }
+    // Track user messages (prompts sent to session)
+    if (line.includes('[user]') || line.includes('[prompt]') || line.includes('Sending prompt:')) {
+      const msgMatch = line.match(/(?:\[user\]|\[prompt\]|Sending prompt:)\s*(.+)/);
+      if (msgMatch) {
+        lastUserMessage = msgMatch[1].slice(0, 100) + (msgMatch[1].length > 100 ? '...' : '');
+        totalMessages++;
+      }
+    }
+    // Also count tool calls as messages
+    if (line.includes('[tool] Starting:')) {
+      totalMessages++;
+    }
+  }
+  
+  return { round, lastUserMessage, totalMessages };
 }
 
 // Helper: Check if task can receive messages
@@ -379,17 +405,23 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     
     const data = {
       count: allTasks.length,
-      tasks: allTasks.map(task => ({
-        id: task.id,
-        status: task.status,
-        labels: task.labels,
-        has_pending_question: !!task.pendingQuestion,
-        pending_question: task.pendingQuestion?.question,
-        can_send_message: canSendMessage(task),
-        session_id: task.sessionId,
-        started: task.startTime,
-        ended: task.endTime,
-      })),
+      tasks: allTasks.map(task => {
+        const stats = extractMessageStats(task.output);
+        return {
+          id: task.id,
+          status: task.status,
+          round: stats.round,
+          total_messages: stats.totalMessages,
+          last_user_message: stats.lastUserMessage,
+          labels: task.labels,
+          has_pending_question: !!task.pendingQuestion,
+          pending_question: task.pendingQuestion?.question,
+          can_send_message: canSendMessage(task),
+          session_id: task.sessionId,
+          started: task.startTime,
+          ended: task.endTime,
+        };
+      }),
       pending_questions: allTasks
         .filter(t => t.pendingQuestion)
         .map(t => ({
@@ -455,11 +487,20 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
   }
 
+  const msgStats = extractMessageStats(task.output);
+  
   const data = {
     id: task.id,
     status: task.status,
     session_id: task.sessionId,
     can_send_message: canSendMessage(task),
+    
+    // Progress tracking - shows iteration progress
+    progress: {
+      round: msgStats.round,
+      total_messages: msgStats.totalMessages,
+      last_user_message: msgStats.lastUserMessage,
+    },
     
     // Prompt and output
     prompt_preview: task.prompt.slice(0, 500) + (task.prompt.length > 500 ? '...' : ''),
