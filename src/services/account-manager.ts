@@ -65,9 +65,9 @@ class AccountManager {
       }
     }
 
-    // Method 3: Single token fallback (GITHUB_TOKEN or GH_TOKEN)
+    // Method 3: Single token fallback (GITHUB_TOKEN, GH_TOKEN, or GH_PAT_TOKEN)
     if (tokens.length === 0) {
-      const singleToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+      const singleToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GH_PAT_TOKEN;
       if (singleToken && singleToken.trim()) {
         tokens.push(singleToken.trim());
       }
