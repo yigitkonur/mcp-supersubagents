@@ -49,7 +49,8 @@ function ensureStorageDir(): boolean {
  */
 function serializeTasks(tasks: TaskState[]): string {
   const serializable = tasks.map(task => {
-    const { process, ...rest } = task as TaskState & { process?: unknown };
+    // Exclude session reference as it's non-serializable
+    const { session, ...rest } = task;
     return rest;
   });
   return JSON.stringify(serializable, null, 2);

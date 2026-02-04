@@ -71,7 +71,7 @@ function areDependenciesSatisfied(task: TaskState, tasks: Map<string, TaskState>
 }
 const TASK_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
-const HEALTH_CHECK_INTERVAL_MS = 5 * 1000; // Check process health every 5 seconds
+const HEALTH_CHECK_INTERVAL_MS = 10 * 1000; // Check session health every 10 seconds
 const MAX_OUTPUT_LINES = 2000;
 const TERMINAL_STATUSES = new Set([
   TaskStatus.COMPLETED,
@@ -81,16 +81,11 @@ const TERMINAL_STATUSES = new Set([
 ]);
 
 /**
- * Check if a process is actually alive using signal 0
+ * Check if an SDK session is still active
+ * Note: With SDK, session liveness is managed by the SDK itself via events
  */
-export function isProcessAlive(pid: number | undefined): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0); // Signal 0 = check if process exists
-    return true;
-  } catch {
-    return false;
-  }
+export function isSessionActive(task: TaskState): boolean {
+  return task.session !== undefined && task.status === TaskStatus.RUNNING;
 }
 
 
@@ -400,13 +395,14 @@ class TaskManager {
 
   /**
    * Clear all tasks from memory (used by clear_tasks tool)
+   * Note: With SDK, sessions are managed by sdkSessionAdapter which handles cleanup
    */
   clearAllTasks(): number {
     const count = this.tasks.size;
     for (const task of this.tasks.values()) {
-      if (task.process && task.status === TaskStatus.RUNNING) {
+      if (task.session && task.status === TaskStatus.RUNNING) {
         try {
-          task.process.kill('SIGTERM');
+          task.session.abort();
         } catch {
           // Ignore failures while clearing
         }
@@ -502,55 +498,45 @@ class TaskManager {
   }
 
   /**
-   * Start periodic health check for running processes
-   * Detects zombie processes that exited without proper status update
+   * Start periodic health check for running sessions
+   * With SDK, this primarily monitors for stalled sessions
    */
   private startHealthCheck(): void {
     this.healthCheckInterval = setInterval(() => {
-      this.checkProcessHealth();
+      this.checkSessionHealth();
     }, HEALTH_CHECK_INTERVAL_MS);
   }
 
   /**
-   * Check all RUNNING tasks to verify their processes are still alive
+   * Check all RUNNING tasks to verify their sessions are healthy
+   * SDK manages session lifecycle, so we mainly check for stalls
    */
-  private checkProcessHealth(): void {
+  private checkSessionHealth(): void {
+    const now = Date.now();
+    
     for (const task of this.tasks.values()) {
-      if (task.status === TaskStatus.RUNNING && task.pid) {
-        if (!isProcessAlive(task.pid)) {
-          console.error(`[task-manager] Health check: detected dead process for task ${task.id} (pid=${task.pid})`);
-          this.updateTask(task.id, {
-            status: TaskStatus.FAILED,
-            endTime: new Date().toISOString(),
-            error: 'Process exited unexpectedly (detected via health check)',
-            process: undefined,
-            timeoutReason: 'process_dead',
-            timeoutContext: {
-              pidAlive: false,
-              lastHeartbeatAt: task.lastHeartbeatAt,
-              lastOutputAt: task.lastOutputAt,
-              detectedBy: 'health_check',
-            },
-          });
-        } else {
-          const now = Date.now();
-          const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
-          if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
-            this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
-          }
-          if (task.lastOutputAt) {
-            const lastOutputAgeMs = now - new Date(task.lastOutputAt).getTime();
-            if (lastOutputAgeMs >= TASK_STALL_WARN_MS && task.timeoutReason !== 'stall') {
-              this.updateTask(task.id, {
-                timeoutReason: 'stall',
-                timeoutContext: {
-                  lastOutputAt: task.lastOutputAt,
-                  lastOutputAgeMs,
-                  lastHeartbeatAt: task.lastHeartbeatAt,
-                  detectedBy: 'health_check',
-                },
-              });
-            }
+      if (task.status === TaskStatus.RUNNING) {
+        // Update heartbeat for active sessions
+        const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
+        if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
+          this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
+        }
+        
+        // Check for stalled sessions (no output for extended period)
+        if (task.lastOutputAt) {
+          const lastOutputAgeMs = now - new Date(task.lastOutputAt).getTime();
+          if (lastOutputAgeMs >= TASK_STALL_WARN_MS && task.timeoutReason !== 'stall') {
+            console.error(`[task-manager] Health check: session stall detected for task ${task.id}`);
+            this.updateTask(task.id, {
+              timeoutReason: 'stall',
+              timeoutContext: {
+                lastOutputAt: task.lastOutputAt,
+                lastOutputAgeMs,
+                lastHeartbeatAt: task.lastHeartbeatAt,
+                sessionAlive: isSessionActive(task),
+                detectedBy: 'health_check',
+              },
+            });
           }
         }
       }
@@ -674,8 +660,8 @@ class TaskManager {
     const updated = { ...task, ...updates };
     const statusChanged = updates.status && updates.status !== previousStatus;
     if (updates.status && statusChanged && TERMINAL_STATUSES.has(updates.status)) {
-      updated.process = undefined;
-      updated.pid = undefined;
+      // Clear session reference on terminal status (SDK adapter handles actual cleanup)
+      updated.session = undefined;
       if (!updates.endTime) {
         updated.endTime = new Date().toISOString();
       }
@@ -753,30 +739,27 @@ class TaskManager {
     }
 
     let alreadyDead = false;
-    if (task.process) {
-      // First check if process is actually alive
-      if (task.pid && !isProcessAlive(task.pid)) {
+    if (task.session) {
+      // SDK session - abort it
+      try {
+        task.session.abort();
+      } catch (err) {
+        // Session may already be done
         alreadyDead = true;
-        console.error(`[task-manager] Cancel: process for task ${task.id} was already dead (pid=${task.pid})`);
-      } else {
-        try {
-          task.process.kill('SIGTERM');
-        } catch (err) {
-          // Process may already be dead
-          alreadyDead = true;
-          console.error(`[task-manager] Cancel: kill failed for task ${task.id}: ${err}`);
-        }
+        console.error(`[task-manager] Cancel: session abort failed for task ${task.id}: ${err}`);
       }
+    } else if (task.status === TaskStatus.RUNNING) {
+      // Running but no session reference - already dead
+      alreadyDead = true;
     }
 
     const previousStatus = task.status;
     task.status = TaskStatus.CANCELLED;
     task.endTime = new Date().toISOString();
     if (alreadyDead) {
-      task.error = 'Process had already exited before cancellation';
+      task.error = 'Session had already ended before cancellation';
     }
-    task.process = undefined;
-    task.pid = undefined;
+    task.session = undefined;
     this.schedulePersist('state');
     try { this.statusChangeCallback?.(task, previousStatus); } catch {}
     return { success: true, alreadyDead };
@@ -803,12 +786,13 @@ class TaskManager {
       this.rateLimitTimer = null;
     }
 
+    // Abort all running sessions (SDK adapter handles actual cleanup)
     for (const task of this.tasks.values()) {
-      if (task.process && task.status === TaskStatus.RUNNING) {
+      if (task.session && task.status === TaskStatus.RUNNING) {
         try {
-          task.process.kill('SIGTERM');
+          task.session.abort();
         } catch {
-          // Ignore
+          // Ignore during shutdown
         }
       }
     }
