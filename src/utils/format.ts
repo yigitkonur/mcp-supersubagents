@@ -12,56 +12,11 @@ export function displayStatus(status: string): string {
   return status.replace(/_/g, ' ');
 }
 
-/** Format labels as inline code: "`label-a`, `label-b`". Returns empty string if none. */
-export function formatLabels(labels?: string[]): string {
-  if (!labels || labels.length === 0) return '';
-  return labels.map(l => `\`${l}\``).join(', ');
-}
-
-/** "Labels: `a`, `b`" or empty string. */
-export function formatLabelsLine(labels?: string[]): string {
-  const f = formatLabels(labels);
-  return f ? `Labels: ${f}` : '';
-}
-
-/** Milliseconds to human duration: 541364 -> "~9m" */
-export function formatDuration(ms: number): string {
-  if (ms <= 0) return '0s';
-  const totalSec = Math.round(ms / 1000);
-  if (totalSec < 60) return `~${totalSec}s`;
-  const min = Math.round(totalSec / 60);
-  if (min < 60) return `~${min}m`;
-  const h = Math.floor(min / 60);
-  const rm = min % 60;
-  return rm === 0 ? `~${h}h` : `~${h}h ${rm}m`;
-}
-
-/** Format output as a blockquote with optional truncation. Returns empty string for empty output. */
-export function formatOutputBlock(output: string, label = 'Output', maxLen = 2000): string {
-  if (!output || !output.trim()) return '';
-  let text = output;
-  let truncated = false;
-  if (text.length > maxLen) {
-    text = text.slice(-maxLen);
-    truncated = true;
-  }
-  const quoted = text.split('\n').map(line => `> ${line}`).join('\n');
-  const parts = [`**${label}:**`, quoted];
-  if (truncated) parts.push('*(truncated -- use `stream_output` for full output)*');
-  return parts.join('\n');
-}
-
 /** Standard error block with optional actionable hint. */
 export function formatError(error: string, hint?: string): string {
   const parts = [`**Error:** ${error}`];
   if (hint) parts.push('', hint);
   return parts.join('\n');
-}
-
-/** "Run `sleep 120` then check again." or empty string. */
-export function formatRetryHint(retryCommand?: string): string {
-  if (!retryCommand) return '';
-  return `Run \`${retryCommand}\` then check again.`;
 }
 
 /** Escape pipe characters in table cell content. */
