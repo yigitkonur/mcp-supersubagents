@@ -3,6 +3,7 @@ import { TaskState, TaskStatus } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
 import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
+import { createOutputFile, appendToOutputFile, finalizeOutputFile } from './output-file.js';
 
 const MAX_TASKS = 100;
 
@@ -619,6 +620,9 @@ class TaskManager {
     }
     
     const startTime = new Date().toISOString();
+    // Create output file for live monitoring
+    const outputFilePath = cwd ? createOutputFile(cwd, id) : null;
+    
     const task: TaskState = {
       id,
       status: initialStatus,
@@ -637,6 +641,7 @@ class TaskManager {
       fallbackAttempted: options?.fallbackAttempted,
       switchAttempted: options?.switchAttempted,
       timeout: options?.timeout,
+      outputFilePath: outputFilePath || undefined,
     };
     this.tasks.set(normalizedId, task);
     this.schedulePersist('state');
@@ -664,6 +669,10 @@ class TaskManager {
       updated.session = undefined;
       if (!updates.endTime) {
         updated.endTime = new Date().toISOString();
+      }
+      // Finalize output file with completion status
+      if (task.cwd) {
+        finalizeOutputFile(task.cwd, task.id, updates.status, updates.error);
       }
     }
     this.tasks.set(normalizedId, updated);
@@ -701,6 +710,11 @@ class TaskManager {
       }
       task.output.push(line);
       try { this.outputCallback?.(id, line); } catch {}
+      
+      // Write to output file for live monitoring
+      if (task.cwd) {
+        appendToOutputFile(task.cwd, task.id, line);
+      }
       
       if (task.output.length > MAX_OUTPUT_LINES) {
         task.output = task.output.slice(-MAX_OUTPUT_LINES);

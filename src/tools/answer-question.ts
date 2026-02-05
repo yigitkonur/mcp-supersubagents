@@ -108,19 +108,22 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
     }
 
     // Success - build confirmation
-    const parts: string[] = [];
-    parts.push(`✅ **Answer submitted for task ${taskId}**`);
-    parts.push('');
-    
-    if (question) {
-      parts.push(`**Question:** ${question.question}`);
-    }
-    parts.push(`**Answer:** ${result.resolvedAnswer}`);
-    parts.push(`**Type:** ${result.wasFreeform ? 'Custom (freeform)' : 'Choice selection'}`);
-    parts.push('');
-    parts.push('Task execution will resume. Check progress with `get_status`.');
+    const parts: (string | null)[] = [
+      `✅ **Answer submitted**`,
+      `task_id: \`${taskId}\``,
+      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+      '',
+      question ? `**Question:** ${question.question}` : null,
+      `**Answer:** ${result.resolvedAnswer}`,
+      '',
+      'Task execution resumed. MCP notifications will alert on completion—no need to poll.',
+      '',
+      '**Optional progress check:**',
+      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
+      `- Read resource: \`task:///${taskId}\``,
+    ];
 
-    return mcpText(parts.join('\n'));
+    return mcpText(parts.filter(Boolean).join('\n'));
 
   } catch (error) {
     if (error instanceof z.ZodError) {

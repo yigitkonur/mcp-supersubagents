@@ -125,19 +125,31 @@ export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise
 
     if (isWaiting) {
       const depsList = dependsOn.map(d => `\`${d}\``).join(', ');
-      return mcpText(join(
-        `Task **${taskId}** spawned (waiting).`,
-        `Depends on: ${depsList}`,
+      const parts = [
+        `✅ **Task queued (waiting for dependencies)**`,
+        `task_id: \`${taskId}\``,
+        task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
         '',
-        'Dependencies must complete before this task runs.',
-        'Check status with `get_status`.'
-      ));
+        `**Waiting on:** ${depsList}`,
+        '',
+        'Task will auto-start when dependencies complete. Continue with other work.',
+      ].filter(Boolean);
+      return mcpText(parts.join('\n'));
     }
 
-    return mcpText(join(
-      `Task **${taskId}** spawned (${task?.status || 'pending'}).`,
-      'Check status with `get_status`.'
-    ));
+    const parts = [
+      `✅ **Task launched**`,
+      `task_id: \`${taskId}\``,
+      task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+      '',
+      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
+      '',
+      '**Optional progress check:**',
+      task?.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
+      task?.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
+      `- Read resource: \`task:///${taskId}\``,
+    ].filter(Boolean);
+    return mcpText(parts.join('\n'));
   } catch (error) {
     return mcpText(formatError(
       error instanceof Error ? error.message : 'Unknown error',

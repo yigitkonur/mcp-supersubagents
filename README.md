@@ -140,9 +140,28 @@ Send follow-up messages to completed/failed tasks:
 
 Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 40m → 1h → 2h). Max 6 retries. With multi-account, rotation happens before retries.
 
+### Live Output Files
+
+Each task creates a live output file for real-time monitoring:
+
+```
+{cwd}/.super-agents/{task-id}.output
+```
+
+**Monitor progress without polling:**
+```bash
+tail -20 .super-agents/brave-tiger-42.output   # Last 20 lines
+tail -f .super-agents/brave-tiger-42.output    # Follow live
+wc -l .super-agents/brave-tiger-42.output      # Line count
+cat .super-agents/brave-tiger-42.output        # Full output
+```
+
+Tool responses include the `output_file` path for easy copy-paste.
+
 ### Persistence
 
 Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts.
+Output files persist in `{cwd}/.super-agents/` for post-hoc review.
 
 ## Environment Variables
 
@@ -159,15 +178,20 @@ Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts.
 
 ```
 1. spawn_task({ prompt: "...", task_type: "super-coder" })
-   → Returns task_id: "brave-tiger-42"
+   → Returns:
+     ✅ Task launched
+     task_id: brave-tiger-42
+     output_file: /path/to/project/.super-agents/brave-tiger-42.output
 
-2. Read resource: task:///brave-tiger-42
-   → Get status, progress, output
+2. Continue with other work - MCP notifications alert on completion
 
-3. If task completes and you want follow-up:
+3. Optional: Check progress anytime
+   tail -20 /path/to/project/.super-agents/brave-tiger-42.output
+
+4. If task completes and you want follow-up:
    send_message({ task_id: "brave-tiger-42", message: "now add tests" })
 
-4. If task has pending question:
+5. If task has pending question:
    answer_question({ task_id: "brave-tiger-42", answer: "1" })
 ```
 

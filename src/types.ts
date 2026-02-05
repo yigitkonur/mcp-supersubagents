@@ -247,6 +247,8 @@ export interface TaskState {
   sessionMetrics?: SessionMetrics;
   /** Pending question from SDK ask_user tool - task is paused */
   pendingQuestion?: PendingQuestion;
+  /** Path to live output file for agent monitoring */
+  outputFilePath?: string;
 }
 
 export interface SpawnOptions {

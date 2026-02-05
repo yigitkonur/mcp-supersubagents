@@ -134,8 +134,17 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     // Single task response
     if (taskIds.length === 1) {
       const result = results[0];
+      const task = taskManager.getTask(result.task_id);
       if (result.success) {
-        return mcpText(`✅ Task **${result.task_id}** cancelled (was: ${displayStatus(result.previous_status!)}).`);
+        const parts: (string | null)[] = [
+          `✅ **Task cancelled**`,
+          `task_id: \`${result.task_id}\``,
+          `previous_status: ${displayStatus(result.previous_status!)}`,
+          task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+          '',
+          task?.outputFilePath ? `Review output: \`cat ${task.outputFilePath}\`` : null,
+        ];
+        return mcpText(parts.filter(Boolean).join('\n'));
       } else {
         return mcpText(formatError(
           `Failed to cancel **${result.task_id}**: ${result.error}`,

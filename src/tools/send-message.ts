@@ -145,23 +145,29 @@ export async function handleSendMessage(args: unknown, ctx?: ToolContext): Promi
       labels: originalTaskId ? [`continued-from:${originalTaskId}`] : undefined,
     });
 
+    const newTask = taskManager.getTask(newTaskId);
+
     if (ctx?.progressToken != null) {
       progressRegistry.register(newTaskId, ctx.progressToken, ctx.sendNotification);
       progressRegistry.sendProgress(newTaskId, `Sent message to session ${sessionId} as task ${newTaskId}`);
     }
 
-    const parts: string[] = [];
-    parts.push(`✅ **Message sent** to session \`${sessionId}\``);
-    parts.push('');
-    parts.push(`- **New task:** \`${newTaskId}\``);
-    parts.push(`- **Message:** "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`);
-    if (originalTaskId) {
-      parts.push(`- **Continued from:** \`${originalTaskId}\``);
-    }
-    parts.push('');
-    parts.push('Check status with `get_status` or `get_task_session_detail`.');
+    const parts: (string | null)[] = [
+      `✅ **Message sent**`,
+      `task_id: \`${newTaskId}\``,
+      newTask?.outputFilePath ? `output_file: \`${newTask.outputFilePath}\`` : null,
+      '',
+      `**Message:** "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`,
+      originalTaskId ? `**Continued from:** \`${originalTaskId}\`` : null,
+      '',
+      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
+      '',
+      '**Optional progress check:**',
+      newTask?.outputFilePath ? `- \`tail -20 ${newTask.outputFilePath}\` — Last 20 lines` : null,
+      `- Read resource: \`task:///${newTaskId}\``,
+    ];
 
-    return mcpText(parts.join('\n'));
+    return mcpText(parts.filter(Boolean).join('\n'));
 
   } catch (error) {
     return mcpText(formatError(
