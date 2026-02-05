@@ -18,8 +18,9 @@ async function sleep(ms: number): Promise<void> {
 }
 
 // Helper to extract text from resource content
-function getResourceText(contents: Array<{ text?: string; blob?: string }>): string {
+function getResourceText(contents: Array<{ text?: string; blob?: string }> = []): string {
   const content = contents[0];
+  if (!content) return '';
   if ('text' in content && content.text) return content.text;
   if ('blob' in content && content.blob) return Buffer.from(content.blob, 'base64').toString();
   return '';
@@ -162,6 +163,7 @@ async function main() {
     
   } catch (error) {
     console.error("Test error:", error);
+    process.exitCode = 1;
   } finally {
     console.log("\nDisconnecting...");
     await client.close();

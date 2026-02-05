@@ -73,6 +73,7 @@ interface SessionBinding {
   error?: string;
   rotationAttempts: number;
   maxRotationAttempts: number;
+  rotationInProgress: boolean;
   rateLimitInfo?: {
     statusCode: number;
     resetDate?: string;
@@ -84,6 +85,7 @@ interface SessionBinding {
   totalTokens: { input: number; output: number };
   toolMetrics: Map<string, ToolMetrics>;
   toolStartTimes: Map<string, number>;
+  toolCallIdToName: Map<string, string>; // METRIC-1: Track toolCallId → toolName for accurate completion matching
   activeSubagents: Map<string, SubagentInfo>;
   completedSubagents: SubagentInfo[];
   quotas: Map<string, QuotaInfo>;
@@ -148,12 +150,14 @@ class SDKSessionAdapter {
       isPaused: false,
       rotationAttempts: 0,
       maxRotationAttempts: 10,
+      rotationInProgress: false,
       pendingPrompt,
       // Initialize metrics tracking
       turnCount: 0,
       totalTokens: { input: 0, output: 0 },
       toolMetrics: new Map(),
       toolStartTimes: new Map(),
+      toolCallIdToName: new Map(),
       activeSubagents: new Map(),
       completedSubagents: [],
       quotas: new Map(),
@@ -463,7 +467,7 @@ class SDKSessionAdapter {
     try {
       taskManager.appendOutput(taskId, `[rotation] Health check passed, resuming session ${binding.sessionId}`);
       
-      const newSession = await sdkClientManager.resumeSession(taskCwd, binding.sessionId);
+      const newSession = await sdkClientManager.resumeSession(taskCwd, binding.sessionId, {}, taskId);
       await this.rebindWithNewSession(taskId, binding, newSession);
       return true;
     } catch (resumeErr) {
@@ -496,12 +500,14 @@ class SDKSessionAdapter {
       isPaused: false,
       rotationAttempts: oldBinding.rotationAttempts,
       maxRotationAttempts: oldBinding.maxRotationAttempts,
+      rotationInProgress: false,
       pendingPrompt: oldBinding.pendingPrompt,
       // Preserve metrics
       turnCount: oldBinding.turnCount,
       totalTokens: oldBinding.totalTokens,
       toolMetrics: oldBinding.toolMetrics,
       toolStartTimes: oldBinding.toolStartTimes,
+      toolCallIdToName: oldBinding.toolCallIdToName,
       activeSubagents: oldBinding.activeSubagents,
       completedSubagents: oldBinding.completedSubagents,
       quotas: oldBinding.quotas,
@@ -691,9 +697,15 @@ class SDKSessionAdapter {
           };
 
           // Proactively rotate if quota is critically low (< 1%)
-          if (snapshot.remainingPercentage < 1 && binding.rotationAttempts < binding.maxRotationAttempts) {
+          // Guard: Only rotate if not already rotating (prevents race condition)
+          if (snapshot.remainingPercentage < 1 && 
+              binding.rotationAttempts < binding.maxRotationAttempts &&
+              !binding.rotationInProgress) {
+            binding.rotationInProgress = true;
             taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating...`);
-            this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low').catch(console.error);
+            this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low')
+              .finally(() => { binding.rotationInProgress = false; })
+              .catch(console.error);
           }
         }
       }
@@ -709,8 +721,9 @@ class SDKSessionAdapter {
   private handleToolStart(taskId: string, event: ToolExecutionStartEvent, binding: SessionBinding): void {
     const { toolName, toolCallId, mcpServerName, mcpToolName } = event.data;
     
-    // Track start time for duration calculation
+    // Track start time and toolCallId → toolName mapping for accurate completion matching (METRIC-1 fix)
     binding.toolStartTimes.set(toolCallId, Date.now());
+    binding.toolCallIdToName.set(toolCallId, toolName);
 
     // Initialize or update tool metrics
     let metrics = binding.toolMetrics.get(toolName);
@@ -737,29 +750,33 @@ class SDKSessionAdapter {
   private handleToolComplete(taskId: string, event: ToolExecutionCompleteEvent, binding: SessionBinding): void {
     const { toolCallId, success } = event.data;
 
-    // Find the tool name from start times or use the call ID
+    // METRIC-1 fix: Use toolCallId → toolName mapping for accurate completion matching
     const startTime = binding.toolStartTimes.get(toolCallId);
     const duration = startTime ? Date.now() - startTime : 0;
+    const toolName = binding.toolCallIdToName.get(toolCallId);
+    
+    // Clean up tracking maps
     binding.toolStartTimes.delete(toolCallId);
+    binding.toolCallIdToName.delete(toolCallId);
 
-    // Find and update the metrics for the most recently started tool
-    // (The SDK doesn't include toolName in completion event, so we use the last one)
-    for (const metrics of binding.toolMetrics.values()) {
-      if (metrics.lastExecutedAt === undefined || Date.now() - new Date(metrics.lastExecutedAt).getTime() < 5000) {
-        metrics.executionCount++;
-        metrics.totalDurationMs += duration;
-        metrics.lastExecutedAt = new Date().toISOString();
-        
-        if (success) {
-          metrics.successCount++;
-          taskManager.appendOutput(taskId, `[tool] Completed: ${metrics.toolName} (${duration}ms)`);
-        } else {
-          metrics.failureCount++;
-          const errorMsg = event.data.error?.message || 'Unknown error';
-          taskManager.appendOutput(taskId, `[tool] Failed: ${metrics.toolName} - ${errorMsg}`);
-        }
-        break;
+    // Find and update metrics using the tracked toolName (deterministic matching)
+    const metrics = toolName ? binding.toolMetrics.get(toolName) : undefined;
+    if (metrics) {
+      metrics.executionCount++;
+      metrics.totalDurationMs += duration;
+      metrics.lastExecutedAt = new Date().toISOString();
+      
+      if (success) {
+        metrics.successCount++;
+        taskManager.appendOutput(taskId, `[tool] Completed: ${metrics.toolName} (${duration}ms)`);
+      } else {
+        metrics.failureCount++;
+        const errorMsg = event.data.error?.message || 'Unknown error';
+        taskManager.appendOutput(taskId, `[tool] Failed: ${metrics.toolName} - ${errorMsg}`);
       }
+    } else {
+      // Fallback: log completion without metrics update if toolName not found
+      taskManager.appendOutput(taskId, `[tool] Completed: unknown (${duration}ms, callId: ${toolCallId})`);
     }
 
     this.updateSessionMetrics(taskId, binding);

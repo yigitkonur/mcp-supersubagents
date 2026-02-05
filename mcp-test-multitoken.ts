@@ -230,7 +230,8 @@ async function main() {
       arguments: { prompt: "test", cwd: CWD, model: "gpt-5-turbo" },
     });
     const invalidModelText = getToolResultText(invalidModel);
-    test("Invalid model rejected", invalidModelText.includes('Error') || invalidModelText.includes('Invalid') || extractTaskId(invalidModelText) !== null);
+    // Pass if error returned OR if no task ID extracted (model validation may be lenient)
+    test("Invalid model rejected", invalidModelText.includes('Error') || invalidModelText.includes('Invalid') || extractTaskId(invalidModelText) === null);
     
     // 4.3: Invalid cwd
     console.log("  Testing invalid cwd...");
@@ -360,6 +361,7 @@ async function main() {
     console.log("");
 
   } catch (error) {
+    testsFailed++;
     console.error("\n🔥 Test suite error:", error);
   } finally {
     console.log("Disconnecting...");

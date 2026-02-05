@@ -375,12 +375,18 @@ async function main() {
     
     // Missing required field
     try {
-      await client.callTool({
+      const missingPrompt = await client.callTool({
         name: "spawn_task",
         arguments: {},
       });
-      test("spawn_task missing prompt returns error", true);
+      const missingText = getToolResultText(missingPrompt);
+      // Only pass if error message is returned (not if task spawned)
+      test("spawn_task missing prompt returns error", 
+        /error|required|prompt/i.test(missingText),
+        missingText.slice(0, 100)
+      );
     } catch (e) {
+      // Exception is also acceptable for missing required field
       test("spawn_task missing prompt throws", true);
     }
     
@@ -467,6 +473,7 @@ async function main() {
     console.log("");
 
   } catch (error) {
+    testsFailed++;
     console.error("\n🔥 Test suite error:", error);
   } finally {
     console.log("Disconnecting...");
