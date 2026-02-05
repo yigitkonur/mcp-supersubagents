@@ -53,6 +53,7 @@ function createUserInputHandler(taskId: string): (request: UserInputRequest, inv
 
 class SDKClientManager {
   private clients: Map<string, ClientEntry> = new Map();
+  private pendingClients: Map<string, Promise<CopilotClient>> = new Map(); // RC-3: Dedup concurrent getClient calls
   private isShuttingDown = false;
 
   /**
@@ -69,6 +70,9 @@ class SDKClientManager {
    * Clears all clients and resets account rotation to first token.
    */
   async reset(): Promise<void> {
+    // Invalidate any in-flight client creations before stopping existing clients
+    this.pendingClients.clear();
+
     // Stop all existing clients
     for (const [key, entry] of this.clients) {
       try {
@@ -97,26 +101,44 @@ class SDKClientManager {
     const tokenIndex = accountManager.getCurrentIndex();
     const clientKey = `${cwd}:${tokenIndex}`;
 
-    let entry = this.clients.get(clientKey);
+    // Fast path: client already exists
+    const entry = this.clients.get(clientKey);
     if (entry) {
       entry.lastUsedAt = new Date();
       return entry.client;
     }
 
-    // Create new client with current token
-    const client = await this.createClient(cwd, currentToken);
-    entry = {
-      client,
-      cwd,
-      tokenIndex,
-      createdAt: new Date(),
-      lastUsedAt: new Date(),
-      sessions: new Map(),
-    };
-    this.clients.set(clientKey, entry);
+    // RC-3: Check if creation is already in progress for this key
+    const pending = this.pendingClients.get(clientKey);
+    if (pending) {
+      return pending;
+    }
 
-    console.error(`[sdk-client-manager] Created client for cwd=${cwd} with token #${tokenIndex + 1}/${accountManager.getTokenCount()}`);
-    return client;
+    // Create with dedup — store the promise so concurrent callers reuse it
+    const promise = this.createClient(cwd, currentToken).then(client => {
+      // Guard: if reset/shutdown invalidated this creation, stop the orphaned client
+      if (this.isShuttingDown || this.pendingClients.get(clientKey) !== promise) {
+        client.stop?.().catch(() => {});
+        throw new Error('Client creation invalidated by reset/shutdown');
+      }
+      this.clients.set(clientKey, {
+        client,
+        cwd,
+        tokenIndex,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        sessions: new Map(),
+      });
+      this.pendingClients.delete(clientKey);
+      console.error(`[sdk-client-manager] Created client for cwd=${cwd} with token #${tokenIndex + 1}/${accountManager.getTokenCount()}`);
+      return client;
+    }).catch(err => {
+      this.pendingClients.delete(clientKey);
+      throw err;
+    });
+
+    this.pendingClients.set(clientKey, promise);
+    return promise;
   }
 
   /**
@@ -190,21 +212,24 @@ class SDKClientManager {
     taskId?: string
   ): Promise<CopilotSession> {
     const client = await this.getClient(cwd);
-    
+
+    // Capture token index BEFORE the async resumeSession call to prevent
+    // tracking drift if token rotation happens during the await
+    const tokenIndex = accountManager.getCurrentIndex();
+    const clientKey = `${cwd}:${tokenIndex}`;
+
     // Build resume config with user input handler and hooks if taskId provided
     const resumeConfig: Partial<SessionConfig> = { ...config };
-    
+
     if (taskId) {
       resumeConfig.onUserInputRequest = createUserInputHandler(taskId);
       // Wire SDK session hooks for lifecycle events, error handling, and tool telemetry
       resumeConfig.hooks = createSessionHooks(taskId);
     }
-    
+
     const session = await client.resumeSession(sessionId, resumeConfig);
 
     // Track the resumed session in the client entry
-    const tokenIndex = accountManager.getCurrentIndex();
-    const clientKey = `${cwd}:${tokenIndex}`;
     const entry = this.clients.get(clientKey);
     if (entry) {
       entry.sessions.set(sessionId, session);
@@ -270,13 +295,13 @@ class SDKClientManager {
    */
   async rotateOnError(cwd: string, reason: string): Promise<{ success: boolean; client?: CopilotClient; error?: string; allExhausted?: boolean }> {
     const result = accountManager.rotateToNext(reason);
-    
+
     if (!result.success) {
       if (result.allExhausted) {
-        return { 
-          success: false, 
+        return {
+          success: false,
           allExhausted: true,
-          error: `All ${accountManager.getTokenCount()} accounts exhausted: ${result.error}` 
+          error: `All ${accountManager.getTokenCount()} accounts exhausted: ${result.error}`
         };
       }
       return { success: false, error: result.error };
@@ -286,12 +311,31 @@ class SDKClientManager {
     try {
       const client = await this.getClient(cwd);
       console.error(`[sdk-client-manager] Rotated to token #${result.tokenIndex! + 1} due to: ${reason}`);
+
+      // RC-7: Clean up stale clients from previous tokens
+      this.cleanupStaleClients();
+
       return { success: true, client };
     } catch (err) {
-      return { 
-        success: false, 
-        error: `Failed to create client with new token: ${err}` 
+      return {
+        success: false,
+        error: `Failed to create client with new token: ${err}`
       };
+    }
+  }
+
+  /**
+   * RC-7: Remove client entries with no active sessions that belong to non-current tokens.
+   * Prevents gradual resource leak from accumulated stale clients after rotation.
+   */
+  private cleanupStaleClients(): void {
+    const currentIndex = accountManager.getCurrentIndex();
+    for (const [key, entry] of this.clients.entries()) {
+      if (entry.tokenIndex !== currentIndex && entry.sessions.size === 0) {
+        entry.client.stop?.().catch(() => {});
+        this.clients.delete(key);
+        console.error(`[sdk-client-manager] Cleaned up stale client: ${key}`);
+      }
     }
   }
 
@@ -339,6 +383,7 @@ class SDKClientManager {
    */
   async shutdown(): Promise<void> {
     this.isShuttingDown = true;
+    this.pendingClients.clear();
 
     const errors: Error[] = [];
 
