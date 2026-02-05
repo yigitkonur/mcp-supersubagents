@@ -91,7 +91,7 @@ export function createSessionHooks(taskId: string): SessionHooks {
      * Provides structured error handling with retry decisions.
      */
     onErrorOccurred: async (input: ErrorOccurredHookInput): Promise<ErrorOccurredHookOutput | void> => {
-      const errorMsg = input.error instanceof Error ? input.error.message : String(input.error);
+      const errorMsg = String(input.error);
       console.error(`[session-hooks] Error for task ${taskId}: context=${input.errorContext}, recoverable=${input.recoverable}`);
 
       // Create structured failure context

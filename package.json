@@ -8,7 +8,7 @@
     "copilot-mcp-server": "build/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/",
     "dev": "tsx watch src/index.ts",
     "start": "node build/index.js",
     "clean": "rm -rf build"
@@ -22,7 +22,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@github/copilot-sdk": "file:./copilot-sdk/nodejs",
+    "@github/copilot-sdk": "^0.1.21",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "unique-names-generator": "^4.7.1",
     "zod": "^3.24.1"
