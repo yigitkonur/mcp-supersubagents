@@ -1,77 +1,80 @@
-# Super Agents MCP Server
+# Super Subagents
 
-MCP server that spawns GitHub Copilot CLI agents as background tasks with human-readable IDs, dependency chains, and automatic rate-limit retry.
+MCP server for spawning autonomous GitHub Copilot agents as background tasks. Features multi-account rotation, automatic rate limit recovery, and MCP Resources for status tracking.
 
 ## Quick Start
 
-Install via install-mcp:
 ```bash
 npx install-mcp super-subagents --client claude-desktop
 ```
 
-Manual build:
+Or manual setup:
 ```bash
 npm install && npm run build
 ```
 
+Add to your MCP client config:
 ```json
 {
   "mcpServers": {
     "super-agents": {
       "command": "node",
-      "args": ["/path/to/copilot-agents/build/index.js"]
+      "args": ["/path/to/super-subagents/build/index.js"],
+      "env": {
+        "GITHUB_PAT_TOKENS": "ghp_token1,ghp_token2,ghp_token3"
+      }
     }
   }
 }
 ```
 
-## Tools
+## Tools (4)
 
 | Tool | Description |
 |------|-------------|
-| `spawn_task` | Create a task. Returns `task_id` for tracking. |
-| `batch_spawn` | Create multiple tasks with dependency chains (max 20). |
-| `get_status` | Check task status. Supports batch checking with array. |
-| `list_tasks` | List all tasks. Filter by `status` or `label`. |
-| `resume_task` | Resume interrupted session by `session_id`. |
-| `retry_task` | Immediately retry a rate-limited task. |
-| `cancel_task` | Kill a running/pending task (SIGTERM). |
-| `recover_task` | Recover a timed_out task (resume if session is available). |
-| `force_start` | Start a waiting task, bypassing dependencies. |
-| `clear_tasks` | Delete all tasks for workspace. Requires `confirm: true`. |
-| `stream_output` | *(experimental)* Get incremental output with offset. Requires `ENABLE_STREAMING=true`. |
+| `spawn_task` | Create autonomous agent task. Returns `task_id`. |
+| `send_message` | Send follow-up message to existing session. |
+| `cancel_task` | Cancel task(s) or clear all with `task_id: "all"`. |
+| `answer_question` | Answer pending question from Copilot's `ask_user`. |
+
+## MCP Resources
+
+Status and task details are accessed via **MCP Resources** (not tools):
+
+| Resource | Description |
+|----------|-------------|
+| `system:///status` | Account stats, task counts, SDK info |
+| `task:///all` | All tasks with status, progress, pending questions |
+| `task:///{id}` | Full task details, output, metrics |
+| `task:///{id}/session` | Execution log with tool calls |
 
 ## Task Statuses
 
-`pending` → `waiting` → `running` → `completed` | `failed` | `cancelled` | `rate_limited` | `timed_out`
+```
+pending → waiting → running → completed | failed | cancelled | rate_limited | timed_out
+```
 
 ## Features
 
-### Dependencies
-```json
-{ "prompt": "Deploy", "depends_on": ["build-task-id", "test-task-id"] }
-```
-Task waits until all dependencies complete. Use `force_start` to bypass.
+### Multi-Account Rotation
 
-### Labels
-```json
-{ "prompt": "Build API", "labels": ["backend", "urgent"] }
-```
-Filter with `list_tasks({ "label": "backend" })`.
+Configure multiple GitHub PAT tokens for automatic rotation on rate limits (429) or server errors (5xx):
 
-### Batch Spawn
-```json
-{
-  "tasks": [
-    { "id": "build", "prompt": "Build project" },
-    { "id": "test", "prompt": "Run tests", "depends_on": ["build"] },
-    { "id": "deploy", "prompt": "Deploy", "depends_on": ["test"] }
-  ]
-}
-```
-Local `id` fields map to real `task_id` in response.
+```bash
+# Option 1: Comma-separated list
+GITHUB_PAT_TOKENS=ghp_token1,ghp_token2,ghp_token3
 
-### Task Templates
+# Option 2: Numbered variables
+GITHUB_PAT_TOKEN_1=ghp_token1
+GITHUB_PAT_TOKEN_2=ghp_token2
+
+# Option 3: Single token fallback
+GITHUB_TOKEN=ghp_token
+```
+
+Rotation happens automatically - no manual intervention needed.
+
+### Task Types (Templates)
 
 | Template | Use Case |
 |----------|----------|
@@ -80,50 +83,92 @@ Local `id` fields map to real `task_id` in response.
 | `super-researcher` | Codebase exploration, investigation |
 | `super-tester` | Writing tests, QA verification |
 
-### Models
-`claude-sonnet-4.5` (default), `claude-haiku-4.5`. Opus blocked by default (set `ENABLE_OPUS=true` to allow).
+```json
+{ "prompt": "Fix the auth bug", "task_type": "super-coder" }
+```
 
-### Timeout
-Default: 30 min (1800000ms). Max: 1 hour. Tasks exceeding timeout get `timed_out` status.
-Configurable via `MCP_TASK_TIMEOUT_MS`, `MCP_TASK_TIMEOUT_MIN_MS`, and `MCP_TASK_TIMEOUT_MAX_MS`. Prefer the default unless you have a clear reason to override.
-Stall warnings are based on `MCP_TASK_STALL_WARN_MS`. Timed out tasks may include a reason and can be recovered via `recover_task` or `resume_task` when a session is available.
+### Models
+
+- **`claude-sonnet-4.5`** - Default. Best balance of speed and capability.
+- **`claude-haiku-4.5`** - Fastest. Simple tasks, quick iterations.
+- **`claude-opus-4.5`** - Most capable. Requires `ENABLE_OPUS=true`.
+
+### Dependencies
+
+Tasks can wait for other tasks to complete:
+
+```json
+{ "prompt": "Deploy", "depends_on": ["build-task-id", "test-task-id"] }
+```
+
+### Labels
+
+Group and filter tasks:
+
+```json
+{ "prompt": "Build API", "labels": ["backend", "phase-1"] }
+```
+
+### Pending Questions
+
+When Copilot asks a question via `ask_user`, the task pauses. Answer with:
+
+```json
+// By choice number
+{ "task_id": "abc123", "answer": "2" }
+
+// Custom answer
+{ "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
+```
+
+Check `task:///all` resource to see tasks with pending questions.
+
+### Session Continuation
+
+Send follow-up messages to completed/failed tasks:
+
+```json
+// Resume with default "continue"
+{ "task_id": "abc123" }
+
+// Or with custom message
+{ "task_id": "abc123", "message": "now add unit tests" }
+```
 
 ### Rate Limit Auto-Retry
-Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 40m → 1h → 2h). Max 6 retries.
+
+Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 40m → 1h → 2h). Max 6 retries. With multi-account, rotation happens before retries.
 
 ### Persistence
+
 Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts.
 
-### Output Streaming (Experimental)
-Requires `ENABLE_STREAMING=true`. Disabled by default.
-```json
-// First call
-{ "task_id": "brave-tiger-42", "offset": 0 }
-// Response: { "lines": [...], "next_offset": 50, "has_more": true }
-
-// Subsequent calls
-{ "task_id": "brave-tiger-42", "offset": 50 }
-```
-Use `next_offset` from response to get new lines without re-fetching.
-
-### Polling Backoff
-Response includes `retry_after_seconds` (30s → 60s → 120s → 180s) to prevent excessive polling.
-
-## Environment
+## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Copilot CLI path |
-| `ENABLE_OPUS` | `false` | Allow opus model (cost control) |
-| `ENABLE_STREAMING` | `false` | Enable experimental `stream_output` tool |
-| `MCP_TASK_TIMEOUT_MS` | `1800000` | Default task timeout (ms) |
-| `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum allowed task timeout (ms) |
-| `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum allowed task timeout (ms) |
-| `MCP_TASK_STALL_WARN_MS` | `300000` | No-output stall warning threshold (ms) |
-| `MCP_COPILOT_SWITCH_TIMEOUT_MS` | `120000` | Timeout for copilot-switch command (ms) |
-| `MCP_COPILOT_SWITCH_LOCK_STALE_MS` | `150000` | Stale lock threshold for copilot-switch (ms) |
-| `MCP_COPILOT_SWITCH_LOCK_TIMEOUT_MS` | `150000` | Wait timeout for copilot-switch lock (ms) |
-| `MCP_COPILOT_SWITCH_LOCK_POLL_MS` | `500` | Lock poll interval for copilot-switch (ms) |
+| `GITHUB_PAT_TOKENS` | - | Comma-separated PAT tokens for multi-account |
+| `ENABLE_OPUS` | `false` | Allow claude-opus-4.5 model |
+| `MCP_TASK_TIMEOUT_MS` | `1800000` | Default task timeout (30 min) |
+| `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum allowed timeout |
+| `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum allowed timeout (1 hour) |
+| `MCP_TASK_STALL_WARN_MS` | `300000` | No-output warning threshold (5 min) |
+
+## Example Workflow
+
+```
+1. spawn_task({ prompt: "...", task_type: "super-coder" })
+   → Returns task_id: "brave-tiger-42"
+
+2. Read resource: task:///brave-tiger-42
+   → Get status, progress, output
+
+3. If task completes and you want follow-up:
+   send_message({ task_id: "brave-tiger-42", message: "now add tests" })
+
+4. If task has pending question:
+   answer_question({ task_id: "brave-tiger-42", answer: "1" })
+```
 
 ## License
 
