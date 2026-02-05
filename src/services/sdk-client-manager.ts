@@ -201,6 +201,15 @@ class SDKClientManager {
     }
     
     const session = await client.resumeSession(sessionId, resumeConfig);
+
+    // Track the resumed session in the client entry
+    const tokenIndex = accountManager.getCurrentIndex();
+    const clientKey = `${cwd}:${tokenIndex}`;
+    const entry = this.clients.get(clientKey);
+    if (entry) {
+      entry.sessions.set(sessionId, session);
+    }
+
     return session;
   }
 

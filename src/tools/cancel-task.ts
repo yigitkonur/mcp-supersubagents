@@ -83,7 +83,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       }
       
       const cwd = clientContext.getDefaultCwd();
-      const taskCount = taskManager.clearAllTasks();
+      const taskCount = await taskManager.clearAllTasks();
       const deleted = deleteStorage(cwd);
       
       return mcpText(deleted 

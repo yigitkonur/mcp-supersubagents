@@ -11,7 +11,7 @@
 
 import type { SessionConfig, CopilotSession } from '@github/copilot-sdk';
 import { existsSync } from 'fs';
-import { taskManager } from './task-manager.js';
+import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { sdkSessionAdapter } from './sdk-session-adapter.js';
@@ -116,16 +116,11 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
 }
 
 /**
- * Check if a status is terminal (no further state changes expected)
+ * Check if a status is terminal (no further state changes expected).
+ * Note: RATE_LIMITED is NOT terminal - the retry system can still update these tasks.
  */
 function isTerminalStatus(status: TaskStatus): boolean {
-  return [
-    TaskStatus.COMPLETED,
-    TaskStatus.FAILED,
-    TaskStatus.CANCELLED,
-    TaskStatus.TIMED_OUT,
-    TaskStatus.RATE_LIMITED,
-  ].includes(status);
+  return TERMINAL_STATUSES.has(status);
 }
 
 /**
@@ -340,14 +335,14 @@ async function handleSessionError(
  * Extract HTTP status code from error message
  */
 function extractStatusCode(errorMessage: string): number | undefined {
-  if (errorMessage.includes('429')) return 429;
-  if (errorMessage.includes('500')) return 500;
-  if (errorMessage.includes('502')) return 502;
-  if (errorMessage.includes('503')) return 503;
-  if (errorMessage.includes('504')) return 504;
-  if (errorMessage.toLowerCase().includes('rate limit')) return 429;
-  if (errorMessage.toLowerCase().includes('too many requests')) return 429;
-  if (errorMessage.toLowerCase().includes('quota')) return 429;
+  if (/\b429\b/.test(errorMessage)) return 429;
+  if (/\b500\b/.test(errorMessage)) return 500;
+  if (/\b502\b/.test(errorMessage)) return 502;
+  if (/\b503\b/.test(errorMessage)) return 503;
+  if (/\b504\b/.test(errorMessage)) return 504;
+  if (/rate.?limit/i.test(errorMessage)) return 429;
+  if (/too many requests/i.test(errorMessage)) return 429;
+  if (/quota/i.test(errorMessage)) return 429;
   return undefined;
 }
 

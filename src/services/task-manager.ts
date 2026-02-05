@@ -74,7 +74,7 @@ const TASK_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const HEALTH_CHECK_INTERVAL_MS = 10 * 1000; // Check session health every 10 seconds
 const MAX_OUTPUT_LINES = 2000;
-const TERMINAL_STATUSES = new Set([
+export const TERMINAL_STATUSES = new Set([
   TaskStatus.COMPLETED,
   TaskStatus.FAILED,
   TaskStatus.CANCELLED,
@@ -189,7 +189,11 @@ class TaskManager {
       
       if (satisfied && this.executeCallback) {
         console.error(`[task-manager] Dependencies satisfied for ${task.id}, starting execution`);
-        const updated = this.updateTask(task.id, { status: TaskStatus.PENDING }) || task;
+        const updated = this.updateTask(task.id, { status: TaskStatus.PENDING });
+        if (!updated) {
+          console.error(`[task-manager] Task ${task.id} was deleted before it could start`);
+          continue;
+        }
         this.executeCallback(updated).catch(err => {
           console.error(`[task-manager] Failed to execute task ${task.id}:`, err);
         });
@@ -253,10 +257,13 @@ class TaskManager {
     }
     
     const bypassedDeps = task.dependsOn || [];
-    
-    // Clear dependencies and execute
+
+    // Clear dependencies so retries won't re-block
+    task.dependsOn = [];
+    this.schedulePersist('state');
+
     console.error(`[task-manager] Force starting ${task.id}, bypassing deps: ${bypassedDeps.join(', ')}`);
-    
+
     // Execute the task
     await this.executeCallback(task);
     
@@ -398,17 +405,19 @@ class TaskManager {
    * Clear all tasks from memory (used by clear_tasks tool)
    * Note: With SDK, sessions are managed by sdkSessionAdapter which handles cleanup
    */
-  clearAllTasks(): number {
+  async clearAllTasks(): Promise<number> {
     const count = this.tasks.size;
+    const abortPromises: Promise<void>[] = [];
     for (const task of this.tasks.values()) {
       if (task.session && task.status === TaskStatus.RUNNING) {
-        try {
-          task.session.abort();
-        } catch {
-          // Ignore failures while clearing
-        }
+        abortPromises.push(
+          task.session.abort().catch(() => {
+            // Ignore failures while clearing
+          })
+        );
       }
     }
+    await Promise.allSettled(abortPromises);
     if (this.taskDeletedCallback) {
       for (const id of this.tasks.keys()) {
         try { this.taskDeletedCallback(id); } catch {}
@@ -675,6 +684,10 @@ class TaskManager {
         finalizeOutputFile(task.cwd, task.id, updates.status, updates.error);
       }
     }
+    // Also clear session reference on RATE_LIMITED transition (session is no longer valid)
+    if (updates.status === TaskStatus.RATE_LIMITED && statusChanged) {
+      updated.session = undefined;
+    }
     this.tasks.set(normalizedId, updated);
     this.schedulePersist('state');
 
@@ -767,19 +780,15 @@ class TaskManager {
       alreadyDead = true;
     }
 
-    const previousStatus = task.status;
-    task.status = TaskStatus.CANCELLED;
-    task.endTime = new Date().toISOString();
-    if (alreadyDead) {
-      task.error = 'Session had already ended before cancellation';
-    }
-    task.session = undefined;
-    this.schedulePersist('state');
-    try { this.statusChangeCallback?.(task, previousStatus); } catch {}
+    this.updateTask(task.id, {
+      status: TaskStatus.CANCELLED,
+      endTime: new Date().toISOString(),
+      error: alreadyDead ? 'Session had already ended before cancellation' : undefined,
+    });
     return { success: true, alreadyDead };
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -801,15 +810,17 @@ class TaskManager {
     }
 
     // Abort all running sessions (SDK adapter handles actual cleanup)
+    const abortPromises: Promise<void>[] = [];
     for (const task of this.tasks.values()) {
       if (task.session && task.status === TaskStatus.RUNNING) {
-        try {
-          task.session.abort();
-        } catch {
-          // Ignore during shutdown
-        }
+        abortPromises.push(
+          task.session.abort().catch(() => {
+            // Ignore during shutdown
+          })
+        );
       }
     }
+    await Promise.allSettled(abortPromises);
 
     // Final persist before shutdown
     this.persistNow();
