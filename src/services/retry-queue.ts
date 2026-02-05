@@ -1,5 +1,6 @@
 import { TaskState, TaskStatus, RetryInfo } from '../types.js';
 
+// Legacy patterns kept for backward compatibility with non-SDK errors
 const RATE_LIMIT_PATTERNS = [
   /rate limit/i,
   /too many requests/i,
@@ -20,18 +21,41 @@ const DEFAULT_RETRY_DELAYS_MS = [
 const MAX_RETRIES = DEFAULT_RETRY_DELAYS_MS.length;
 
 /**
- * Check if an error/output indicates rate limiting
+ * Check if an error/output indicates rate limiting.
+ * Now prefers SDK structured data over string parsing.
  */
-export function isRateLimitError(output: string[], error?: string): boolean {
+export function isRateLimitError(output: string[], error?: string, task?: TaskState): boolean {
+  // Prefer SDK structured failure context
+  if (task?.failureContext?.statusCode === 429) {
+    return true;
+  }
+  
+  // Check quota info for exhausted quota
+  if (task?.quotaInfo?.remainingPercentage !== undefined && task.quotaInfo.remainingPercentage < 1) {
+    return true;
+  }
+
+  // Fallback to string pattern matching for non-SDK errors
   const allText = [...output, error || ''].join('\n');
   return RATE_LIMIT_PATTERNS.some(pattern => pattern.test(allText));
 }
 
 /**
- * Extract rate limit wait time from error message if present
- * Returns milliseconds or null if not found
+ * Extract rate limit wait time from error message if present.
+ * Returns milliseconds or null if not found.
+ * Now prefers SDK quotaInfo.resetDate for precise timing.
  */
-export function extractWaitTime(output: string[], error?: string): number | null {
+export function extractWaitTime(output: string[], error?: string, task?: TaskState): number | null {
+  // Prefer SDK quota reset date for precise timing
+  if (task?.quotaInfo?.resetDate) {
+    const resetTime = new Date(task.quotaInfo.resetDate).getTime();
+    const now = Date.now();
+    if (resetTime > now) {
+      return resetTime - now;
+    }
+  }
+
+  // Fallback to string parsing
   const allText = [...output, error || ''].join('\n');
   
   // Match patterns like "try again in 2 hours" or "wait 30 minutes"
@@ -54,16 +78,32 @@ export function extractWaitTime(output: string[], error?: string): number | null
 }
 
 /**
- * Calculate next retry time based on retry count
+ * Calculate next retry time based on retry count and SDK data.
+ * Uses quotaInfo.resetDate when available for precise timing.
  */
-export function calculateNextRetryTime(retryCount: number, suggestedWaitMs?: number | null): string {
+export function calculateNextRetryTime(
+  retryCount: number, 
+  suggestedWaitMs?: number | null,
+  task?: TaskState
+): string {
   let delayMs: number;
+
+  // Priority 1: Use SDK quota reset date if available and in the future
+  if (task?.quotaInfo?.resetDate) {
+    const resetTime = new Date(task.quotaInfo.resetDate).getTime();
+    const now = Date.now();
+    if (resetTime > now) {
+      // Add a small buffer (30s) after reset
+      return new Date(resetTime + 30000).toISOString();
+    }
+  }
   
+  // Priority 2: Use suggested wait time from error message
   if (suggestedWaitMs && suggestedWaitMs > 0) {
-    // Use suggested wait time from error message, but add some jitter
+    // Add some jitter to avoid thundering herd
     delayMs = suggestedWaitMs + Math.random() * 60000; // +0-60s jitter
   } else {
-    // Use exponential backoff
+    // Priority 3: Use exponential backoff
     const index = Math.min(retryCount, DEFAULT_RETRY_DELAYS_MS.length - 1);
     delayMs = DEFAULT_RETRY_DELAYS_MS[index];
   }
@@ -73,7 +113,8 @@ export function calculateNextRetryTime(retryCount: number, suggestedWaitMs?: num
 }
 
 /**
- * Create retry info for a rate-limited task
+ * Create retry info for a rate-limited task.
+ * Now uses SDK structured data for better timing.
  */
 export function createRetryInfo(
   task: TaskState,
@@ -81,19 +122,33 @@ export function createRetryInfo(
   existingRetryInfo?: RetryInfo
 ): RetryInfo {
   const retryCount = (existingRetryInfo?.retryCount ?? 0) + 1;
-  const suggestedWait = extractWaitTime(task.output, task.error);
+  const suggestedWait = extractWaitTime(task.output, task.error, task);
+  
+  // Use SDK failure context for better reason if available
+  let enhancedReason = reason;
+  if (task.failureContext) {
+    const { errorType, statusCode, errorContext } = task.failureContext;
+    const parts: string[] = [];
+    if (statusCode) parts.push(`status: ${statusCode}`);
+    if (errorType) parts.push(`type: ${errorType}`);
+    if (errorContext) parts.push(`context: ${errorContext}`);
+    if (parts.length > 0) {
+      enhancedReason = `${reason} (${parts.join(', ')})`;
+    }
+  }
   
   return {
-    reason,
+    reason: enhancedReason,
     retryCount,
-    nextRetryTime: calculateNextRetryTime(retryCount - 1, suggestedWait),
+    nextRetryTime: calculateNextRetryTime(retryCount - 1, suggestedWait, task),
     maxRetries: MAX_RETRIES,
     originalTaskId: existingRetryInfo?.originalTaskId || task.id,
   };
 }
 
 /**
- * Check if a task should be retried now
+ * Check if a task should be retried now.
+ * Enhanced to consider SDK quota info.
  */
 export function shouldRetryNow(task: TaskState): boolean {
   if (task.status !== TaskStatus.RATE_LIMITED) {
@@ -107,13 +162,21 @@ export function shouldRetryNow(task: TaskState): boolean {
   if (task.retryInfo.retryCount >= task.retryInfo.maxRetries) {
     return false; // Max retries exceeded
   }
+
+  // Check SDK quota reset date if available
+  if (task.quotaInfo?.resetDate) {
+    const resetTime = new Date(task.quotaInfo.resetDate).getTime();
+    if (Date.now() < resetTime) {
+      return false; // Quota hasn't reset yet
+    }
+  }
   
   const nextRetryTime = new Date(task.retryInfo.nextRetryTime).getTime();
   return Date.now() >= nextRetryTime;
 }
 
 /**
- * Check if a task has exceeded max retries
+ * Check if a task has exceeded max retries.
  */
 export function hasExceededMaxRetries(task: TaskState): boolean {
   if (!task.retryInfo) {
@@ -123,5 +186,47 @@ export function hasExceededMaxRetries(task: TaskState): boolean {
 }
 
 /**
- * Get all rate-limited tasks that are ready for retry
+ * Check if handoff is recommended instead of retry.
+ * Uses SDK data to make intelligent recommendations.
  */
+export function shouldRecommendHandoff(task: TaskState): boolean {
+  // If max retries exceeded and we have multiple accounts, recommend handoff
+  if (hasExceededMaxRetries(task)) {
+    return true;
+  }
+
+  // If quota is critically low (<1%), recommend handoff
+  if (task.quotaInfo?.remainingPercentage !== undefined && task.quotaInfo.remainingPercentage < 1) {
+    return true;
+  }
+
+  // If failure context indicates unrecoverable rate limit, recommend handoff
+  if (task.failureContext?.statusCode === 429 && task.failureContext.recoverable === false) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Get recommended action for a rate-limited task.
+ */
+export function getRecommendedAction(task: TaskState): 'retry' | 'handoff' | 'wait' | 'give_up' {
+  if (task.status !== TaskStatus.RATE_LIMITED) {
+    return 'give_up';
+  }
+
+  if (hasExceededMaxRetries(task)) {
+    return shouldRecommendHandoff(task) ? 'handoff' : 'give_up';
+  }
+
+  if (shouldRetryNow(task)) {
+    return 'retry';
+  }
+
+  if (shouldRecommendHandoff(task)) {
+    return 'handoff';
+  }
+
+  return 'wait';
+}

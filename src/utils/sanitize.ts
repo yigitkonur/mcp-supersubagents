@@ -18,18 +18,3 @@ export const SpawnTaskSchema = z.object({
   labels: z.array(z.string().min(1).max(50)).max(10).optional(),
 });
 
-export const ResumeTaskSchema = z.object({
-  sessionId: z.string().min(1),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 30 minutes default
-  cwd: z.string().optional(),
-  autonomous: z.boolean().optional().default(true),
-});
-
-export const GetTaskStatusSchema = z.object({
-  taskId: z.union([z.string().min(1), z.array(z.string().min(1))]),
-});
-
-export const ListTasksSchema = z.object({
-  status: z.enum(['pending', 'waiting', 'running', 'completed', 'failed', 'cancelled', 'rate_limited', 'timed_out']).optional(),
-  label: z.string().min(1).optional(),
-});

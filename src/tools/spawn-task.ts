@@ -1,5 +1,5 @@
 import { SpawnTaskSchema } from '../utils/sanitize.js';
-import { spawnCopilotProcess } from '../services/process-spawner.js';
+import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
@@ -9,12 +9,17 @@ import { mcpText, formatError, join } from '../utils/format.js';
 
 export const spawnTaskTool = {
   name: 'spawn_task',
-  description: `Spawn an autonomous agent task. Each task runs as a completely isolated agent with NO shared memory or conversation history -- the prompt you provide is the ONLY context the agent receives.
+  description: `Spawn an autonomous agent task. The agent runs isolated with NO shared memory -- your prompt is its ONLY context.
 
-IMPORTANT: Prefer spawning tasks one at a time with spawn_task. Only use batch_spawn when you have multiple small tasks with explicit cross-dependencies that must be set up atomically. For most work, individual spawn_task calls give you better control and let you write more detailed, context-rich prompts for each task.
+**After spawning:** Check status via MCP Resources (not tools):
+- \`task:///all\` → List all tasks with status
+- \`task:///{id}\` → Full task details, output, metrics
+- \`task:///{id}/session\` → Execution log with tool calls
 
-Task types: super-coder (implementation), super-planner (architecture), super-researcher (investigation), super-tester (QA).
-Models: ${MODEL_IDS.join(', ')}. Default: ${DEFAULT_MODEL}.`,
+**Task types:** super-coder (implementation), super-planner (architecture), super-researcher (investigation), super-tester (QA).
+**Models:** ${MODEL_IDS.join(', ')}. Default: ${DEFAULT_MODEL}.
+
+Account rotation and rate limit recovery happen automatically -- no manual intervention needed.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -100,7 +105,7 @@ export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise
 
     const labels = parsed.labels?.filter((l: string) => l.trim()) || [];
 
-    const taskId = await spawnCopilotProcess({
+    const taskId = await spawnCopilotTask({
       prompt: finalPrompt,
       timeout: parsed.timeout,
       cwd: parsed.cwd,
@@ -120,19 +125,31 @@ export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise
 
     if (isWaiting) {
       const depsList = dependsOn.map(d => `\`${d}\``).join(', ');
-      return mcpText(join(
-        `Task **${taskId}** spawned (waiting).`,
-        `Depends on: ${depsList}`,
+      const parts = [
+        `✅ **Task queued (waiting for dependencies)**`,
+        `task_id: \`${taskId}\``,
+        task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
         '',
-        'Dependencies must complete before this task runs.',
-        'Check status with `get_status`.'
-      ));
+        `**Waiting on:** ${depsList}`,
+        '',
+        'Task will auto-start when dependencies complete. Continue with other work.',
+      ].filter(Boolean);
+      return mcpText(parts.join('\n'));
     }
 
-    return mcpText(join(
-      `Task **${taskId}** spawned (${task?.status || 'pending'}).`,
-      'Check status with `get_status`.'
-    ));
+    const parts = [
+      `✅ **Task launched**`,
+      `task_id: \`${taskId}\``,
+      task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+      '',
+      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
+      '',
+      '**Optional progress check:**',
+      task?.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
+      task?.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
+      `- Read resource: \`task:///${taskId}\``,
+    ].filter(Boolean);
+    return mcpText(parts.join('\n'));
   } catch (error) {
     return mcpText(formatError(
       error instanceof Error ? error.message : 'Unknown error',

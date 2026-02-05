@@ -28,6 +28,7 @@ export function mapInternalStatusToMCP(status: TaskStatus): MCPStatus {
 
 /**
  * Build a human-readable status message from internal task state.
+ * Now includes SDK metrics for richer status reporting.
  */
 export function buildStatusMessage(task: TaskState): string {
   switch (task.status) {
@@ -40,39 +41,168 @@ export function buildStatusMessage(task: TaskState): string {
     }
 
     case TaskStatus.RUNNING: {
-      let msg = `Running`;
-      if (task.pid) msg += ` (pid: ${task.pid})`;
+      const parts: string[] = ['Running'];
+      
+      if (task.sessionId) {
+        parts.push(`session: ${task.sessionId.slice(0, 8)}...`);
+      }
+      
+      // Include turn count from session metrics
+      if (task.sessionMetrics?.turnCount) {
+        parts.push(`turns: ${task.sessionMetrics.turnCount}`);
+      }
+      
+      // Include active subagents
+      if (task.sessionMetrics?.activeSubagents?.length) {
+        const subagentNames = task.sessionMetrics.activeSubagents.map(s => s.agentDisplayName).join(', ');
+        parts.push(`subagents: ${subagentNames}`);
+      }
+      
+      // Include token usage
+      if (task.sessionMetrics?.totalTokens) {
+        const { input, output } = task.sessionMetrics.totalTokens;
+        if (input > 0 || output > 0) {
+          parts.push(`tokens: ${input}in/${output}out`);
+        }
+      }
+      
       if (task.timeoutAt) {
         const remaining = new Date(task.timeoutAt).getTime() - Date.now();
         if (remaining > 0) {
-          msg += `, timeout in ${Math.ceil(remaining / 1000)}s`;
+          parts.push(`timeout in ${Math.ceil(remaining / 1000)}s`);
         }
       }
-      return msg;
+      
+      // Include quota warning if low
+      if (task.quotaInfo && task.quotaInfo.remainingPercentage <= 10) {
+        parts.push(`quota: ${task.quotaInfo.remainingPercentage}%`);
+      }
+      
+      return parts.join(' | ');
     }
 
-    case TaskStatus.COMPLETED:
-      return `Completed${task.exitCode !== undefined ? ` (exit code: ${task.exitCode})` : ''}`;
+    case TaskStatus.COMPLETED: {
+      const parts: string[] = ['Completed'];
+      
+      if (task.exitCode !== undefined) {
+        parts.push(`exit: ${task.exitCode}`);
+      }
+      
+      // Include completion metrics
+      if (task.completionMetrics) {
+        const { totalApiCalls, totalApiDurationMs, codeChanges } = task.completionMetrics;
+        
+        if (totalApiCalls > 0) {
+          parts.push(`api: ${totalApiCalls} calls`);
+        }
+        if (totalApiDurationMs > 0) {
+          parts.push(`duration: ${Math.round(totalApiDurationMs / 1000)}s`);
+        }
+        if (codeChanges.linesAdded > 0 || codeChanges.linesRemoved > 0) {
+          parts.push(`code: +${codeChanges.linesAdded}/-${codeChanges.linesRemoved}`);
+        }
+        if (codeChanges.filesModified.length > 0) {
+          parts.push(`files: ${codeChanges.filesModified.length}`);
+        }
+      }
+      
+      // Include session metrics summary
+      if (task.sessionMetrics) {
+        const { turnCount, totalTokens, completedSubagents } = task.sessionMetrics;
+        if (turnCount > 0) {
+          parts.push(`turns: ${turnCount}`);
+        }
+        if (totalTokens.input > 0 || totalTokens.output > 0) {
+          parts.push(`tokens: ${totalTokens.input + totalTokens.output}`);
+        }
+        if (completedSubagents?.length > 0) {
+          parts.push(`subagents: ${completedSubagents.length}`);
+        }
+      }
+      
+      return parts.join(' | ');
+    }
 
-    case TaskStatus.FAILED:
-      return `Failed${task.error ? `: ${task.error.slice(0, 200)}` : ''}`;
+    case TaskStatus.FAILED: {
+      const parts: string[] = ['Failed'];
+      
+      // Use structured failure context if available
+      if (task.failureContext) {
+        const { errorType, statusCode, errorContext } = task.failureContext;
+        if (statusCode) {
+          parts.push(`status: ${statusCode}`);
+        }
+        if (errorType) {
+          parts.push(`type: ${errorType}`);
+        }
+        if (errorContext) {
+          parts.push(`context: ${errorContext}`);
+        }
+        if (task.failureContext.recoverable) {
+          parts.push('recoverable');
+        }
+      }
+      
+      // Truncated error message
+      if (task.error) {
+        const truncated = task.error.length > 100 ? task.error.slice(0, 100) + '...' : task.error;
+        parts.push(truncated);
+      }
+      
+      return parts.join(' | ');
+    }
 
     case TaskStatus.CANCELLED:
       return 'Cancelled';
 
     case TaskStatus.RATE_LIMITED: {
+      const parts: string[] = ['Rate limited'];
+      
       const attempt = (task.retryInfo?.retryCount ?? 0) + 1;
       const max = task.retryInfo?.maxRetries ?? 6;
-      let msg = `Rate limited (attempt ${attempt}/${max})`;
-      if (task.retryInfo?.nextRetryTime) {
-        const retryAt = new Date(task.retryInfo.nextRetryTime);
-        msg += `, retry at ${retryAt.toISOString()}`;
+      parts.push(`attempt ${attempt}/${max}`);
+      
+      // Use structured failure context for status code
+      if (task.failureContext?.statusCode) {
+        parts.push(`status: ${task.failureContext.statusCode}`);
       }
-      return msg;
+      
+      // Use quota info for reset time if available
+      if (task.quotaInfo?.resetDate) {
+        const resetAt = new Date(task.quotaInfo.resetDate);
+        parts.push(`resets: ${resetAt.toISOString()}`);
+      } else if (task.retryInfo?.nextRetryTime) {
+        const retryAt = new Date(task.retryInfo.nextRetryTime);
+        parts.push(`retry at: ${retryAt.toISOString()}`);
+      }
+      
+      return parts.join(' | ');
     }
 
-    case TaskStatus.TIMED_OUT:
-      return `Timed out${task.timeout ? ` after ${task.timeout}ms` : ''}`;
+    case TaskStatus.TIMED_OUT: {
+      const parts: string[] = ['Timed out'];
+      
+      if (task.timeout) {
+        parts.push(`after ${task.timeout}ms`);
+      }
+      
+      if (task.timeoutReason) {
+        parts.push(`reason: ${task.timeoutReason}`);
+      }
+      
+      // Include what was accomplished before timeout
+      if (task.sessionMetrics) {
+        const { turnCount, totalTokens } = task.sessionMetrics;
+        if (turnCount > 0) {
+          parts.push(`turns completed: ${turnCount}`);
+        }
+        if (totalTokens.input > 0 || totalTokens.output > 0) {
+          parts.push(`tokens used: ${totalTokens.input + totalTokens.output}`);
+        }
+      }
+      
+      return parts.join(' | ');
+    }
 
     default:
       return task.status;
@@ -93,6 +223,11 @@ export function computePollInterval(task: TaskState): number | undefined {
       return 60_000;
 
     case TaskStatus.RATE_LIMITED: {
+      // Use quota reset date if available for more accurate polling
+      if (task.quotaInfo?.resetDate) {
+        const waitMs = new Date(task.quotaInfo.resetDate).getTime() - Date.now();
+        return Math.max(30_000, Math.min(waitMs, 300_000)); // Cap at 5 min
+      }
       if (task.retryInfo?.nextRetryTime) {
         const waitMs = new Date(task.retryInfo.nextRetryTime).getTime() - Date.now();
         return Math.max(30_000, waitMs);
@@ -138,6 +273,7 @@ function getLastUpdatedAt(task: TaskState): string {
 
 /**
  * Build an MCP Task object from internal TaskState.
+ * Includes enhanced status message with SDK metrics.
  */
 export function buildMCPTask(task: TaskState): MCPTask {
   return {
