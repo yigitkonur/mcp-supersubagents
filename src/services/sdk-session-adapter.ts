@@ -14,7 +14,7 @@
 
 import type { CopilotSession } from '@github/copilot-sdk';
 import type { SessionEvent } from '@github/copilot-sdk';
-import { UsageMetricsTracker } from '@github/copilot-sdk';
+import type { MessageOptions } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { clearTaskToolMetrics } from './session-hooks.js';
@@ -101,8 +101,7 @@ interface SessionBinding {
     remainingPercentage?: number;
   };
   pendingPrompt?: string;
-  // SDK's native metrics tracker
-  metricsTracker: UsageMetricsTracker;
+  // Aggregated metrics (replaces UsageMetricsTracker which is not exported by SDK)
   // Enhanced metrics tracking
   turnCount: number;
   totalTokens: { input: number; output: number };
@@ -142,11 +141,11 @@ class SDKSessionAdapter {
       );
       
       // Send a simple test message
-      await testSession.sendAndWait('hi');
+      await testSession.sendAndWait({ prompt: 'hi' });
       
-      // Clean up the test session
-      await testSession.destroy();
-      
+      // Clean up the test session and remove from client manager tracking
+      await sdkClientManager.destroySession(healthCheckSessionId);
+
       console.error(`[sdk-session-adapter] Health check passed`);
       return true;
     } catch (err) {
@@ -176,8 +175,6 @@ class SDKSessionAdapter {
       maxRotationAttempts: 10,
       rotationInProgress: false,
       pendingPrompt,
-      // SDK's native metrics tracker for automatic event processing
-      metricsTracker: new UsageMetricsTracker(startTime),
       // Initialize metrics tracking
       turnCount: 0,
       totalTokens: { input: 0, output: 0 },
@@ -191,7 +188,9 @@ class SDKSessionAdapter {
 
     // Subscribe to all session events using SDK's typed event system
     const unsubscribe = session.on((event: SessionEvent) => {
-      this.handleEvent(taskId, event, binding);
+      this.handleEvent(taskId, event, binding).catch((err) => {
+        console.error(`[sdk-session-adapter] Error handling event ${event.type} for task ${taskId}:`, err);
+      });
     });
 
     binding.unsubscribe = unsubscribe;
@@ -219,15 +218,12 @@ class SDKSessionAdapter {
    * Handle SDK session events and map them to task updates.
    * Uses type narrowing for type-safe event handling.
    */
-  private handleEvent(taskId: string, event: SessionEvent, binding: SessionBinding): void {
+  private async handleEvent(taskId: string, event: SessionEvent, binding: SessionBinding): Promise<void> {
     const task = taskManager.getTask(taskId);
     if (!task) {
       console.error(`[sdk-session-adapter] Task ${taskId} not found for event ${event.type}`);
       return;
     }
-
-    // Let SDK's UsageMetricsTracker process all events for automatic metrics aggregation
-    binding.metricsTracker.processEvent(event);
 
     // Skip events if session is paused (during rotation)
     if (binding.isPaused && event.type !== 'session.error') {
@@ -249,7 +245,7 @@ class SDKSessionAdapter {
         break;
 
       case 'session.error':
-        this.handleSessionError(taskId, event as SessionErrorEvent, binding);
+        await this.handleSessionError(taskId, event as SessionErrorEvent, binding);
         break;
 
       case 'assistant.turn_start':
@@ -261,7 +257,7 @@ class SDKSessionAdapter {
         break;
 
       case 'assistant.message':
-        this.handleAssistantMessage(taskId, event as AssistantMessageEvent, binding);
+        await this.handleAssistantMessage(taskId, event as AssistantMessageEvent, binding);
         break;
 
       case 'assistant.reasoning':
@@ -487,7 +483,11 @@ class SDKSessionAdapter {
     taskManager.appendOutput(taskId, `[rotation] Performing health check on new account...`);
     const healthCheckPassed = await this.performHealthCheck(taskCwd);
     if (!healthCheckPassed) {
-      taskManager.appendOutput(taskId, `[rotation] Health check failed, trying next account...`);
+      binding.rotationAttempts++;
+      taskManager.appendOutput(taskId, `[rotation] Health check failed, trying next account (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
+      if (binding.rotationAttempts >= binding.maxRotationAttempts) {
+        return false;
+      }
       // Recursively try next account
       return this.attemptRotationAndResume(taskId, binding, statusCode, errorMessage);
     }
@@ -531,8 +531,6 @@ class SDKSessionAdapter {
       maxRotationAttempts: oldBinding.maxRotationAttempts,
       rotationInProgress: false,
       pendingPrompt: oldBinding.pendingPrompt,
-      // Preserve metrics tracker from old binding
-      metricsTracker: oldBinding.metricsTracker,
       // Preserve metrics
       turnCount: oldBinding.turnCount,
       totalTokens: oldBinding.totalTokens,
@@ -546,7 +544,9 @@ class SDKSessionAdapter {
 
     // Subscribe to new session events
     const unsubscribe = newSession.on((event: SessionEvent) => {
-      this.handleEvent(taskId, event, newBinding);
+      this.handleEvent(taskId, event, newBinding).catch((err) => {
+        console.error(`[sdk-session-adapter] Error handling event ${event.type} for task ${taskId}:`, err);
+      });
     });
 
     newBinding.unsubscribe = unsubscribe;
@@ -564,7 +564,7 @@ class SDKSessionAdapter {
     // Send "continue" message to resume the conversation
     taskManager.appendOutput(taskId, `[rotation] Sending 'continue' to resume conversation...`);
     try {
-      await newSession.sendAndWait('continue');
+      await newSession.sendAndWait({ prompt: 'continue' });
     } catch (err) {
       console.error(`[sdk-session-adapter] Failed to send continue message:`, err);
       // Don't fail the rebind - the session is still valid, just the continue failed
@@ -730,11 +730,12 @@ class SDKSessionAdapter {
 
           // Proactively rotate if quota is critically low (< 1%)
           // Guard: Only rotate if not already rotating (prevents race condition)
-          if (snapshot.remainingPercentage < 1 && 
+          if (snapshot.remainingPercentage < 1 &&
               binding.rotationAttempts < binding.maxRotationAttempts &&
               !binding.rotationInProgress) {
             binding.rotationInProgress = true;
-            taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating...`);
+            binding.rotationAttempts++;  // Count proactive rotation toward the limit
+            taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
             this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low')
               .finally(() => { binding.rotationInProgress = false; })
               .catch(console.error);
@@ -818,7 +819,7 @@ class SDKSessionAdapter {
    * Handle subagent.started event
    */
   private handleSubagentStarted(taskId: string, event: SubagentStartedEvent, binding: SessionBinding): void {
-    const { agentName, agentDisplayName, agentDescription, toolCallId, tools } = event.data;
+    const { agentName, agentDisplayName, agentDescription, toolCallId } = event.data;
 
     const subagentInfo: SubagentInfo = {
       agentName,
@@ -826,7 +827,6 @@ class SDKSessionAdapter {
       agentDescription,
       toolCallId,
       status: 'running',
-      tools,
       startedAt: new Date().toISOString(),
     };
 
@@ -899,7 +899,7 @@ class SDKSessionAdapter {
     // Process model metrics if available
     if (event.data.modelMetrics) {
       for (const [model, metricsRaw] of Object.entries(event.data.modelMetrics)) {
-        const metrics = metricsRaw as ModelMetricsData;
+        const metrics = metricsRaw as unknown as ModelMetricsData;
         completionMetrics.modelUsage[model] = {
           requests: metrics.requests || 0,
           cost: metrics.cost || 0,
@@ -977,36 +977,15 @@ class SDKSessionAdapter {
       quotasObj[tier] = quota;
     }
 
-    // Get SDK's aggregated metrics from UsageMetricsTracker
-    const sdkMetrics = binding.metricsTracker.metrics;
-
-    // Calculate total tokens from SDK's modelMetrics if available
-    let sdkInputTokens = 0;
-    let sdkOutputTokens = 0;
-    if (sdkMetrics.modelMetrics) {
-      for (const modelMetric of sdkMetrics.modelMetrics.values()) {
-        const m = modelMetric as ModelMetricsData;
-        sdkInputTokens += m.inputTokens || 0;
-        sdkOutputTokens += m.outputTokens || 0;
-      }
-    }
-
     const sessionMetrics: SessionMetrics = {
       quotas: quotasObj,
       toolMetrics: toolMetricsObj,
       activeSubagents: Array.from(binding.activeSubagents.values()),
       completedSubagents: binding.completedSubagents,
       turnCount: binding.turnCount,
-      // Use SDK's token tracking for more accurate metrics, fallback to manual tracking
       totalTokens: {
-        input: sdkInputTokens > 0 ? sdkInputTokens : binding.totalTokens.input,
-        output: sdkOutputTokens > 0 ? sdkOutputTokens : binding.totalTokens.output,
-      },
-      // Include SDK's aggregated metrics
-      sdkMetrics: {
-        totalPremiumRequests: sdkMetrics.totalPremiumRequests,
-        totalApiDurationMs: sdkMetrics.totalApiDurationMs,
-        codeChanges: sdkMetrics.codeChanges,
+        input: binding.totalTokens.input,
+        output: binding.totalTokens.output,
       },
     };
 

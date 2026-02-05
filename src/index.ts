@@ -15,7 +15,7 @@ import { spawnTaskTool, handleSpawnTask } from './tools/spawn-task.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
-import { taskManager } from './services/task-manager.js';
+import { taskManager, TERMINAL_STATUSES } from './services/task-manager.js';
 import { clientContext } from './services/client-context.js';
 import { checkSDKAvailable, shutdownSDK, getSDKStats } from './services/sdk-spawner.js';
 import { sdkClientManager } from './services/sdk-client-manager.js';
@@ -46,9 +46,6 @@ const server = new Server(
     },
   }
 );
-
-// Load persisted tasks immediately using server cwd as a fallback.
-taskManager.setCwd(clientContext.getDefaultCwd());
 
 // Register retry callback for rate-limited tasks (using SDK spawner)
 taskManager.onRetry(async (task) => {
@@ -83,7 +80,6 @@ taskManager.onExecute(async (task) => {
 
 // --- Progress & Resource notification wiring ---
 
-const TERMINAL_STATUSES = [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT];
 const resourceUpdateTimers = new Map<string, NodeJS.Timeout>();
 
 // Single onOutput registration: forwards to progress + debounced resource updates
@@ -114,7 +110,7 @@ taskManager.onStatusChange((task, previousStatus) => {
   progressRegistry.sendProgress(task.id, `Status: ${previousStatus} → ${task.status}`);
 
   // 3. Unregister progress on terminal states
-  if (TERMINAL_STATUSES.includes(task.status)) {
+  if (TERMINAL_STATUSES.has(task.status)) {
     progressRegistry.unregister(task.id);
   }
 
@@ -640,7 +636,7 @@ async function main() {
   // Graceful shutdown with SDK cleanup
   const shutdown = async () => {
     console.error('Shutting down...');
-    taskManager.shutdown();
+    await taskManager.shutdown();
     await shutdownSDK();
     process.exit(0);
   };
