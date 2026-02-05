@@ -14,6 +14,7 @@
 
 import type { CopilotSession } from '@github/copilot-sdk';
 import type { SessionEvent } from '@github/copilot-sdk';
+import { UsageMetricsTracker } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { clearTaskToolMetrics } from './session-hooks.js';
@@ -60,6 +61,26 @@ type RotationRequestCallback = (
   statusCode?: number
 ) => Promise<{ rotated: boolean; newSession?: CopilotSession }>;
 
+// Type for quota snapshot from SDK
+interface QuotaSnapshot {
+  remainingPercentage: number;
+  usedRequests?: number;
+  entitlementRequests?: number;
+  isUnlimitedEntitlement?: boolean;
+  overage?: number;
+  resetDate?: string;
+}
+
+// Type for model metrics from SDK
+interface ModelMetricsData {
+  requests?: number;
+  cost?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
 interface SessionBinding {
   taskId: string;
   session: CopilotSession;
@@ -80,6 +101,8 @@ interface SessionBinding {
     remainingPercentage?: number;
   };
   pendingPrompt?: string;
+  // SDK's native metrics tracker
+  metricsTracker: UsageMetricsTracker;
   // Enhanced metrics tracking
   turnCount: number;
   totalTokens: { input: number; output: number };
@@ -139,19 +162,22 @@ class SDKSessionAdapter {
     // Clean up any existing binding
     this.unbind(taskId);
 
+    const startTime = new Date();
     const binding: SessionBinding = {
       taskId,
       session,
       sessionId: session.sessionId,
       unsubscribe: () => {},
       outputBuffer: [],
-      startTime: new Date(),
+      startTime,
       isCompleted: false,
       isPaused: false,
       rotationAttempts: 0,
       maxRotationAttempts: 10,
       rotationInProgress: false,
       pendingPrompt,
+      // SDK's native metrics tracker for automatic event processing
+      metricsTracker: new UsageMetricsTracker(startTime),
       // Initialize metrics tracking
       turnCount: 0,
       totalTokens: { input: 0, output: 0 },
@@ -199,6 +225,9 @@ class SDKSessionAdapter {
       console.error(`[sdk-session-adapter] Task ${taskId} not found for event ${event.type}`);
       return;
     }
+
+    // Let SDK's UsageMetricsTracker process all events for automatic metrics aggregation
+    binding.metricsTracker.processEvent(event);
 
     // Skip events if session is paused (during rotation)
     if (binding.isPaused && event.type !== 'session.error') {
@@ -502,6 +531,8 @@ class SDKSessionAdapter {
       maxRotationAttempts: oldBinding.maxRotationAttempts,
       rotationInProgress: false,
       pendingPrompt: oldBinding.pendingPrompt,
+      // Preserve metrics tracker from old binding
+      metricsTracker: oldBinding.metricsTracker,
       // Preserve metrics
       turnCount: oldBinding.turnCount,
       totalTokens: oldBinding.totalTokens,
@@ -667,14 +698,15 @@ class SDKSessionAdapter {
 
     // Process quota snapshots and store structured info
     if (quotaSnapshots) {
-      for (const [tier, snapshot] of Object.entries(quotaSnapshots)) {
+      for (const [tier, snapshotRaw] of Object.entries(quotaSnapshots)) {
+        const snapshot = snapshotRaw as QuotaSnapshot;
         const quotaInfo: QuotaInfo = {
           tier,
           remainingPercentage: snapshot.remainingPercentage,
-          usedRequests: snapshot.usedRequests,
-          entitlementRequests: snapshot.entitlementRequests,
-          isUnlimited: snapshot.isUnlimitedEntitlement,
-          overage: snapshot.overage,
+          usedRequests: snapshot.usedRequests ?? 0,
+          entitlementRequests: snapshot.entitlementRequests ?? 0,
+          isUnlimited: snapshot.isUnlimitedEntitlement ?? false,
+          overage: snapshot.overage ?? 0,
           resetDate: snapshot.resetDate,
           lastUpdated: new Date().toISOString(),
         };
@@ -866,7 +898,8 @@ class SDKSessionAdapter {
 
     // Process model metrics if available
     if (event.data.modelMetrics) {
-      for (const [model, metrics] of Object.entries(event.data.modelMetrics)) {
+      for (const [model, metricsRaw] of Object.entries(event.data.modelMetrics)) {
+        const metrics = metricsRaw as ModelMetricsData;
         completionMetrics.modelUsage[model] = {
           requests: metrics.requests || 0,
           cost: metrics.cost || 0,
@@ -931,6 +964,7 @@ class SDKSessionAdapter {
 
   /**
    * Update session metrics in task state
+   * Uses SDK's UsageMetricsTracker for token/request metrics, combined with our custom tracking
    */
   private updateSessionMetrics(taskId: string, binding: SessionBinding): void {
     const toolMetricsObj: Record<string, ToolMetrics> = {};
@@ -943,13 +977,37 @@ class SDKSessionAdapter {
       quotasObj[tier] = quota;
     }
 
+    // Get SDK's aggregated metrics from UsageMetricsTracker
+    const sdkMetrics = binding.metricsTracker.metrics;
+
+    // Calculate total tokens from SDK's modelMetrics if available
+    let sdkInputTokens = 0;
+    let sdkOutputTokens = 0;
+    if (sdkMetrics.modelMetrics) {
+      for (const modelMetric of sdkMetrics.modelMetrics.values()) {
+        const m = modelMetric as ModelMetricsData;
+        sdkInputTokens += m.inputTokens || 0;
+        sdkOutputTokens += m.outputTokens || 0;
+      }
+    }
+
     const sessionMetrics: SessionMetrics = {
       quotas: quotasObj,
       toolMetrics: toolMetricsObj,
       activeSubagents: Array.from(binding.activeSubagents.values()),
       completedSubagents: binding.completedSubagents,
       turnCount: binding.turnCount,
-      totalTokens: binding.totalTokens,
+      // Use SDK's token tracking for more accurate metrics, fallback to manual tracking
+      totalTokens: {
+        input: sdkInputTokens > 0 ? sdkInputTokens : binding.totalTokens.input,
+        output: sdkOutputTokens > 0 ? sdkOutputTokens : binding.totalTokens.output,
+      },
+      // Include SDK's aggregated metrics
+      sdkMetrics: {
+        totalPremiumRequests: sdkMetrics.totalPremiumRequests,
+        totalApiDurationMs: sdkMetrics.totalApiDurationMs,
+        codeChanges: sdkMetrics.codeChanges,
+      },
     };
 
     taskManager.updateTask(taskId, { sessionMetrics });

@@ -185,6 +185,16 @@ export interface SessionMetrics {
     input: number;
     output: number;
   };
+  /** SDK's native aggregated metrics from UsageMetricsTracker */
+  sdkMetrics?: {
+    totalPremiumRequests: number;
+    totalApiDurationMs: number;
+    codeChanges?: {
+      linesAdded: number;
+      linesRemoved: number;
+      filesModified: number;
+    };
+  };
 }
 
 // ============================================================================

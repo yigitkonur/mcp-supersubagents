@@ -17,6 +17,7 @@
 import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse } from '@github/copilot-sdk';
 import { accountManager } from './account-manager.js';
 import { questionRegistry } from './question-registry.js';
+import { createSessionHooks } from './session-hooks.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 
@@ -154,15 +155,17 @@ class SDKClientManager {
     const tokenIndex = accountManager.getCurrentIndex();
     const clientKey = `${cwd}:${tokenIndex}`;
 
-    // Build session config with user input handler if taskId provided
+    // Build session config with user input handler and hooks if taskId provided
     const sessionConfig: SessionConfig = {
       sessionId,
       ...config,
     };
 
-    // Add user input handler to enable ask_user tool
+    // Add user input handler and session hooks when taskId is provided
     if (taskId) {
       sessionConfig.onUserInputRequest = createUserInputHandler(taskId);
+      // Wire SDK session hooks for lifecycle events, error handling, and tool telemetry
+      sessionConfig.hooks = createSessionHooks(taskId);
     }
 
     const session = await client.createSession(sessionConfig);
@@ -188,11 +191,13 @@ class SDKClientManager {
   ): Promise<CopilotSession> {
     const client = await this.getClient(cwd);
     
-    // Build resume config with user input handler if taskId provided
+    // Build resume config with user input handler and hooks if taskId provided
     const resumeConfig: Partial<SessionConfig> = { ...config };
     
     if (taskId) {
       resumeConfig.onUserInputRequest = createUserInputHandler(taskId);
+      // Wire SDK session hooks for lifecycle events, error handling, and tool telemetry
+      resumeConfig.hooks = createSessionHooks(taskId);
     }
     
     const session = await client.resumeSession(sessionId, resumeConfig);
