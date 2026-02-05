@@ -17,8 +17,7 @@ import type { SessionEvent } from '@github/copilot-sdk';
 import type { MessageOptions } from '@github/copilot-sdk';
 import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
 import { sdkClientManager } from './sdk-client-manager.js';
-import { clearTaskToolMetrics } from './session-hooks.js';
-import { 
+import {
   TaskStatus, 
   type RetryInfo,
   type FailureContext,
@@ -1093,7 +1092,6 @@ class SDKSessionAdapter {
     if (binding) {
       binding.unsubscribe();
       this.bindings.delete(taskId);
-      clearTaskToolMetrics(taskId);
       console.error(`[sdk-session-adapter] Unbound session from task ${taskId}`);
     }
   }
@@ -1160,7 +1158,6 @@ class SDKSessionAdapter {
   cleanup(): void {
     for (const [taskId, binding] of this.bindings) {
       binding.unsubscribe();
-      clearTaskToolMetrics(taskId);
     }
     this.bindings.clear();
   }

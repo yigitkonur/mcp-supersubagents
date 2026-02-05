@@ -160,12 +160,3 @@ export function createSessionHooks(taskId: string): SessionHooks {
   };
 }
 
-/**
- * Clear tool metrics for a task (call on task cleanup).
- * No-op since tool metrics tracking was moved to sdk-session-adapter,
- * but kept as export for backward compatibility with existing callers.
- */
-export function clearTaskToolMetrics(_taskId: string): void {
-  // Tool metrics are now tracked exclusively by sdk-session-adapter
-  // via toolCallId-based matching. Nothing to clean up here.
-}

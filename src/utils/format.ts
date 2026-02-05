@@ -31,8 +31,3 @@ export function formatTable(headers: string[], rows: string[][]): string {
   const dataRows = rows.map(r => `| ${r.map(escapeCell).join(' | ')} |`);
   return [headerRow, separator, ...dataRows].join('\n');
 }
-
-/** Join non-empty strings with newlines, filtering out falsy/empty values. */
-export function join(...parts: (string | undefined | false | null)[]): string {
-  return parts.filter(p => typeof p === 'string' && p.length > 0).join('\n');
-}

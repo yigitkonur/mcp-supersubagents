@@ -5,7 +5,7 @@ import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
 import type { ToolContext } from '../types.js';
-import { mcpText, formatError, join } from '../utils/format.js';
+import { mcpText, formatError } from '../utils/format.js';
 
 export const spawnTaskTool = {
   name: 'spawn_task',

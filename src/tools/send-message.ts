@@ -13,7 +13,7 @@ import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { progressRegistry } from '../services/progress-registry.js';
 import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
-import { mcpText, formatError, join } from '../utils/format.js';
+import { mcpText, formatError } from '../utils/format.js';
 import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS } from '../config/timeouts.js';
 
 const SendMessageSchema = z.object({

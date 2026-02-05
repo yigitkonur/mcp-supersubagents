@@ -245,7 +245,6 @@ export interface TaskState {
   provider?: Provider;
   fallbackAttempted?: boolean;
   switchAttempted?: boolean;
-  recoveryAttempted?: boolean;
   // SDK Enhancement Fields
   /** Structured failure context from SDK events */
   failureContext?: FailureContext;
