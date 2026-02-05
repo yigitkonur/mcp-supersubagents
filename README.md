@@ -51,7 +51,7 @@ Status and task details are accessed via **MCP Resources** (not tools):
 
 ## Task Statuses
 
-```
+```text
 pending → waiting → running → completed | failed | cancelled | rate_limited | timed_out
 ```
 
@@ -144,7 +144,7 @@ Rate-limited tasks auto-retry with exponential backoff (5m → 10m → 20m → 4
 
 Each task creates a live output file for real-time monitoring:
 
-```
+```text
 {cwd}/.super-agents/{task-id}.output
 ```
 
