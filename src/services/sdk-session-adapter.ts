@@ -94,6 +94,7 @@ interface SessionBinding {
   sessionId: string;
   unsubscribe: () => void;
   outputBuffer: string[];
+  reasoningBuffer: string[];
   lastMessageId?: string;
   startTime: Date;
   isCompleted: boolean;
@@ -175,6 +176,7 @@ class SDKSessionAdapter {
       sessionId: session.sessionId,
       unsubscribe: () => {},
       outputBuffer: [],
+      reasoningBuffer: [],
       startTime,
       isCompleted: false,
       isPaused: false,
@@ -267,17 +269,31 @@ class SDKSessionAdapter {
         await this.handleAssistantMessage(taskId, event as AssistantMessageEvent, binding);
         break;
 
-      case 'assistant.reasoning':
-        taskManager.appendOutput(taskId, `[reasoning] ${event.data.content}`);
+      case 'assistant.reasoning': {
+        const reasoning = event.data.content || binding.reasoningBuffer.join('');
+        if (reasoning) {
+          taskManager.appendOutput(taskId, `[reasoning] ${reasoning}`);
+        }
+        binding.reasoningBuffer.length = 0;
         break;
+      }
 
       case 'assistant.reasoning_delta':
-        taskManager.appendOutput(taskId, `[reasoning] ${event.data.deltaContent}`);
+        binding.reasoningBuffer.push(event.data.deltaContent);
         break;
 
-      case 'assistant.turn_end':
+      case 'assistant.turn_end': {
+        if (binding.reasoningBuffer.length) {
+          taskManager.appendOutput(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+          binding.reasoningBuffer.length = 0;
+        }
+        if (binding.outputBuffer.length) {
+          taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
+          binding.outputBuffer.length = 0;
+        }
         taskManager.appendOutput(taskId, `[assistant] Turn ended: ${event.data.turnId}`);
         break;
+      }
 
       case 'assistant.usage':
         this.handleUsage(taskId, event as AssistantUsageEvent, binding);
@@ -588,6 +604,7 @@ class SDKSessionAdapter {
       sessionId: newSession.sessionId,
       unsubscribe: () => {},
       outputBuffer: oldBinding.outputBuffer,
+      reasoningBuffer: oldBinding.reasoningBuffer,
       lastMessageId: oldBinding.lastMessageId,
       startTime: oldBinding.startTime,
       isCompleted: false,
@@ -704,7 +721,6 @@ class SDKSessionAdapter {
     binding: SessionBinding
   ): void {
     if (event.data.deltaContent) {
-      taskManager.appendOutput(taskId, event.data.deltaContent);
       binding.outputBuffer.push(event.data.deltaContent);
     }
     binding.lastMessageId = event.data.messageId;
@@ -719,17 +735,18 @@ class SDKSessionAdapter {
     event: AssistantMessageEvent,
     binding: SessionBinding
   ): Promise<void> {
-    taskManager.appendOutput(taskId, `\n[assistant] Message complete: ${event.data.messageId}`);
-    if (event.data.content && !binding.outputBuffer.length) {
-      // Non-streaming mode - emit full content
-      taskManager.appendOutput(taskId, event.data.content);
+    const content = event.data.content || binding.outputBuffer.join('');
+    if (content) {
+      taskManager.appendOutput(taskId, content);
     }
+    taskManager.appendOutput(taskId, `[assistant] Message complete: ${event.data.messageId}`);
+    binding.outputBuffer.length = 0;
     binding.lastMessageId = event.data.messageId;
 
     // String-based rate limit detection fallback
     // Only check current message content to avoid loops
-    const content = event.data.content || '';
-    if (content.includes(RATE_LIMIT_STRING) && !binding.isCompleted && !binding.isPaused && !binding.rotationInProgress) {
+    const rateLimitContent = event.data.content || '';
+    if (rateLimitContent.includes(RATE_LIMIT_STRING) && !binding.isCompleted && !binding.isPaused && !binding.rotationInProgress) {
       // Check max rotation attempts first (parity with error-driven path at line 418)
       if (binding.rotationAttempts >= binding.maxRotationAttempts) {
         const currentTask = taskManager.getTask(taskId);
