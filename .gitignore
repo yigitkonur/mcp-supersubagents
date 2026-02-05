@@ -27,6 +27,10 @@ Thumbs.db
 test-*.mjs
 test-*.js
 
+# Local SDK checkouts (not published)
+copilot-sdk/
+claude-code-sdk-ts/
+
 # Environment
 .env
 .env.local
