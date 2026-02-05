@@ -4,22 +4,21 @@ MCP server for spawning autonomous GitHub Copilot agents as background tasks. Fe
 
 ## Quick Start
 
+**Option 1: Auto-install (recommended)**
 ```bash
-npx install-mcp super-subagents --client claude-desktop
+npx @automcp/cli install super-subagents --client claude-desktop
 ```
 
-Or manual setup:
-```bash
-npm install && npm run build
-```
+**Option 2: Manual config**
 
-Add to your MCP client config:
+Add to your MCP client config (e.g., `~/Library/Application Support/Claude/claude_desktop_config.json`):
+
 ```json
 {
   "mcpServers": {
     "super-agents": {
-      "command": "node",
-      "args": ["/path/to/super-subagents/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "super-subagents"],
       "env": {
         "GITHUB_PAT_TOKENS": "ghp_token1,ghp_token2,ghp_token3"
       }
@@ -27,6 +26,8 @@ Add to your MCP client config:
   }
 }
 ```
+
+No build required - `npx` runs the package directly.
 
 ## Tools (4)
 
