@@ -70,6 +70,9 @@ class SDKClientManager {
    * Clears all clients and resets account rotation to first token.
    */
   async reset(): Promise<void> {
+    // Invalidate any in-flight client creations before stopping existing clients
+    this.pendingClients.clear();
+
     // Stop all existing clients
     for (const [key, entry] of this.clients) {
       try {
@@ -113,6 +116,11 @@ class SDKClientManager {
 
     // Create with dedup — store the promise so concurrent callers reuse it
     const promise = this.createClient(cwd, currentToken).then(client => {
+      // Guard: if reset/shutdown invalidated this creation, stop the orphaned client
+      if (this.isShuttingDown || this.pendingClients.get(clientKey) !== promise) {
+        client.stop?.().catch(() => {});
+        throw new Error('Client creation invalidated by reset/shutdown');
+      }
       this.clients.set(clientKey, {
         client,
         cwd,
@@ -375,6 +383,7 @@ class SDKClientManager {
    */
   async shutdown(): Promise<void> {
     this.isShuttingDown = true;
+    this.pendingClients.clear();
 
     const errors: Error[] = [];
 

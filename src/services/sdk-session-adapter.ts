@@ -731,6 +731,15 @@ class SDKSessionAdapter {
     // Only check current message content to avoid loops
     const content = event.data.content || '';
     if (content.includes(RATE_LIMIT_STRING) && !binding.isCompleted && !binding.isPaused && !binding.rotationInProgress) {
+      // Check max rotation attempts first (parity with error-driven path at line 418)
+      if (binding.rotationAttempts >= binding.maxRotationAttempts) {
+        const currentTask = taskManager.getTask(taskId);
+        if (!currentTask || isTerminalStatus(currentTask.status)) {
+          return;
+        }
+        this.markAsRateLimited(taskId, binding, 'Rate limit detected in response (max rotations exhausted)');
+        return;
+      }
       // RC-1: Guard against concurrent rotation from string-based rate limit detection
       binding.rotationInProgress = true;
       binding.isPaused = true;
@@ -814,10 +823,14 @@ class SDKSessionAdapter {
               binding.rotationAttempts < binding.maxRotationAttempts &&
               !binding.rotationInProgress) {
             binding.rotationInProgress = true;
+            binding.isPaused = true;
             binding.rotationAttempts++;  // Count proactive rotation toward the limit
             taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
             this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low')
-              .finally(() => { binding.rotationInProgress = false; })
+              .finally(() => {
+                binding.rotationInProgress = false;
+                binding.isPaused = false;
+              })
               .catch(console.error);
           }
         }
