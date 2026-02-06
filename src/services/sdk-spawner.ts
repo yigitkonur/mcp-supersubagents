@@ -75,7 +75,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     ? options.cwd
     : clientContext.getDefaultCwd();
 
-  const model = resolveModel(options.model);
+  const model = resolveModel(options.model, options.taskType);
 
   // Create the task in the task manager
   const task = taskManager.createTask(prompt, cwd, model, {

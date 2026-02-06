@@ -265,6 +265,7 @@ export interface SpawnOptions {
   timeout?: number;
   cwd?: string;
   model?: string;
+  taskType?: string;
   autonomous?: boolean;
   resumeSessionId?: string;
   retryInfo?: RetryInfo;

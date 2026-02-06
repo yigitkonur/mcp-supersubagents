@@ -1,7 +1,7 @@
 import { SpawnTaskSchema } from '../utils/sanitize.js';
 import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { taskManager } from '../services/task-manager.js';
-import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
+import { MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../models.js';
 import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
 import type { ToolContext } from '../types.js';
@@ -53,7 +53,8 @@ The more detailed your prompt, the better the agent performs. Treat it as a comp
         description: `Model to use. Default: ${DEFAULT_MODEL}.
 - claude-sonnet-4.5: Best balance of speed and capability (default, recommended for most tasks)
 - claude-haiku-4.5: Fastest -- use for simple, well-defined tasks like running a single command or small edits
-- claude-opus-4.5: Most capable -- use for complex reasoning, large refactors, or tasks requiring deep analysis`,
+- claude-opus-4.6: Most capable -- use for complex reasoning, large refactors, or tasks requiring deep analysis
+Note: super-planner always uses ${OPUS_MODEL} automatically (model param is ignored for planner tasks).`,
       },
       cwd: {
         type: 'string',
@@ -113,6 +114,7 @@ export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise
       autonomous: parsed.autonomous,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
+      taskType: parsed.task_type,
     });
 
     const task = taskManager.getTask(taskId);

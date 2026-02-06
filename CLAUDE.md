@@ -152,7 +152,7 @@ Key SDK method signatures:
 | `GITHUB_PAT_TOKEN_1`..`_N` | — | Numbered PAT tokens (alternative to comma-separated) |
 | `GH_PAT_TOKEN` | — | Fallback PAT token(s), comma-separated |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | Single token fallback |
-| `ENABLE_OPUS` | `false` | Allow claude-opus-4.5 model (cost control) |
+| `ENABLE_OPUS` | `false` | Show claude-opus-4.6 in tool descriptions (opus always usable via alias) |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` (30m) | Default task timeout |
 | `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum allowed timeout |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` (1h) | Maximum allowed timeout |

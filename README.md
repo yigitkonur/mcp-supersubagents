@@ -102,7 +102,7 @@ Without a `task_type`, the agent gets your raw prompt with no system instruction
 |-------|------------|
 | `claude-sonnet-4.5` | Default. Best balance of speed and capability. |
 | `claude-haiku-4.5` | Simple tasks, quick iterations. |
-| `claude-opus-4.5` | Complex reasoning, large refactors. Requires `ENABLE_OPUS=true`. |
+| `claude-opus-4.6` | Complex reasoning, large refactors. Always available via `opus` alias. `ENABLE_OPUS=true` controls visibility in tool descriptions only. |
 
 ## Multi-Account Rotation
 
@@ -201,7 +201,7 @@ Tasks persist to `~/.super-agents/{md5(cwd)}.json`. Survives server restarts. Ra
 | `GITHUB_PAT_TOKEN_1`..`_N` | — | Numbered PAT tokens |
 | `GH_PAT_TOKEN` | — | Fallback PAT token(s), comma-separated |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | Single token fallback |
-| `ENABLE_OPUS` | `false` | Allow claude-opus-4.5 model |
+| `ENABLE_OPUS` | `false` | Show claude-opus-4.6 in tool descriptions (opus is always usable via alias) |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` | Default task timeout (30 min) |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum allowed timeout (1 hour) |
 | `MCP_TASK_STALL_WARN_MS` | `300000` | No-output warning threshold (5 min) |
