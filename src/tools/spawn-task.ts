@@ -1,15 +1,26 @@
 import { SpawnTaskSchema } from '../utils/sanitize.js';
-import { spawnCopilotTask } from '../services/sdk-spawner.js';
-import { taskManager } from '../services/task-manager.js';
 import { MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../models.js';
-import { TASK_TYPE_IDS, applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
-import { progressRegistry } from '../services/progress-registry.js';
+import { TASK_TYPE_IDS } from '../templates/index.js';
+import { handleSharedSpawn } from './shared-spawn.js';
 import type { ToolContext } from '../types.js';
-import { mcpText, formatError } from '../utils/format.js';
+import { mcpValidationError } from '../utils/format.js';
+import type { TaskType } from '../templates/index.js';
 
+/**
+ * Legacy spawn_task tool — kept for backward compatibility.
+ * New clients should use the specialized tools: spawn_coder, spawn_planner, spawn_tester, spawn_researcher.
+ */
 export const spawnTaskTool = {
   name: 'spawn_task',
   description: `Spawn an autonomous agent task. The agent runs isolated with NO shared memory -- your prompt is its ONLY context.
+
+⚠️ **PREFER THE SPECIALIZED TOOLS** for better guidance and validation:
+• \`spawn_coder\` — Implementation tasks (requires detailed brief + .md context files)
+• \`spawn_planner\` — Architecture & planning (always uses opus model)
+• \`spawn_tester\` — QA & testing (requires context files)
+• \`spawn_researcher\` — Investigation & research
+
+This generic tool applies lighter validation. The specialized tools enforce structured briefs, mandatory context files, and provide task-specific guidance that produces dramatically better results.
 
 **After spawning:** Check status via MCP Resources (not tools):
 - \`task:///all\` → List all tasks with status
@@ -25,137 +36,108 @@ Account rotation and rate limit recovery happen automatically -- no manual inter
     properties: {
       prompt: {
         type: 'string',
-        description: `The complete, self-contained instructions for the spawned agent. This is the ONLY context the agent will have -- it cannot see your conversation history, previous tool calls, or any other context.
+        description: `The complete, self-contained instructions for the spawned agent. This is the ONLY context the agent will have.
 
 Your prompt MUST include:
-- WHAT to do: Clear, specific objective (not vague like "fix the bug" -- say exactly which bug, which file, what the expected behavior is)
-- WHERE to do it: All relevant file paths as absolute paths (e.g. /Users/dev/project/src/auth.ts, not just "auth.ts")
-- HOW to verify: What does "done" look like? What tests to run? What to check?
-- CONTEXT: Any background the agent needs -- error messages, stack traces, related code snippets, architectural decisions
+- WHAT to do: Clear, specific objective
+- WHERE to do it: All relevant file paths as absolute paths
+- HOW to verify: What does "done" look like?
+- CONTEXT: Background the agent needs
 
-BAD prompt: "Fix the login bug"
-GOOD prompt: "In /Users/dev/myapp/src/services/auth.ts, the login() function on line 45 throws 'TypeError: Cannot read property email of undefined' when the user object is null. Fix the null check, ensure the function returns a proper error response for missing users, and verify by running: npm test -- --grep login"
-
-The more detailed your prompt, the better the agent performs. Treat it as a complete brief for a developer who has never seen the codebase before.`,
+⚠️ For better results, use the specialized tools instead:
+• spawn_coder (min 1,000 chars + .md files)
+• spawn_planner (min 300 chars + problem description)
+• spawn_tester (min 300 chars + context files)
+• spawn_researcher (min 200 chars + specific questions)`,
       },
       task_type: {
         type: 'string',
         enum: TASK_TYPE_IDS,
-        description: `Agent template that prepends specialized system instructions to your prompt.
-- super-coder: For implementation tasks -- writing, editing, refactoring code
-- super-planner: For architecture and design -- planning implementations, evaluating tradeoffs
-- super-researcher: For investigation -- answering questions, finding code patterns, analyzing behavior
-- super-tester: For QA -- writing tests, running test suites, verifying behavior`,
+        description: `Agent template. Use specialized tools (spawn_coder, etc.) for better validation.
+- super-coder: Implementation — writing, editing, refactoring code
+- super-planner: Architecture — planning implementations, evaluating tradeoffs
+- super-researcher: Investigation — answering questions, analyzing behavior
+- super-tester: QA — testing, running test suites, verifying behavior`,
+      },
+      context_files: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute path to a context file.' },
+            description: { type: 'string', description: 'What this file is and why it matters.' },
+          },
+          required: ['path'],
+        },
+        description: 'Optional context files. Their contents are read and injected into the prompt.',
       },
       model: {
         type: 'string',
         enum: MODEL_IDS,
-        description: `Model to use. Default: ${DEFAULT_MODEL}.
-- claude-sonnet-4.5: Best balance of speed and capability (default, recommended for most tasks)
-- claude-haiku-4.5: Fastest -- use for simple, well-defined tasks like running a single command or small edits
-- claude-opus-4.6: Most capable -- use for complex reasoning, large refactors, or tasks requiring deep analysis
-Note: super-planner always uses ${OPUS_MODEL} automatically (model param is ignored for planner tasks).`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}. super-planner always uses ${OPUS_MODEL}.`,
       },
       cwd: {
         type: 'string',
-        description: `The absolute path to the working directory where the agent will execute. You should detect your current working directory and pass it here as a full absolute path. This is especially important when working in git worktrees -- pass the actual worktree path (e.g. /Users/dev/project/worktrees/feature-branch), NOT the main repository root. Do not create a new worktree just for this -- simply pass the directory you are currently working in.`,
+        description: 'Absolute path to the working directory.',
       },
       timeout: {
         type: 'number',
-        description: 'Optional. Max execution time in ms. Default: 1800000 (30 min, configurable via MCP_TASK_TIMEOUT_MS). Max: 3600000 (configurable via MCP_TASK_TIMEOUT_MAX_MS). Do NOT set unless necessary; prefer the default and only override for known long/short tasks.',
+        description: 'Max execution time in ms. Default: 1800000 (30 min).',
       },
       autonomous: {
         type: 'boolean',
-        description: 'Run without interactive prompts. Default: true. Almost always leave this as true.',
+        description: 'Run without interactive prompts. Default: true.',
       },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Task IDs that must complete before this task starts. The task will wait in "waiting" status until all dependencies finish.',
+        description: 'Task IDs that must complete before this task starts.',
       },
       labels: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Labels for grouping and filtering tasks (max 10). Useful when managing multiple related tasks -- e.g. "auth-migration", "phase-1".',
+        description: 'Labels for grouping and filtering tasks (max 10).',
       },
     },
     required: ['prompt'],
   },
 };
 
-export async function handleSpawnTask(args: unknown, ctx?: ToolContext): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleSpawnTask(
+  args: unknown,
+  ctx?: ToolContext,
+): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
+  let parsed;
   try {
-    const parsed = SpawnTaskSchema.parse(args);
-
-    // Validate dependencies if provided
-    const dependsOn = parsed.depends_on?.filter((d: string) => d.trim()) || [];
-    if (dependsOn.length > 0) {
-      const validationError = taskManager.validateDependencies(dependsOn);
-      if (validationError) {
-        return mcpText(formatError(
-          validationError,
-          'Ensure all dependency task IDs exist.\nUse `list_tasks` to find valid task IDs.'
-        ));
-      }
-    }
-
-    let finalPrompt = parsed.prompt;
-    if (parsed.task_type && isValidTaskType(parsed.task_type)) {
-      finalPrompt = applyTemplate(parsed.task_type as TaskType, parsed.prompt);
-    }
-
-    const labels = parsed.labels?.filter((l: string) => l.trim()) || [];
-
-    const taskId = await spawnCopilotTask({
-      prompt: finalPrompt,
-      timeout: parsed.timeout,
-      cwd: parsed.cwd,
-      model: parsed.model,
-      autonomous: parsed.autonomous,
-      dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
-      labels: labels.length > 0 ? labels : undefined,
-      taskType: parsed.task_type,
-    });
-
-    const task = taskManager.getTask(taskId);
-    const isWaiting = task?.status === 'waiting';
-
-    if (ctx?.progressToken != null) {
-      progressRegistry.register(taskId, ctx.progressToken, ctx.sendNotification);
-      progressRegistry.sendProgress(taskId, `Task created: ${taskId}, status: ${task?.status || 'pending'}`);
-    }
-
-    if (isWaiting) {
-      const depsList = dependsOn.map(d => `\`${d}\``).join(', ');
-      const parts = [
-        `✅ **Task queued (waiting for dependencies)**`,
-        `task_id: \`${taskId}\``,
-        task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
-        '',
-        `**Waiting on:** ${depsList}`,
-        '',
-        'Task will auto-start when dependencies complete. Continue with other work.',
-      ].filter(Boolean);
-      return mcpText(parts.join('\n'));
-    }
-
-    const parts = [
-      `✅ **Task launched**`,
-      `task_id: \`${taskId}\``,
-      task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
-      '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
-      '',
-      '**Optional progress check:**',
-      task?.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      task?.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
-      `- Read resource: \`task:///${taskId}\``,
-    ].filter(Boolean);
-    return mcpText(parts.join('\n'));
+    parsed = SpawnTaskSchema.parse(args);
   } catch (error) {
-    return mcpText(formatError(
-      error instanceof Error ? error.message : 'Unknown error',
-      'Check that the `prompt` parameter is provided and valid.'
-    ));
+    return mcpValidationError(
+      `❌ **VALIDATION FAILED — spawn_task**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n💡 **TIP:** Use the specialized tools for better guidance:\n• \`spawn_coder\` — Implementation tasks\n• \`spawn_planner\` — Planning tasks\n• \`spawn_tester\` — Testing tasks\n• \`spawn_researcher\` — Research tasks`
+    );
   }
+
+  // Only resolve taskType when explicitly provided — no silent default.
+  // Always use toolName 'spawn_task' which is NOT in VALIDATION_RULES,
+  // so strict brief validation is skipped for this legacy tool.
+  const taskType = parsed.task_type
+    ? (parsed.task_type as TaskType)
+    : undefined;
+
+  return handleSharedSpawn(
+    {
+      prompt: parsed.prompt,
+      context_files: parsed.context_files,
+      model: parsed.model,
+      cwd: parsed.cwd,
+      timeout: parsed.timeout,
+      autonomous: parsed.autonomous,
+      depends_on: parsed.depends_on,
+      labels: parsed.labels,
+    },
+    {
+      toolName: 'spawn_task',
+      taskType,
+    },
+    ctx,
+  );
 }

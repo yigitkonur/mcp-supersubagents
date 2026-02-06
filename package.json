@@ -8,7 +8,7 @@
     "copilot-mcp-server": "build/index.js"
   },
   "scripts": {
-    "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/",
+    "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/; mkdir -p build/templates/overlays && cp src/templates/overlays/*.mdx build/templates/overlays/",
     "dev": "tsx watch src/index.ts",
     "start": "node build/index.js",
     "clean": "rm -rf build"

@@ -1,0 +1,50 @@
+## MIGRATION PLANNING GUIDELINES
+
+You are planning a **migration** (API version, database schema, library upgrade, framework change). Safety and reversibility are paramount.
+
+### Assessment Phase — MANDATORY
+- **Current state:** Document exactly what exists today — versions, schemas, dependencies, consumers
+- **Target state:** Document exactly what "done" looks like — new versions, new schemas, new APIs
+- **Scope:** List ALL affected files, services, database tables, API consumers, configuration files
+- **Breaking changes:** Explicitly list every breaking change between current and target state
+
+### Migration Strategy
+- **Incremental migration (strangler fig) PREFERRED** — replace piece by piece, not big-bang
+- **Coexistence period:** Can old and new run simultaneously during transition? Design for this
+- **Rollback plan is MANDATORY** — every migration task must be individually reversible
+- **Feature flags:** Use feature flags to control rollout if available in the project
+- **Data migration:** If database changes are involved, plan the data migration separately from schema migration
+
+### Phase Structure — Every Migration Plan Must Have These
+
+**Phase 1: Preparation (no behavior change)**
+- Add compatibility layers, adapters, new schemas alongside old
+- Add deprecation warnings to old code paths
+- Create migration utilities/scripts
+- All existing tests must still pass
+
+**Phase 2: Migration (gradual switchover)**
+- Switch consumers one at a time to new code paths
+- Run old and new in parallel where possible
+- Monitor for errors/regressions at each step
+- Each task independently deployable and rollback-able
+
+**Phase 3: Cleanup (remove old code)**
+- Remove deprecated code paths
+- Remove compatibility layers
+- Remove old schemas/migrations
+- Update documentation
+- This phase should be a SEPARATE plan — don't mix cleanup with migration
+
+### Risk Assessment — CRITICAL
+- **Data loss scenarios:** Can any migration step lose data? How is this prevented?
+- **Downtime requirements:** Does any step require downtime? How long? Can it be zero-downtime?
+- **Consumer impact:** Who depends on the old API/schema? Have they been notified?
+- **Performance regression:** Does the new version perform the same or better? Benchmark
+- **Rollback testing:** Has the rollback procedure been verified?
+
+### Task Design
+- Each task: **one migration step**, independently deployable, independently reversible
+- Success criteria include: "Rollback: [exact steps to undo this task]"
+- Never combine schema migration with data migration in one task
+- Never combine behavior changes with cleanup in one task

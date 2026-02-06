@@ -23,6 +23,12 @@ Thumbs.db
 .agent-workspace/
 .windsurf/
 
+# Local tool artifacts
+.super-agents/
+.playwright-cli/
+/evidence/
+test-brief.md
+
 # Test files
 test-*.mjs
 test-*.js
