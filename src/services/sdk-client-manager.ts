@@ -30,13 +30,18 @@ const SHUTDOWN_DESTROY_TIMEOUT_MS = 5_000;
 
 /**
  * Race a promise against a timeout. Rejects with a descriptive error if the timeout fires first.
+ * Clears the timeout when the promise resolves to prevent timer leaks.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
   return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); return v; },
+      (e) => { clearTimeout(timer); throw e; },
     ),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
   ]);
 }
 
@@ -145,14 +150,13 @@ class SDKClientManager {
 
     // Destroy all sessions first, then stop clients
     for (const [key, entry] of this.clients) {
-      // Destroy sessions to release PTY FDs (with timeout so hung sessions don't block reset)
-      for (const [sessionId, session] of entry.sessions) {
-        try {
-          await withTimeout(session.destroy(), DESTROY_SESSION_TIMEOUT_MS, `reset:destroy(${sessionId})`);
-        } catch (err) {
-          console.error(`[sdk-client-manager] Error destroying session ${sessionId} during reset:`, err);
-        }
-      }
+      // Destroy sessions in parallel to release PTY FDs (with timeout so hung sessions don't block reset)
+      await Promise.allSettled(
+        [...entry.sessions.entries()].map(([sessionId, session]) =>
+          withTimeout(session.destroy(), DESTROY_SESSION_TIMEOUT_MS, `reset:destroy(${sessionId})`)
+            .catch(err => console.error(`[sdk-client-manager] Error destroying session ${sessionId} during reset:`, err))
+        )
+      );
       entry.sessions.clear();
 
       // Then stop the client
@@ -476,12 +480,15 @@ class SDKClientManager {
     const errors: Error[] = [];
 
     for (const [key, entry] of this.clients) {
-      // Destroy all sessions first (with timeout so one hung session doesn't block shutdown)
-      for (const [sessionId, session] of entry.sessions) {
-        try {
-          await withTimeout(session.destroy(), SHUTDOWN_DESTROY_TIMEOUT_MS, `shutdown:destroy(${sessionId})`);
-        } catch (err) {
-          errors.push(new Error(`Failed to destroy session ${sessionId}: ${err}`));
+      // Destroy all sessions in parallel (with timeout so one hung session doesn't block shutdown)
+      const results = await Promise.allSettled(
+        [...entry.sessions.entries()].map(([sessionId, session]) =>
+          withTimeout(session.destroy(), SHUTDOWN_DESTROY_TIMEOUT_MS, `shutdown:destroy(${sessionId})`)
+        )
+      );
+      for (const r of results) {
+        if (r.status === 'rejected') {
+          errors.push(r.reason instanceof Error ? r.reason : new Error(String(r.reason)));
         }
       }
       entry.sessions.clear();

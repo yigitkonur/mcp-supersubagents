@@ -394,6 +394,7 @@ class SDKSessionAdapter {
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
+        session: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -713,6 +714,7 @@ class SDKSessionAdapter {
       error: message,
       retryInfo,
       failureContext,
+      session: undefined,
     });
 
     // Destroy session to release PTY FDs
@@ -737,6 +739,7 @@ class SDKSessionAdapter {
         error: `${message}${statusCode ? ` (status: ${statusCode})` : ''}`,
         exitCode: 1,
         failureContext,
+        session: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1081,6 +1084,7 @@ class SDKSessionAdapter {
         endTime: new Date().toISOString(),
         error: event.data.errorReason || 'Session shutdown with error',
         exitCode: 1,
+        session: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1107,6 +1111,7 @@ class SDKSessionAdapter {
       taskManager.updateTask(taskId, {
         status: TaskStatus.CANCELLED,
         endTime: new Date().toISOString(),
+        session: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1212,6 +1217,7 @@ class SDKSessionAdapter {
           timeoutMs,
           detectedBy: 'sdk_adapter',
         },
+        session: undefined,
       });
 
       // Abort the session, then destroy to release PTY FDs

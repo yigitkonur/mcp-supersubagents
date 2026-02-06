@@ -648,7 +648,7 @@ async function main() {
   
   // Graceful shutdown with SDK cleanup (guard against double-shutdown)
   let isShuttingDown = false;
-  const shutdown = async (signal?: string) => {
+  const shutdown = async (signal?: string, exitCode = 0) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
@@ -658,20 +658,20 @@ async function main() {
     } catch (err) {
       console.error('Shutdown error:', err);
     }
-    process.exit(0);
+    process.exit(exitCode);
   };
-  
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  process.on('SIGINT', () => shutdown('SIGINT', 0));
+  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
 
   // Emergency cleanup on unhandled errors — prevent PTY leaks on crash
   process.on('unhandledRejection', (reason) => {
     console.error('[FATAL] Unhandled rejection:', reason);
-    shutdown('unhandledRejection').catch(() => process.exit(1));
+    shutdown('unhandledRejection', 1).catch(() => process.exit(1));
   });
   process.on('uncaughtException', (err) => {
     console.error('[FATAL] Uncaught exception:', err);
-    shutdown('uncaughtException').catch(() => process.exit(1));
+    shutdown('uncaughtException', 1).catch(() => process.exit(1));
   });
 
   // Periodic session leak detection (every 5 min)

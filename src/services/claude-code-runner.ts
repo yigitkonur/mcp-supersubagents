@@ -7,7 +7,7 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { taskManager } from './task-manager.js';
-import { TaskStatus, ToolMetrics } from '../types.js';
+import { TaskStatus, ToolMetrics, isTerminalStatus } from '../types.js';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 /**
@@ -29,6 +29,12 @@ export async function runClaudeCodeSession(
 
   console.log(`[claude-code-runner] Starting Claude Agent SDK session for task ${taskId}`);
   console.log(`[claude-code-runner] CWD: ${cwd}, Timeout: ${timeout}ms, Resume: ${resumeSessionId || 'none'}`);
+
+  // Guard: don't overwrite if task already reached terminal state (e.g., cancelled)
+  if (isTerminalStatus(task.status)) {
+    console.log(`[claude-code-runner] Task ${taskId} already terminal (${task.status}), skipping`);
+    return;
+  }
 
   // Mark as running with claude-cli provider and set fallback metadata
   taskManager.updateTask(taskId, {
@@ -126,8 +132,8 @@ export async function runClaudeCodeSession(
           // Extract usage if available
           if ('usage' in message && message.usage) {
             const usage = message.usage as { input_tokens?: number; output_tokens?: number };
-            if (usage.input_tokens) totalInputTokens += usage.input_tokens;
-            if (usage.output_tokens) totalOutputTokens += usage.output_tokens;
+            if (usage.input_tokens != null) totalInputTokens += usage.input_tokens;
+            if (usage.output_tokens != null) totalOutputTokens += usage.output_tokens;
           }
           break;
 
@@ -147,6 +153,13 @@ export async function runClaudeCodeSession(
     console.log(`[claude-code-runner] Task ${taskId} completed successfully`);
     console.log(`[claude-code-runner] Turns: ${turnCount}, Tokens: ${totalInputTokens}/${totalOutputTokens}`);
 
+    // Guard: check if task is already terminal before marking completed
+    const freshTask = taskManager.getTask(taskId);
+    if (!freshTask || isTerminalStatus(freshTask.status)) {
+      console.log(`[claude-code-runner] Task ${taskId} already terminal, skipping completion`);
+      return;
+    }
+
     taskManager.updateTask(taskId, {
       status: TaskStatus.COMPLETED,
       endTime: new Date().toISOString(),
@@ -161,9 +174,13 @@ export async function runClaudeCodeSession(
           input: totalInputTokens,
           output: totalOutputTokens,
         },
+        provider: 'claude-cli',
+        fallbackActivated: true,
+        fallbackReason: 'copilot-accounts-exhausted',
       },
       // Store session ID for potential resume
       sessionId,
+      session: undefined,
     });
   } catch (error: any) {
     clearTimeout(timeoutHandle);
@@ -171,13 +188,19 @@ export async function runClaudeCodeSession(
     // Check if aborted due to timeout
     if (abortController.signal.aborted) {
       console.error(`[claude-code-runner] Task ${taskId} timed out`);
-      taskManager.updateTask(taskId, {
-        status: TaskStatus.TIMED_OUT,
-        endTime: new Date().toISOString(),
-        error: 'Task timed out',
-        timeoutReason: 'hard_timeout',
-        exitCode: 124,
-      });
+
+      // Guard: check terminal status before marking timed out
+      const freshTask = taskManager.getTask(taskId);
+      if (freshTask && !isTerminalStatus(freshTask.status)) {
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.TIMED_OUT,
+          endTime: new Date().toISOString(),
+          error: 'Task timed out',
+          timeoutReason: 'hard_timeout',
+          exitCode: 124,
+          session: undefined,
+        });
+      }
       return;
     }
 
@@ -199,6 +222,13 @@ export async function runClaudeCodeSession(
       exitCode = 1;
     }
 
+    // Guard: check terminal status before marking failed
+    const freshTask = taskManager.getTask(taskId);
+    if (!freshTask || isTerminalStatus(freshTask.status)) {
+      console.log(`[claude-code-runner] Task ${taskId} already terminal, skipping failure update`);
+      return;
+    }
+
     taskManager.updateTask(taskId, {
       status: TaskStatus.FAILED,
       endTime: new Date().toISOString(),
@@ -210,6 +240,7 @@ export async function runClaudeCodeSession(
         stack: error.stack,
         recoverable: false, // Don't retry Claude Code failures with Copilot
       },
+      session: undefined,
     });
   }
 }

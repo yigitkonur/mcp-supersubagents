@@ -124,6 +124,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
           status: TaskStatus.FAILED,
           endTime: new Date().toISOString(),
           error: err instanceof Error ? err.message : String(err),
+          session: undefined,
         });
       }
     });
@@ -168,6 +169,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
           status: TaskStatus.FAILED,
           endTime: new Date().toISOString(),
           error: err instanceof Error ? err.message : String(err),
+          session: undefined,
         });
       }
     });
@@ -260,6 +262,7 @@ async function runSDKSession(
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
+        session: undefined,
       });
       // Destroy session to release PTY FDs
       sdkSessionAdapter.unbind(taskId);
@@ -334,6 +337,7 @@ async function handleSessionError(
     endTime: new Date().toISOString(),
     error: errorMessage,
     exitCode: 1,
+    session: undefined,
   });
   
   // Clean up binding
@@ -448,6 +452,7 @@ export async function cancelTask(taskId: string): Promise<boolean> {
   taskManager.updateTask(taskId, {
     status: TaskStatus.CANCELLED,
     endTime: new Date().toISOString(),
+    session: undefined,
   });
 
   // Try to abort the SDK session

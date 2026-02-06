@@ -19,7 +19,7 @@ import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS } from '../config/timeouts.js'
 const SendMessageSchema = z.object({
   task_id: z.string().min(1).optional().describe('Task ID to send message to'),
   session_id: z.string().min(1).optional().describe('Session ID to resume (alternative to task_id)'),
-  message: z.string().optional().default('continue').describe('Message to send (default: "continue")'),
+  message: z.string().default('continue').optional().describe('Message to send (default: "continue")'),
   timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional(),
   cwd: z.string().optional(),
 });
