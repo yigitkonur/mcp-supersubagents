@@ -106,6 +106,7 @@ class SDKClientManager {
     this.staleSessionTimer = setInterval(() => {
       this.sweepStaleSessions();
     }, STALE_SESSION_CLEANUP_INTERVAL_MS);
+    this.staleSessionTimer.unref();
   }
 
   /**

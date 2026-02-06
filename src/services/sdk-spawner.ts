@@ -103,7 +103,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
   // Check if any Copilot accounts are available before starting
   const currentToken = accountManager.getCurrentToken();
   if (!currentToken) {
-    console.log(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
+    console.error(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
     setImmediate(() => {
       const timeout = options.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
       runClaudeCodeSession(task.id, prompt, cwd, timeout).catch((err) => {
@@ -402,7 +402,7 @@ async function handleRateLimit(
       }
     } else if (shouldFallbackToClaudeCode(rotationResult)) {
       // All accounts exhausted - fallback to Claude Agent SDK
-      console.log(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
+      console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
 
       // Unbind Copilot session
       sdkSessionAdapter.unbind(taskId);

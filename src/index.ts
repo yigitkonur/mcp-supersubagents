@@ -664,18 +664,24 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT', 0));
   process.on('SIGTERM', () => shutdown('SIGTERM', 0));
 
-  // Emergency cleanup on unhandled errors — prevent PTY leaks on crash
+  // Log unhandled errors but do NOT crash — crashing kills the MCP transport.
+  // Task-level error handling already catches most issues; crashing here would
+  // disconnect the client and lose all in-flight work.
   process.on('unhandledRejection', (reason) => {
-    console.error('[FATAL] Unhandled rejection:', reason);
-    shutdown('unhandledRejection', 1).catch(() => process.exit(1));
+    console.error('[WARN] Unhandled rejection (non-fatal):', reason);
   });
   process.on('uncaughtException', (err) => {
-    console.error('[FATAL] Uncaught exception:', err);
-    shutdown('uncaughtException', 1).catch(() => process.exit(1));
+    // Only crash on truly unrecoverable errors (e.g., out of memory)
+    if (err.message?.includes('out of memory') || err.message?.includes('ENOMEM')) {
+      console.error('[FATAL] Uncaught exception (unrecoverable):', err);
+      shutdown('uncaughtException', 1).catch(() => process.exit(1));
+    } else {
+      console.error('[WARN] Uncaught exception (non-fatal):', err);
+    }
   });
 
   // Periodic session leak detection (every 5 min)
-  setInterval(() => {
+  const monitorTimer = setInterval(() => {
     const stats = getSDKStats();
     if (stats.bindings > 0 || stats.sessions > 0) {
       console.error(
@@ -683,6 +689,7 @@ async function main() {
       );
     }
   }, 5 * 60_000);
+  monitorTimer.unref();
 }
 
 main().catch(e => { console.error('Fatal:', e); process.exit(1); });

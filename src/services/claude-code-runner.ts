@@ -27,12 +27,12 @@ export async function runClaudeCodeSession(
     return;
   }
 
-  console.log(`[claude-code-runner] Starting Claude Agent SDK session for task ${taskId}`);
-  console.log(`[claude-code-runner] CWD: ${cwd}, Timeout: ${timeout}ms, Resume: ${resumeSessionId || 'none'}`);
+  console.error(`[claude-code-runner] Starting Claude Agent SDK session for task ${taskId}`);
+  console.error(`[claude-code-runner] CWD: ${cwd}, Timeout: ${timeout}ms, Resume: ${resumeSessionId || 'none'}`);
 
   // Guard: don't overwrite if task already reached terminal state (e.g., cancelled)
   if (isTerminalStatus(task.status)) {
-    console.log(`[claude-code-runner] Task ${taskId} already terminal (${task.status}), skipping`);
+    console.error(`[claude-code-runner] Task ${taskId} already terminal (${task.status}), skipping`);
     return;
   }
 
@@ -86,7 +86,7 @@ export async function runClaudeCodeSession(
       // Extract session ID from first message
       if (!sessionId && 'session_id' in message) {
         sessionId = message.session_id;
-        console.log(`[claude-code-runner] Session ID: ${sessionId}`);
+        console.error(`[claude-code-runner] Session ID: ${sessionId}`);
       }
 
       // Handle different message types
@@ -150,13 +150,13 @@ export async function runClaudeCodeSession(
     clearTimeout(timeoutHandle);
 
     // Session completed successfully
-    console.log(`[claude-code-runner] Task ${taskId} completed successfully`);
-    console.log(`[claude-code-runner] Turns: ${turnCount}, Tokens: ${totalInputTokens}/${totalOutputTokens}`);
+    console.error(`[claude-code-runner] Task ${taskId} completed successfully`);
+    console.error(`[claude-code-runner] Turns: ${turnCount}, Tokens: ${totalInputTokens}/${totalOutputTokens}`);
 
     // Guard: check if task is already terminal before marking completed
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
-      console.log(`[claude-code-runner] Task ${taskId} already terminal, skipping completion`);
+      console.error(`[claude-code-runner] Task ${taskId} already terminal, skipping completion`);
       return;
     }
 
@@ -225,7 +225,7 @@ export async function runClaudeCodeSession(
     // Guard: check terminal status before marking failed
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
-      console.log(`[claude-code-runner] Task ${taskId} already terminal, skipping failure update`);
+      console.error(`[claude-code-runner] Task ${taskId} already terminal, skipping failure update`);
       return;
     }
 
