@@ -9,7 +9,7 @@ import {
 
 // --- Shared field schemas ---
 
-const sharedTimeoutSchema = z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS);
+const sharedTimeoutSchema = z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).default(TASK_TIMEOUT_DEFAULT_MS).optional();
 const sharedModelSchema = z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional();
 const sharedDependsOnSchema = z.array(z.string().min(1)).optional();
 const sharedLabelsSchema = z.array(z.string().min(1).max(50)).max(10).optional();
@@ -27,7 +27,7 @@ export const SpawnTaskSchema = z.object({
   cwd: z.string().optional(),
   model: sharedModelSchema,
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
-  autonomous: z.boolean().optional().default(true),
+  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
   context_files: z.array(contextFileSchema).max(20).optional(),
@@ -56,7 +56,7 @@ export const SpawnCoderSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().optional().default(true),
+  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
 });
@@ -68,7 +68,7 @@ export const SpawnPlannerSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().optional().default(true),
+  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
 });
@@ -79,7 +79,7 @@ export const SpawnTesterSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().optional().default(true),
+  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
 });
@@ -90,7 +90,7 @@ export const SpawnResearcherSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().optional().default(true),
+  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
 });

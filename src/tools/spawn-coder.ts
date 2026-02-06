@@ -1,8 +1,6 @@
 import { SpawnCoderSchema, CODER_LANGUAGES } from '../utils/sanitize.js';
 import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
-import { handleSharedSpawn } from './shared-spawn.js';
-import type { ToolContext } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
+import { createSpawnHandler } from './shared-spawn.js';
 
 export const spawnCoderTool = {
   name: 'spawn_coder',
@@ -228,35 +226,10 @@ If not set, the agent uses general coding guidelines and infers language from th
   },
 };
 
-export async function handleSpawnCoder(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed;
-  try {
-    parsed = SpawnCoderSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `❌ **SCHEMA VALIDATION FAILED — spawn_coder**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n⚠️ **REQUIRED FIELDS:**\n• \`prompt\`: string (min 1,000 characters)\n• \`context_files\`: array with at least 1 Markdown file (.md)\n\nBoth fields are MANDATORY. See the tool description for the full brief template.`
-    );
-  }
-
-  return handleSharedSpawn(
-    {
-      prompt: parsed.prompt,
-      context_files: parsed.context_files,
-      model: parsed.model,
-      cwd: parsed.cwd,
-      timeout: parsed.timeout,
-      autonomous: parsed.autonomous,
-      depends_on: parsed.depends_on,
-      labels: parsed.labels,
-    },
-    {
-      toolName: 'spawn_coder',
-      taskType: 'super-coder',
-      specialization: parsed.language,
-    },
-    ctx,
-  );
-}
+export const handleSpawnCoder = createSpawnHandler({
+  schema: SpawnCoderSchema,
+  toolName: 'spawn_coder',
+  taskType: 'super-coder',
+  validationHint: '⚠️ **REQUIRED FIELDS:**\n• `prompt`: string (min 1,000 characters)\n• `context_files`: array with at least 1 Markdown file (.md)\n\nBoth fields are MANDATORY. See the tool description for the full brief template.',
+  getSpecialization: (parsed) => parsed.language,
+});

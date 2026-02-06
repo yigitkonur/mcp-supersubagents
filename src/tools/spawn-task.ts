@@ -1,10 +1,7 @@
 import { SpawnTaskSchema } from '../utils/sanitize.js';
 import { MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../models.js';
-import { TASK_TYPE_IDS } from '../templates/index.js';
-import { handleSharedSpawn } from './shared-spawn.js';
-import type { ToolContext } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
-import type { TaskType } from '../templates/index.js';
+import { TASK_TYPE_IDS, type TaskType } from '../templates/index.js';
+import { createSpawnHandler } from './shared-spawn.js';
 
 /**
  * Legacy spawn_task tool — kept for backward compatibility.
@@ -103,41 +100,9 @@ Your prompt MUST include:
   },
 };
 
-export async function handleSpawnTask(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed;
-  try {
-    parsed = SpawnTaskSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `❌ **VALIDATION FAILED — spawn_task**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n💡 **TIP:** Use the specialized tools for better guidance:\n• \`spawn_coder\` — Implementation tasks\n• \`spawn_planner\` — Planning tasks\n• \`spawn_tester\` — Testing tasks\n• \`spawn_researcher\` — Research tasks`
-    );
-  }
-
-  // Only resolve taskType when explicitly provided — no silent default.
-  // Always use toolName 'spawn_task' which is NOT in VALIDATION_RULES,
-  // so strict brief validation is skipped for this legacy tool.
-  const taskType = parsed.task_type
-    ? (parsed.task_type as TaskType)
-    : undefined;
-
-  return handleSharedSpawn(
-    {
-      prompt: parsed.prompt,
-      context_files: parsed.context_files,
-      model: parsed.model,
-      cwd: parsed.cwd,
-      timeout: parsed.timeout,
-      autonomous: parsed.autonomous,
-      depends_on: parsed.depends_on,
-      labels: parsed.labels,
-    },
-    {
-      toolName: 'spawn_task',
-      taskType,
-    },
-    ctx,
-  );
-}
+export const handleSpawnTask = createSpawnHandler({
+  schema: SpawnTaskSchema,
+  toolName: 'spawn_task',
+  validationHint: '💡 **TIP:** Use the specialized tools for better guidance:\n• `spawn_coder` — Implementation tasks\n• `spawn_planner` — Planning tasks\n• `spawn_tester` — Testing tasks\n• `spawn_researcher` — Research tasks',
+  getTaskType: (parsed) => parsed.task_type ? (parsed.task_type as TaskType) : undefined,
+});

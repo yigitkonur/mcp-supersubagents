@@ -1,8 +1,6 @@
 import { SpawnResearcherSchema } from '../utils/sanitize.js';
 import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
-import { handleSharedSpawn } from './shared-spawn.js';
-import type { ToolContext } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
+import { createSpawnHandler } from './shared-spawn.js';
 
 export const spawnResearcherTool = {
   name: 'spawn_researcher',
@@ -167,34 +165,9 @@ Max: 20 files, 200KB each, 500KB total.`,
   },
 };
 
-export async function handleSpawnResearcher(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed;
-  try {
-    parsed = SpawnResearcherSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `❌ **SCHEMA VALIDATION FAILED — spawn_researcher**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n⚠️ **REQUIRED FIELDS:**\n• \`prompt\`: string (min 200 characters) — include specific questions to answer\n\nSee the tool description for the full brief template.`
-    );
-  }
-
-  return handleSharedSpawn(
-    {
-      prompt: parsed.prompt,
-      context_files: parsed.context_files,
-      model: parsed.model,
-      cwd: parsed.cwd,
-      timeout: parsed.timeout,
-      autonomous: parsed.autonomous,
-      depends_on: parsed.depends_on,
-      labels: parsed.labels,
-    },
-    {
-      toolName: 'spawn_researcher',
-      taskType: 'super-researcher',
-    },
-    ctx,
-  );
-}
+export const handleSpawnResearcher = createSpawnHandler({
+  schema: SpawnResearcherSchema,
+  toolName: 'spawn_researcher',
+  taskType: 'super-researcher',
+  validationHint: '⚠️ **REQUIRED FIELDS:**\n• `prompt`: string (min 200 characters) — include specific questions to answer\n\nSee the tool description for the full brief template.',
+});

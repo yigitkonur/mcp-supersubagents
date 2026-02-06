@@ -1,8 +1,8 @@
 import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
-import { TaskState, TaskStatus } from '../types.js';
+import { TaskState, TaskStatus, TERMINAL_STATUSES } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
-import { TASK_STALL_WARN_MS } from '../config/timeouts.js';
+import { TASK_STALL_WARN_MS, TASK_TTL_MS } from '../config/timeouts.js';
 import { createOutputFile, appendToOutputFile, finalizeOutputFile } from './output-file.js';
 
 const MAX_TASKS = 100;
@@ -70,16 +70,11 @@ function areDependenciesSatisfied(task: TaskState, tasks: Map<string, TaskState>
   const satisfied = missing.length === 0 && failed.length === 0 && pending.length === 0;
   return { satisfied, missing, failed, pending };
 }
-const TASK_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const HEALTH_CHECK_INTERVAL_MS = 10 * 1000; // Check session health every 10 seconds
 const MAX_OUTPUT_LINES = 2000;
-export const TERMINAL_STATUSES = new Set([
-  TaskStatus.COMPLETED,
-  TaskStatus.FAILED,
-  TaskStatus.CANCELLED,
-  TaskStatus.TIMED_OUT,
-]);
+// Re-export from types.ts for backward compatibility
+export { TERMINAL_STATUSES } from '../types.js';
 
 /**
  * Check if an SDK session is still active

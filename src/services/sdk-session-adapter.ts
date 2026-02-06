@@ -12,13 +12,14 @@
  * - Monitors tool execution and subagent activity
  */
 
-import type { CopilotSession } from '@github/copilot-sdk';
-import type { SessionEvent } from '@github/copilot-sdk';
-import type { MessageOptions } from '@github/copilot-sdk';
-import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
+import type { CopilotSession, SessionEvent, MessageOptions } from '@github/copilot-sdk';
+import { taskManager } from './task-manager.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import {
-  TaskStatus, 
+  TaskStatus,
+  isTerminalStatus,
+  ROTATABLE_STATUS_CODES,
+  RATE_LIMIT_STATUS_CODE,
   type RetryInfo,
   type FailureContext,
   type CompletionMetrics,
@@ -27,6 +28,9 @@ import {
   type SubagentInfo,
   type SessionMetrics,
 } from '../types.js';
+import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
+import { buildHandoffPrompt } from './session-snapshot.js';
+import { runClaudeCodeSession } from './claude-code-runner.js';
 
 // Extract specific event types from the union for type-safe handling
 type SessionErrorEvent = Extract<SessionEvent, { type: 'session.error' }>;
@@ -42,23 +46,11 @@ type SubagentCompletedEvent = Extract<SessionEvent, { type: 'subagent.completed'
 type SubagentFailedEvent = Extract<SessionEvent, { type: 'subagent.failed' }>;
 type AssistantTurnStartEvent = Extract<SessionEvent, { type: 'assistant.turn_start' }>;
 
-// Error status codes that should trigger rotation
-const ROTATABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
-const RATE_LIMIT_STATUS_CODE = 429;
-
 // String-based rate limit detection fallback
 const RATE_LIMIT_STRING = "Sorry, you've hit a rate limit that restricts the number of Copilot model requests";
 
 // Health check model for testing account availability
 const HEALTH_CHECK_MODEL = 'claude-haiku-4.5';
-
-/**
- * Check if a status is terminal (no further state changes expected).
- * RATE_LIMITED is NOT terminal — the retry system can still update these tasks.
- */
-function isTerminalStatus(status: TaskStatus): boolean {
-  return TERMINAL_STATUSES.has(status);
-}
 
 // Callback type for rotation requests
 type RotationRequestCallback = (
@@ -119,6 +111,7 @@ interface SessionBinding {
   activeSubagents: Map<string, SubagentInfo>;
   completedSubagents: SubagentInfo[];
   quotas: Map<string, QuotaInfo>;
+  isUnbound: boolean; // Guard against double-unbind/double-destroy races
 }
 
 class SDKSessionAdapter {
@@ -183,6 +176,7 @@ class SDKSessionAdapter {
       rotationAttempts: 0,
       maxRotationAttempts: 10,
       rotationInProgress: false,
+      isUnbound: false,
       pendingPrompt,
       // Initialize metrics tracking
       turnCount: 0,
@@ -228,6 +222,11 @@ class SDKSessionAdapter {
    * Uses type narrowing for type-safe event handling.
    */
   private async handleEvent(taskId: string, event: SessionEvent, binding: SessionBinding): Promise<void> {
+    // Guard: skip events if binding was already unbound (race from queued events)
+    if (binding.isUnbound) {
+      return;
+    }
+
     const task = taskManager.getTask(taskId);
     if (!task) {
       console.error(`[sdk-session-adapter] Task ${taskId} not found for event ${event.type}`);
@@ -395,7 +394,12 @@ class SDKSessionAdapter {
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
+        session: undefined,
       });
+
+      // Destroy session to release PTY FDs
+      this.unbind(taskId);
+
       console.error(`[sdk-session-adapter] Task ${taskId} completed (session.idle)`);
     }
   }
@@ -527,8 +531,29 @@ class SDKSessionAdapter {
     }
 
     if (!rotationResult.success) {
-      if (rotationResult.allExhausted) {
-        taskManager.appendOutput(taskId, `[rotation] All accounts exhausted`);
+      if (shouldFallbackToClaudeCode(rotationResult)) {
+        // All accounts exhausted - fallback to Claude Agent SDK
+        taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
+
+        // Unbind current session
+        this.unbind(taskId);
+
+        // Get task and calculate remaining timeout
+        const task = taskManager.getTask(taskId);
+        if (!task) return false;
+
+        const elapsed = Date.now() - new Date(task.startTime).getTime();
+        const timeoutRemaining = task.timeout ? Math.max(1000, task.timeout - elapsed) : 1800000; // Default 30min
+
+        // Build handoff prompt from session snapshot
+        const handoffPrompt = buildHandoffPrompt(task, 5);
+
+        // Continue with Claude Agent SDK (don't await - let it run async)
+        runClaudeCodeSession(taskId, handoffPrompt, taskCwd, timeoutRemaining).catch((err) => {
+          console.error(`[sdk-session-adapter] Claude Code fallback failed:`, err);
+        });
+
+        return true; // Indicate fallback was triggered
       }
       return false;
     }
@@ -586,8 +611,11 @@ class SDKSessionAdapter {
     oldBinding: SessionBinding,
     newSession: CopilotSession
   ): Promise<void> {
-    // Unsubscribe from old session
+    // Unsubscribe from old session and destroy it to release PTY FDs (RC-3 fix)
     oldBinding.unsubscribe();
+    sdkClientManager.destroySession(oldBinding.sessionId).catch((err) => {
+      console.error(`[sdk-session-adapter] Failed to destroy old session ${oldBinding.sessionId} during rebind:`, err);
+    });
 
     // RC-4: Verify task is still alive before rebinding
     const task = taskManager.getTask(taskId);
@@ -612,6 +640,7 @@ class SDKSessionAdapter {
       rotationAttempts: oldBinding.rotationAttempts,
       maxRotationAttempts: oldBinding.maxRotationAttempts,
       rotationInProgress: false,
+      isUnbound: false,
       pendingPrompt: oldBinding.pendingPrompt,
       // Preserve metrics
       turnCount: oldBinding.turnCount,
@@ -685,7 +714,11 @@ class SDKSessionAdapter {
       error: message,
       retryInfo,
       failureContext,
+      session: undefined,
     });
+
+    // Destroy session to release PTY FDs
+    this.unbind(taskId);
 
     console.error(`[sdk-session-adapter] Task ${taskId} rate limited (all rotations exhausted)`);
   }
@@ -706,7 +739,11 @@ class SDKSessionAdapter {
         error: `${message}${statusCode ? ` (status: ${statusCode})` : ''}`,
         exitCode: 1,
         failureContext,
+        session: undefined,
       });
+
+      // Destroy session to release PTY FDs
+      this.unbind(taskId);
 
       console.error(`[sdk-session-adapter] Task ${taskId} failed: ${message}`);
     }
@@ -1047,7 +1084,14 @@ class SDKSessionAdapter {
         endTime: new Date().toISOString(),
         error: event.data.errorReason || 'Session shutdown with error',
         exitCode: 1,
+        session: undefined,
       });
+
+      // Destroy session to release PTY FDs
+      this.unbind(taskId);
+    } else if (binding.isCompleted) {
+      // Session shut down normally after completion — ensure cleanup
+      this.unbind(taskId);
     }
   }
 
@@ -1067,7 +1111,11 @@ class SDKSessionAdapter {
       taskManager.updateTask(taskId, {
         status: TaskStatus.CANCELLED,
         endTime: new Date().toISOString(),
+        session: undefined,
       });
+
+      // Destroy session to release PTY FDs
+      this.unbind(taskId);
     }
   }
 
@@ -1103,13 +1151,22 @@ class SDKSessionAdapter {
 
   /**
    * Unbind a session from a task.
+   * Also destroys the session and removes it from the client manager's tracking
+   * to prevent PTY file descriptor leaks.
    */
   unbind(taskId: string): void {
     const binding = this.bindings.get(taskId);
-    if (binding) {
+    if (binding && !binding.isUnbound) {
+      // Set flag first to prevent concurrent unbinds from double-destroying
+      binding.isUnbound = true;
       binding.unsubscribe();
+      // Destroy the session to release PTY file descriptors (RC-1 fix)
+      const sessionId = binding.sessionId;
+      sdkClientManager.destroySession(sessionId).catch((err) => {
+        console.error(`[sdk-session-adapter] Failed to destroy session ${sessionId} during unbind:`, err);
+      });
       this.bindings.delete(taskId);
-      console.error(`[sdk-session-adapter] Unbound session from task ${taskId}`);
+      console.error(`[sdk-session-adapter] Unbound and destroyed session ${sessionId} for task ${taskId}`);
     }
   }
 
@@ -1160,21 +1217,36 @@ class SDKSessionAdapter {
           timeoutMs,
           detectedBy: 'sdk_adapter',
         },
+        session: undefined,
       });
 
-      // Abort the session
+      // Abort the session, then destroy to release PTY FDs
+      // Safety timeout: if abort hangs for >10s, unbind anyway
+      const abortTimeout = setTimeout(() => {
+        console.error(`[sdk-session-adapter] Abort timed out for task ${taskId}, force unbinding`);
+        this.unbind(taskId);
+      }, 10_000);
+
       binding.session.abort().catch((err: unknown) => {
         console.error(`[sdk-session-adapter] Failed to abort timed-out session ${taskId}:`, err);
+      }).finally(() => {
+        clearTimeout(abortTimeout);
+        this.unbind(taskId);
       });
     }
   }
 
   /**
    * Cleanup all bindings.
+   * Destroys all sessions to release PTY file descriptors.
    */
   cleanup(): void {
     for (const [taskId, binding] of this.bindings) {
       binding.unsubscribe();
+      // Destroy session to release PTY FDs (RC-6 fix)
+      sdkClientManager.destroySession(binding.sessionId).catch((err) => {
+        console.error(`[sdk-session-adapter] Failed to destroy session ${binding.sessionId} during cleanup:`, err);
+      });
     }
     this.bindings.clear();
   }

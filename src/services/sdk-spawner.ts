@@ -11,14 +11,18 @@
 
 import type { SessionConfig, CopilotSession } from '@github/copilot-sdk';
 import { existsSync } from 'fs';
-import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
+import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { sdkSessionAdapter } from './sdk-session-adapter.js';
-import { TaskStatus, type SpawnOptions, type TaskState } from '../types.js';
+import { TaskStatus, type SpawnOptions, type TaskState, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
 import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
+import { buildHandoffPrompt } from './session-snapshot.js';
+import { runClaudeCodeSession } from './claude-code-runner.js';
+import { accountManager } from './account-manager.js';
 
 // Track if rotation callback is registered
 let rotationCallbackRegistered = false;
@@ -39,7 +43,7 @@ function ensureRotationCallbackRegistered(): void {
     console.error(`[sdk-spawner] Rotation requested for task ${taskId} (session ${sessionId}): ${reason}`);
 
     // Try to rotate to next account
-    const rotationResult = await sdkClientManager.rotateOnError(task.cwd, reason);
+    const rotationResult = await sdkClientManager.rotateOnError(task.cwd ?? process.cwd(), reason);
     
     if (!rotationResult.success) {
       console.error(`[sdk-spawner] Rotation failed: ${rotationResult.error}`);
@@ -48,7 +52,7 @@ function ensureRotationCallbackRegistered(): void {
 
     // Try to resume session with new account
     try {
-      const newSession = await sdkClientManager.resumeSession(task.cwd, sessionId);
+      const newSession = await sdkClientManager.resumeSession(task.cwd ?? process.cwd(), sessionId);
       console.error(`[sdk-spawner] Successfully rotated and resumed session ${sessionId}`);
       return { rotated: true, newSession };
     } catch (err) {
@@ -96,7 +100,20 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     return task.id;
   }
 
-  // Execute the task asynchronously
+  // Check if any Copilot accounts are available before starting
+  const currentToken = accountManager.getCurrentToken();
+  if (!currentToken) {
+    console.log(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
+    setImmediate(() => {
+      const timeout = options.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
+      runClaudeCodeSession(task.id, prompt, cwd, timeout).catch((err) => {
+        console.error(`[sdk-spawner] Claude Code session error:`, err);
+      });
+    });
+    return task.id;
+  }
+
+  // Execute the task asynchronously with Copilot
   setImmediate(() => {
     runSDKSession(task.id, prompt, cwd, model, options).catch((err) => {
       console.error(`[sdk-spawner] Task ${task.id} execution error:`, err);
@@ -107,20 +124,13 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
           status: TaskStatus.FAILED,
           endTime: new Date().toISOString(),
           error: err instanceof Error ? err.message : String(err),
+          session: undefined,
         });
       }
     });
   });
 
   return task.id;
-}
-
-/**
- * Check if a status is terminal (no further state changes expected).
- * Note: RATE_LIMITED is NOT terminal - the retry system can still update these tasks.
- */
-function isTerminalStatus(status: TaskStatus): boolean {
-  return TERMINAL_STATUSES.has(status);
 }
 
 /**
@@ -159,6 +169,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
           status: TaskStatus.FAILED,
           endTime: new Date().toISOString(),
           error: err instanceof Error ? err.message : String(err),
+          session: undefined,
         });
       }
     });
@@ -251,7 +262,10 @@ async function runSDKSession(
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
+        session: undefined,
       });
+      // Destroy session to release PTY FDs
+      sdkSessionAdapter.unbind(taskId);
     }
 
     console.error(`[sdk-spawner] Task ${taskId} completed successfully`);
@@ -310,7 +324,7 @@ async function handleSessionError(
   const statusCode = extractStatusCode(errorMessage);
   
   // Check for rate limit or server errors
-  const isRotatableError = statusCode !== undefined && [429, 500, 502, 503, 504].includes(statusCode);
+  const isRotatableError = statusCode !== undefined && ROTATABLE_STATUS_CODES.has(statusCode);
 
   if (isRotatableError) {
     await handleRateLimit(taskId, cwd, errorMessage, statusCode!, options);
@@ -323,6 +337,7 @@ async function handleSessionError(
     endTime: new Date().toISOString(),
     error: errorMessage,
     exitCode: 1,
+    session: undefined,
   });
   
   // Clean up binding
@@ -385,17 +400,26 @@ async function handleRateLimit(
         console.error(`[sdk-spawner] Retry after rotation failed:`, retryError);
         // Fall through to exponential backoff
       }
-    } else if (rotationResult.allExhausted) {
-      // All accounts exhausted - fail immediately
-      taskManager.updateTask(taskId, {
-        status: TaskStatus.FAILED,
-        endTime: new Date().toISOString(),
-        error: rotationResult.error || 'All accounts exhausted',
-        exitCode: 1,
-        session: undefined,
-      });
+    } else if (shouldFallbackToClaudeCode(rotationResult)) {
+      // All accounts exhausted - fallback to Claude Agent SDK
+      console.log(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
+
+      // Unbind Copilot session
       sdkSessionAdapter.unbind(taskId);
-      console.error(`[sdk-spawner] Task ${taskId} failed: all accounts exhausted`);
+
+      // Mark task as switching provider
+      taskManager.appendOutput(taskId, '\n[system] All Copilot accounts exhausted. Switching to Claude Agent SDK...\n');
+
+      // Build handoff prompt from session snapshot
+      const handoffPrompt = buildHandoffPrompt(currentTask, 5);
+
+      // Calculate remaining timeout
+      const elapsed = Date.now() - new Date(currentTask.startTime).getTime();
+      const taskTimeout = currentTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
+      const timeoutRemaining = Math.max(1000, taskTimeout - elapsed);
+
+      // Continue with Claude Agent SDK
+      await runClaudeCodeSession(taskId, handoffPrompt, cwd, timeoutRemaining);
       return;
     }
   }
@@ -428,6 +452,7 @@ export async function cancelTask(taskId: string): Promise<boolean> {
   taskManager.updateTask(taskId, {
     status: TaskStatus.CANCELLED,
     endTime: new Date().toISOString(),
+    session: undefined,
   });
 
   // Try to abort the SDK session
@@ -441,11 +466,11 @@ export async function cancelTask(taskId: string): Promise<boolean> {
     }
   }
 
-  // Also try via client manager
-  await sdkClientManager.abortSession(taskId);
-  
-  // Clean up binding
+  // Clean up binding (this also destroys the session and removes from client tracking)
   sdkSessionAdapter.unbind(taskId);
+
+  // Also try to destroy via client manager directly in case unbind missed it
+  await sdkClientManager.destroySession(taskId).catch(() => {});
 
   return true;
 }
