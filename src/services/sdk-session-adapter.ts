@@ -28,6 +28,9 @@ import {
   type SubagentInfo,
   type SessionMetrics,
 } from '../types.js';
+import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
+import { buildHandoffPrompt } from './session-snapshot.js';
+import { runClaudeCodeSession } from './claude-code-runner.js';
 
 // Extract specific event types from the union for type-safe handling
 type SessionErrorEvent = Extract<SessionEvent, { type: 'session.error' }>;
@@ -527,8 +530,29 @@ class SDKSessionAdapter {
     }
 
     if (!rotationResult.success) {
-      if (rotationResult.allExhausted) {
-        taskManager.appendOutput(taskId, `[rotation] All accounts exhausted`);
+      if (shouldFallbackToClaudeCode(rotationResult)) {
+        // All accounts exhausted - fallback to Claude Agent SDK
+        taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
+
+        // Unbind current session
+        this.unbind(taskId);
+
+        // Get task and calculate remaining timeout
+        const task = taskManager.getTask(taskId);
+        if (!task) return false;
+
+        const elapsed = Date.now() - new Date(task.startTime).getTime();
+        const timeoutRemaining = task.timeout ? Math.max(1000, task.timeout - elapsed) : 1800000; // Default 30min
+
+        // Build handoff prompt from session snapshot
+        const handoffPrompt = buildHandoffPrompt(task, 5);
+
+        // Continue with Claude Agent SDK (don't await - let it run async)
+        runClaudeCodeSession(taskId, handoffPrompt, taskCwd, timeoutRemaining).catch((err) => {
+          console.error(`[sdk-session-adapter] Claude Code fallback failed:`, err);
+        });
+
+        return true; // Indicate fallback was triggered
       }
       return false;
     }

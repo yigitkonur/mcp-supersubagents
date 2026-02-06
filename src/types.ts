@@ -196,6 +196,12 @@ export interface SessionMetrics {
       filesModified: number;
     };
   };
+  /** Provider that executed this session */
+  provider?: Provider;
+  /** Whether fallback to Claude Agent SDK was activated */
+  fallbackActivated?: boolean;
+  /** Reason for fallback */
+  fallbackReason?: string;
 }
 
 // ============================================================================

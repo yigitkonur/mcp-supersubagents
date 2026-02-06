@@ -19,6 +19,10 @@ import { TaskStatus, type SpawnOptions, type TaskState, isTerminalStatus, ROTATA
 import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
+import { buildHandoffPrompt } from './session-snapshot.js';
+import { runClaudeCodeSession } from './claude-code-runner.js';
+import { accountManager } from './account-manager.js';
 
 // Track if rotation callback is registered
 let rotationCallbackRegistered = false;
@@ -96,7 +100,20 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     return task.id;
   }
 
-  // Execute the task asynchronously
+  // Check if any Copilot accounts are available before starting
+  const currentToken = accountManager.getCurrentToken();
+  if (!currentToken) {
+    console.log(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
+    setImmediate(() => {
+      const timeout = options.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
+      runClaudeCodeSession(task.id, prompt, cwd, timeout).catch((err) => {
+        console.error(`[sdk-spawner] Claude Code session error:`, err);
+      });
+    });
+    return task.id;
+  }
+
+  // Execute the task asynchronously with Copilot
   setImmediate(() => {
     runSDKSession(task.id, prompt, cwd, model, options).catch((err) => {
       console.error(`[sdk-spawner] Task ${task.id} execution error:`, err);
@@ -379,17 +396,26 @@ async function handleRateLimit(
         console.error(`[sdk-spawner] Retry after rotation failed:`, retryError);
         // Fall through to exponential backoff
       }
-    } else if (rotationResult.allExhausted) {
-      // All accounts exhausted - fail immediately
-      taskManager.updateTask(taskId, {
-        status: TaskStatus.FAILED,
-        endTime: new Date().toISOString(),
-        error: rotationResult.error || 'All accounts exhausted',
-        exitCode: 1,
-        session: undefined,
-      });
+    } else if (shouldFallbackToClaudeCode(rotationResult)) {
+      // All accounts exhausted - fallback to Claude Agent SDK
+      console.log(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
+
+      // Unbind Copilot session
       sdkSessionAdapter.unbind(taskId);
-      console.error(`[sdk-spawner] Task ${taskId} failed: all accounts exhausted`);
+
+      // Mark task as switching provider
+      taskManager.appendOutput(taskId, '\n[system] All Copilot accounts exhausted. Switching to Claude Agent SDK...\n');
+
+      // Build handoff prompt from session snapshot
+      const handoffPrompt = buildHandoffPrompt(currentTask, 5);
+
+      // Calculate remaining timeout
+      const elapsed = Date.now() - new Date(currentTask.startTime).getTime();
+      const taskTimeout = currentTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
+      const timeoutRemaining = Math.max(1000, taskTimeout - elapsed);
+
+      // Continue with Claude Agent SDK
+      await runClaudeCodeSession(taskId, handoffPrompt, cwd, timeoutRemaining);
       return;
     }
   }
