@@ -12,6 +12,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { spawnTaskTool, handleSpawnTask } from './tools/spawn-task.js';
+import { spawnCoderTool, handleSpawnCoder } from './tools/spawn-coder.js';
+import { spawnPlannerTool, handleSpawnPlanner } from './tools/spawn-planner.js';
+import { spawnTesterTool, handleSpawnTester } from './tools/spawn-tester.js';
+import { spawnResearcherTool, handleSpawnResearcher } from './tools/spawn-researcher.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
@@ -162,8 +166,12 @@ server.oninitialized = async () => {
 
 // --- Tool handlers ---
 
-// 4 tools only - status/listing via MCP Resources, handoff automated on backend
+// 8 tools: 4 specialized spawn tools + legacy spawn_task + send_message + cancel + answer
 const tools = [
+  spawnCoderTool,
+  spawnPlannerTool,
+  spawnTesterTool,
+  spawnResearcherTool,
   spawnTaskTool,
   sendMessageTool,
   cancelTaskTool,
@@ -182,6 +190,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   };
 
   switch (name) {
+    case 'spawn_coder': return handleSpawnCoder(args, ctx);
+    case 'spawn_planner': return handleSpawnPlanner(args, ctx);
+    case 'spawn_tester': return handleSpawnTester(args, ctx);
+    case 'spawn_researcher': return handleSpawnResearcher(args, ctx);
     case 'spawn_task': return handleSpawnTask(args, ctx);
     case 'send_message': return handleSendMessage(args, ctx);
     case 'cancel_task': return handleCancelTask(args);

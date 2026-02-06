@@ -7,14 +7,91 @@ import {
   TASK_TIMEOUT_MIN_MS,
 } from '../config/timeouts.js';
 
+// --- Shared field schemas ---
+
+const sharedTimeoutSchema = z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS);
+const sharedModelSchema = z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional();
+const sharedDependsOnSchema = z.array(z.string().min(1)).optional();
+const sharedLabelsSchema = z.array(z.string().min(1).max(50)).max(10).optional();
+
+const contextFileSchema = z.object({
+  path: z.string().min(1),
+  description: z.string().max(2000).optional(),
+});
+
+// --- Legacy spawn_task schema (backward compat) ---
+
 export const SpawnTaskSchema = z.object({
   prompt: z.string().min(1).max(50000),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).optional().default(TASK_TIMEOUT_DEFAULT_MS), // 30 minutes default
+  timeout: sharedTimeoutSchema,
   cwd: z.string().optional(),
-  model: z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional(),
+  model: sharedModelSchema,
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
   autonomous: z.boolean().optional().default(true),
-  depends_on: z.array(z.string().min(1)).optional(),
-  labels: z.array(z.string().min(1).max(50)).max(10).optional(),
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
+  context_files: z.array(contextFileSchema).max(20).optional(),
+});
+
+// --- Coder languages ---
+
+export const CODER_LANGUAGES = [
+  'typescript', 'python', 'rust', 'go', 'java', 'ruby', 'swift', 'csharp', 'kotlin', 'general',
+] as const;
+export type CoderLanguage = typeof CODER_LANGUAGES[number];
+
+// --- Planner types ---
+
+export const PLANNING_TYPES = [
+  'feature', 'bugfix', 'migration', 'refactor', 'architecture',
+] as const;
+export type PlanningType = typeof PLANNING_TYPES[number];
+
+// --- Per-tool schemas ---
+
+export const SpawnCoderSchema = z.object({
+  prompt: z.string().min(1).max(100000),
+  context_files: z.array(contextFileSchema).min(1).max(20),
+  language: z.enum(CODER_LANGUAGES).optional(),
+  model: sharedModelSchema,
+  cwd: z.string().optional(),
+  timeout: sharedTimeoutSchema,
+  autonomous: z.boolean().optional().default(true),
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
+});
+
+export const SpawnPlannerSchema = z.object({
+  prompt: z.string().min(1).max(100000),
+  context_files: z.array(contextFileSchema).max(20).optional(),
+  planning_type: z.enum(PLANNING_TYPES).optional(),
+  model: sharedModelSchema,
+  cwd: z.string().optional(),
+  timeout: sharedTimeoutSchema,
+  autonomous: z.boolean().optional().default(true),
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
+});
+
+export const SpawnTesterSchema = z.object({
+  prompt: z.string().min(1).max(100000),
+  context_files: z.array(contextFileSchema).min(1).max(20),
+  model: sharedModelSchema,
+  cwd: z.string().optional(),
+  timeout: sharedTimeoutSchema,
+  autonomous: z.boolean().optional().default(true),
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
+});
+
+export const SpawnResearcherSchema = z.object({
+  prompt: z.string().min(1).max(100000),
+  context_files: z.array(contextFileSchema).max(20).optional(),
+  model: sharedModelSchema,
+  cwd: z.string().optional(),
+  timeout: sharedTimeoutSchema,
+  autonomous: z.boolean().optional().default(true),
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
 });
 

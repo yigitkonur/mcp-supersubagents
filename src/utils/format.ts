@@ -19,6 +19,11 @@ export function formatError(error: string, hint?: string): string {
   return parts.join('\n');
 }
 
+/** MCP-compliant validation error response with isError: true. */
+export function mcpValidationError(markdown: string): { content: Array<{ type: string; text: string }>; isError: true } {
+  return { content: [{ type: 'text', text: markdown }], isError: true as const };
+}
+
 /** Escape pipe characters in table cell content. */
 function escapeCell(value: string): string {
   return value.replace(/\|/g, '\\|');
