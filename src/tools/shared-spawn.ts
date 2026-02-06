@@ -28,6 +28,62 @@ export interface SpawnToolConfig {
   specialization?: string;
 }
 
+// Return type shared by all spawn handlers
+export type SpawnHandlerResult = Promise<{ content: Array<{ type: string; text: string }>; isError?: true }>;
+
+/**
+ * Configuration for the generic spawn handler factory.
+ */
+export interface SpawnHandlerConfig<T> {
+  schema: { parse: (args: unknown) => T };
+  toolName: string;
+  taskType?: TaskType;
+  validationHint: string;
+  getSpecialization?: (parsed: T) => string | undefined;
+  getModel?: (parsed: T) => string | undefined;
+  getTaskType?: (parsed: T) => TaskType | undefined;
+}
+
+/**
+ * Generic factory that creates a spawn tool handler.
+ * Eliminates identical boilerplate across spawn-coder, spawn-planner, spawn-tester, spawn-researcher.
+ *
+ * Each handler: parse → validate → map to SharedSpawnParams → call handleSharedSpawn.
+ */
+export function createSpawnHandler<T extends SharedSpawnParams>(
+  config: SpawnHandlerConfig<T>,
+): (args: unknown, ctx?: ToolContext) => SpawnHandlerResult {
+  return async (args: unknown, ctx?: ToolContext): SpawnHandlerResult => {
+    let parsed: T;
+    try {
+      parsed = config.schema.parse(args);
+    } catch (error) {
+      return mcpValidationError(
+        `❌ **SCHEMA VALIDATION FAILED — ${config.toolName}**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n${config.validationHint}`
+      );
+    }
+
+    return handleSharedSpawn(
+      {
+        prompt: parsed.prompt,
+        context_files: parsed.context_files,
+        model: config.getModel?.(parsed) ?? parsed.model,
+        cwd: parsed.cwd,
+        timeout: parsed.timeout,
+        autonomous: parsed.autonomous,
+        depends_on: parsed.depends_on,
+        labels: parsed.labels,
+      },
+      {
+        toolName: config.toolName,
+        taskType: config.getTaskType?.(parsed) ?? config.taskType,
+        specialization: config.getSpecialization?.(parsed),
+      },
+      ctx,
+    );
+  };
+}
+
 /**
  * Shared spawn handler used by all 4 specialized tools.
  * Performs: brief validation → context file assembly → template application → task spawn.

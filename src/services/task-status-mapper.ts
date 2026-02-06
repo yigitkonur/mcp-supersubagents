@@ -1,5 +1,6 @@
 import type { Task as MCPTask } from '@modelcontextprotocol/sdk/types.js';
 import { TaskState, TaskStatus } from '../types.js';
+import { TASK_TTL_MS } from '../config/timeouts.js';
 
 type MCPStatus = 'working' | 'completed' | 'failed' | 'cancelled';
 
@@ -246,8 +247,6 @@ export function computePollInterval(task: TaskState): number | undefined {
       return 30_000;
   }
 }
-
-const TASK_TTL_MS = 3_600_000; // 1 hour
 
 function getLastUpdatedAt(task: TaskState): string {
   const candidates = [

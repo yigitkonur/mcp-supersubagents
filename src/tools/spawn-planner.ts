@@ -1,8 +1,6 @@
 import { SpawnPlannerSchema, PLANNING_TYPES } from '../utils/sanitize.js';
 import { MODEL_IDS, OPUS_MODEL } from '../models.js';
-import { handleSharedSpawn } from './shared-spawn.js';
-import type { ToolContext } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
+import { createSpawnHandler } from './shared-spawn.js';
 
 export const spawnPlannerTool = {
   name: 'spawn_planner',
@@ -177,35 +175,11 @@ Each type adds specialized planning methodology. If not set, general planning gu
   },
 };
 
-export async function handleSpawnPlanner(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed;
-  try {
-    parsed = SpawnPlannerSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `❌ **SCHEMA VALIDATION FAILED — spawn_planner**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n⚠️ **REQUIRED FIELDS:**\n• \`prompt\`: string (min 300 characters) — describe the PROBLEM, not the solution\n\nSee the tool description for the full brief template.`
-    );
-  }
-
-  return handleSharedSpawn(
-    {
-      prompt: parsed.prompt,
-      context_files: parsed.context_files,
-      model: OPUS_MODEL,
-      cwd: parsed.cwd,
-      timeout: parsed.timeout,
-      autonomous: parsed.autonomous,
-      depends_on: parsed.depends_on,
-      labels: parsed.labels,
-    },
-    {
-      toolName: 'spawn_planner',
-      taskType: 'super-planner',
-      specialization: parsed.planning_type,
-    },
-    ctx,
-  );
-}
+export const handleSpawnPlanner = createSpawnHandler({
+  schema: SpawnPlannerSchema,
+  toolName: 'spawn_planner',
+  taskType: 'super-planner',
+  validationHint: '⚠️ **REQUIRED FIELDS:**\n• `prompt`: string (min 300 characters) — describe the PROBLEM, not the solution\n\nSee the tool description for the full brief template.',
+  getModel: () => OPUS_MODEL,
+  getSpecialization: (parsed) => parsed.planning_type,
+});

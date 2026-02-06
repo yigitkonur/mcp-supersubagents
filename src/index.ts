@@ -19,7 +19,8 @@ import { spawnResearcherTool, handleSpawnResearcher } from './tools/spawn-resear
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
-import { taskManager, TERMINAL_STATUSES } from './services/task-manager.js';
+import { taskManager } from './services/task-manager.js';
+import { TERMINAL_STATUSES } from './types.js';
 import { clientContext } from './services/client-context.js';
 import { checkSDKAvailable, shutdownSDK, getSDKStats } from './services/sdk-spawner.js';
 import { sdkClientManager } from './services/sdk-client-manager.js';
@@ -645,16 +646,43 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   
-  // Graceful shutdown with SDK cleanup
-  const shutdown = async () => {
-    console.error('Shutting down...');
-    await taskManager.shutdown();
-    await shutdownSDK();
+  // Graceful shutdown with SDK cleanup (guard against double-shutdown)
+  let isShuttingDown = false;
+  const shutdown = async (signal?: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
+    try {
+      await taskManager.shutdown();
+      await shutdownSDK();
+    } catch (err) {
+      console.error('Shutdown error:', err);
+    }
     process.exit(0);
   };
   
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Emergency cleanup on unhandled errors — prevent PTY leaks on crash
+  process.on('unhandledRejection', (reason) => {
+    console.error('[FATAL] Unhandled rejection:', reason);
+    shutdown('unhandledRejection').catch(() => process.exit(1));
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[FATAL] Uncaught exception:', err);
+    shutdown('uncaughtException').catch(() => process.exit(1));
+  });
+
+  // Periodic session leak detection (every 5 min)
+  setInterval(() => {
+    const stats = getSDKStats();
+    if (stats.bindings > 0 || stats.sessions > 0) {
+      console.error(
+        `[session-monitor] Active: ${stats.bindings} bindings, ${stats.sessions} sessions, ${stats.clients} clients`
+      );
+    }
+  }, 5 * 60_000);
 }
 
 main().catch(e => { console.error('Fatal:', e); process.exit(1); });

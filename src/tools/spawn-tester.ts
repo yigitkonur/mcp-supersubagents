@@ -1,8 +1,6 @@
 import { SpawnTesterSchema } from '../utils/sanitize.js';
 import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
-import { handleSharedSpawn } from './shared-spawn.js';
-import type { ToolContext } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
+import { createSpawnHandler } from './shared-spawn.js';
 
 export const spawnTesterTool = {
   name: 'spawn_tester',
@@ -169,34 +167,9 @@ Files can be any type (not restricted to .md). Max: 20 files, 200KB each, 500KB 
   },
 };
 
-export async function handleSpawnTester(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed;
-  try {
-    parsed = SpawnTesterSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `❌ **SCHEMA VALIDATION FAILED — spawn_tester**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n⚠️ **REQUIRED FIELDS:**\n• \`prompt\`: string (min 300 characters)\n• \`context_files\`: array with at least 1 file (handoff, code, or test checklist)\n\nSee the tool description for the full brief template.`
-    );
-  }
-
-  return handleSharedSpawn(
-    {
-      prompt: parsed.prompt,
-      context_files: parsed.context_files,
-      model: parsed.model,
-      cwd: parsed.cwd,
-      timeout: parsed.timeout,
-      autonomous: parsed.autonomous,
-      depends_on: parsed.depends_on,
-      labels: parsed.labels,
-    },
-    {
-      toolName: 'spawn_tester',
-      taskType: 'super-tester',
-    },
-    ctx,
-  );
-}
+export const handleSpawnTester = createSpawnHandler({
+  schema: SpawnTesterSchema,
+  toolName: 'spawn_tester',
+  taskType: 'super-tester',
+  validationHint: '⚠️ **REQUIRED FIELDS:**\n• `prompt`: string (min 300 characters)\n• `context_files`: array with at least 1 file (handoff, code, or test checklist)\n\nSee the tool description for the full brief template.',
+});

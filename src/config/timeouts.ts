@@ -15,3 +15,6 @@ export const TASK_TIMEOUT_MAX_MS = readIntEnv('MCP_TASK_TIMEOUT_MAX_MS', 3_600_0
 export const TASK_TIMEOUT_DEFAULT_MS = readIntEnv('MCP_TASK_TIMEOUT_MS', 1_800_000);
 export const TASK_STALL_WARN_MS = readIntEnv('MCP_TASK_STALL_WARN_MS', 5 * 60_000);
 
+// Task retention: how long completed/failed tasks stay in memory before cleanup
+export const TASK_TTL_MS = readIntEnv('MCP_TASK_TTL_MS', 3_600_000); // 1 hour
+

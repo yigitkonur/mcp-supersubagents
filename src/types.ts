@@ -1,4 +1,5 @@
 import type { CopilotSession } from '@github/copilot-sdk';
+import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 
 export type Provider = 'copilot' | 'claude-cli';
 
@@ -276,9 +277,29 @@ export interface SpawnOptions {
   switchAttempted?: boolean;
 }
 
-import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
-
 export interface ToolContext {
   progressToken?: string | number;
   sendNotification: (notification: ServerNotification) => Promise<void>;
 }
+
+// ============================================================================
+// Terminal Status Utilities (canonical location — import from here)
+// ============================================================================
+
+export const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set([
+  TaskStatus.COMPLETED,
+  TaskStatus.FAILED,
+  TaskStatus.CANCELLED,
+  TaskStatus.TIMED_OUT,
+]);
+
+export function isTerminalStatus(status: TaskStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
+// ============================================================================
+// Error Classification Constants (canonical location — import from here)
+// ============================================================================
+
+export const ROTATABLE_STATUS_CODES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
+export const RATE_LIMIT_STATUS_CODE = 429;
