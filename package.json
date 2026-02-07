@@ -11,7 +11,8 @@
     "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/; mkdir -p build/templates/overlays && cp src/templates/overlays/*.mdx build/templates/overlays/",
     "dev": "tsx watch src/index.ts",
     "start": "node build/index.js",
-    "clean": "rm -rf build"
+    "clean": "rm -rf build",
+    "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs"
   },
   "keywords": [
     "mcp",
