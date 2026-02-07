@@ -167,6 +167,38 @@ No build step required -- `npx` runs the package directly.
 
 ---
 
+## Transport Modes
+
+Super Subagents supports two transport modes:
+
+| Mode | Use Case | How to Start |
+|------|----------|-------------|
+| **STDIO** (default) | Claude Desktop, Cursor, Windsurf | `npx mcp-supersubagents` |
+| **HTTP Streamable** | Self-hosted, Docker, LAN sharing | `MCP_TRANSPORT=http npx mcp-supersubagents` |
+
+### Self-Hosted HTTP Streamable
+
+```bash
+# Start on default port 3001
+MCP_TRANSPORT=http npx mcp-supersubagents
+
+# Custom port
+MCP_TRANSPORT=http MCP_PORT=8080 npx mcp-supersubagents
+```
+
+```json
+{
+  "mcpServers": {
+    "supersubagents-http": {
+      "type": "streamable-http",
+      "url": "http://localhost:3001/mcp"
+    }
+  }
+}
+```
+
+---
+
 ## Tool Reference
 
 Super Subagents exposes **4 MCP tools** for task orchestration:
