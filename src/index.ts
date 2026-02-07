@@ -35,7 +35,7 @@ import type { ToolContext } from './types.js';
 
 
 const server = new Server(
-  { name: 'copilot-agent', version: '1.0.0' },
+  { name: 'mcp-supersubagents', version: '1.4.0' },
   {
     capabilities: {
       tools: {},
@@ -643,8 +643,79 @@ async function main() {
     console.error('Tip: Set GITHUB_PAT_TOKENS=token1,token2,... for multi-account support');
   }
   
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // ============================================================================
+  // Transport: STDIO (default) or HTTP Streamable (MCP_TRANSPORT=http)
+  // ============================================================================
+
+  const transportMode = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
+
+  if (transportMode === 'http') {
+    const { StreamableHTTPServerTransport } = await import(
+      '@modelcontextprotocol/sdk/server/streamableHttp.js'
+    );
+    const { createServer: createHttpServer } = await import('node:http');
+    const { randomUUID } = await import('node:crypto');
+
+    const PORT = parseInt(process.env.MCP_PORT || '3000', 10);
+    const sessions = new Map<string, InstanceType<typeof StreamableHTTPServerTransport>>();
+
+    const mcpHttpServer = createHttpServer(async (req, res) => {
+      const url = new URL(req.url || '/', `http://localhost:${PORT}`);
+
+      if (url.pathname === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', name: 'mcp-supersubagents', version: '1.4.0' }));
+        return;
+      }
+
+      if (url.pathname === '/mcp') {
+        if (req.method === 'DELETE') {
+          const sessionId = req.headers['mcp-session-id'] as string | undefined;
+          if (sessionId && sessions.has(sessionId)) {
+            await sessions.get(sessionId)!.handleRequest(req, res);
+            sessions.delete(sessionId);
+          } else {
+            res.writeHead(404).end('Session not found');
+          }
+          return;
+        }
+
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+        if (sessionId && sessions.has(sessionId)) {
+          await sessions.get(sessionId)!.handleRequest(req, res);
+        } else if (!sessionId && req.method === 'POST') {
+          const sessionTransport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (id: string) => {
+              sessions.set(id, sessionTransport);
+              console.error(`[http] Session initialized: ${id}`);
+            },
+            onsessionclosed: (id: string) => {
+              sessions.delete(id);
+              console.error(`[http] Session closed: ${id}`);
+            },
+          });
+
+          await server.connect(sessionTransport);
+          await sessionTransport.handleRequest(req, res);
+        } else {
+          res.writeHead(400).end('Bad request — missing session ID');
+        }
+        return;
+      }
+
+      res.writeHead(404).end('Not found');
+    });
+
+    mcpHttpServer.listen(PORT, () => {
+      console.error(`[mcp-supersubagents] HTTP Streamable transport listening on port ${PORT}`);
+    });
+  } else {
+    // STDIO transport (default)
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
   
   // Graceful shutdown with SDK cleanup (guard against double-shutdown)
   let isShuttingDown = false;
