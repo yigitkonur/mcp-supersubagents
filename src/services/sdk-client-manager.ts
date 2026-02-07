@@ -15,35 +15,21 @@
  */
 
 import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse } from '@github/copilot-sdk';
+import { execSync } from 'node:child_process';
 import { accountManager } from './account-manager.js';
 import { questionRegistry } from './question-registry.js';
 import { createSessionHooks } from './session-hooks.js';
-import { taskManager } from './task-manager.js';
-import { TERMINAL_STATUSES } from '../types.js';
+import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
 
 const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
 
-// Timeouts for SDK operations that can hang
+const PTY_RECYCLE_THRESHOLD = 80;
 const DESTROY_SESSION_TIMEOUT_MS = 10_000;
 const CLIENT_START_TIMEOUT_MS = 30_000;
-const SHUTDOWN_DESTROY_TIMEOUT_MS = 5_000;
-
-/**
- * Race a promise against a timeout. Rejects with a descriptive error if the timeout fires first.
- * Clears the timeout when the promise resolves to prevent timer leaks.
- */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: NodeJS.Timeout;
-  return Promise.race([
-    promise.then(
-      (v) => { clearTimeout(timer); return v; },
-      (e) => { clearTimeout(timer); throw e; },
-    ),
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    }),
-  ]);
-}
+const CLIENT_HEALTH_CHECK_TIMEOUT_MS = 5_000;
+const RECYCLE_STOP_TIMEOUT_MS = 10_000;
+const SHUTDOWN_STOP_TIMEOUT_MS = 15_000;
+const STALE_SESSION_CLEANUP_INTERVAL_MS = 60_000;
 
 interface ClientEntry {
   client: CopilotClient;
@@ -52,6 +38,50 @@ interface ClientEntry {
   createdAt: Date;
   lastUsedAt: Date;
   sessions: Map<string, CopilotSession>;
+}
+
+/**
+ * Generic timeout wrapper for SDK operations that can hang.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/**
+ * Retry-with-backoff wrapper for session.destroy(), matching the SDK's own
+ * 3-attempt exponential backoff pattern used in stop().
+ */
+async function destroySessionWithRetry(
+  session: CopilotSession,
+  sessionId: string,
+  totalTimeoutMs: number,
+): Promise<void> {
+  return withTimeout(
+    (async () => {
+      const MAX_ATTEMPTS = 3;
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          await session.destroy();
+          return;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(r => setTimeout(r, 100 * Math.pow(2, attempt - 1)));
+          }
+        }
+      }
+      throw lastError!;
+    })(),
+    totalTimeoutMs,
+    `destroy session ${sessionId} (with retries)`,
+  );
 }
 
 /**
@@ -75,14 +105,12 @@ function createUserInputHandler(taskId: string): (request: UserInputRequest, inv
   };
 }
 
-// Interval for periodic stale session cleanup (every 60 seconds)
-const STALE_SESSION_CLEANUP_INTERVAL_MS = 60_000;
-
 class SDKClientManager {
   private clients: Map<string, ClientEntry> = new Map();
   private pendingClients: Map<string, Promise<CopilotClient>> = new Map(); // RC-3: Dedup concurrent getClient calls
   private isShuttingDown = false;
-  private staleSessionTimer: NodeJS.Timeout | null = null;
+  private staleSessionTimer: ReturnType<typeof setInterval> | null = null;
+  private sweepCycle = 0;
 
   /**
    * Initialize the client manager (call on MCP connect).
@@ -95,81 +123,26 @@ class SDKClientManager {
   }
 
   /**
-   * Start periodic sweeper that detects and destroys orphaned sessions.
-   * A session is orphaned if it's tracked in a client entry but its corresponding
-   * task is in a terminal state or no longer exists.
-   */
-  private startStaleSessionSweeper(): void {
-    if (this.staleSessionTimer) {
-      clearInterval(this.staleSessionTimer);
-    }
-    this.staleSessionTimer = setInterval(() => {
-      this.sweepStaleSessions();
-    }, STALE_SESSION_CLEANUP_INTERVAL_MS);
-    this.staleSessionTimer.unref();
-  }
-
-  /**
-   * Sweep and destroy orphaned sessions across all client entries.
-   * This is the safety net that catches sessions missed by normal lifecycle cleanup.
-   */
-  private sweepStaleSessions(): void {
-    if (this.isShuttingDown) return;
-
-    let destroyed = 0;
-    for (const [clientKey, entry] of this.clients) {
-      for (const [sessionId, session] of entry.sessions) {
-        // Check if any active (non-terminal) task references this session
-        const task = taskManager.getTask(sessionId); // sessionId === taskId by convention
-        const isOrphaned = !task || TERMINAL_STATUSES.has(task.status);
-
-        if (isOrphaned) {
-          // Remove from tracking first, then fire-and-forget destroy with timeout
-          entry.sessions.delete(sessionId);
-          withTimeout(session.destroy(), DESTROY_SESSION_TIMEOUT_MS, `sweeper:destroy(${sessionId})`).catch((err) => {
-            console.error(`[sdk-client-manager] Sweeper: failed to destroy session ${sessionId}:`, err);
-          });
-          destroyed++;
-        }
-      }
-    }
-
-    if (destroyed > 0) {
-      console.error(`[sdk-client-manager] Sweeper: destroyed ${destroyed} orphaned session(s)`);
-      // Now that sessions are cleared, try to clean up stale clients too
-      this.cleanupStaleClients();
-    }
-  }
-
-  /**
    * Reset the client manager (call on MCP reconnect).
    * Clears all clients and resets account rotation to first token.
    */
   async reset(): Promise<void> {
-    // Invalidate any in-flight client creations before stopping existing clients
     this.pendingClients.clear();
 
-    // Destroy all sessions first, then stop clients
-    for (const [key, entry] of this.clients) {
-      // Destroy sessions in parallel to release PTY FDs (with timeout so hung sessions don't block reset)
-      await Promise.allSettled(
-        [...entry.sessions.entries()].map(([sessionId, session]) =>
-          withTimeout(session.destroy(), DESTROY_SESSION_TIMEOUT_MS, `reset:destroy(${sessionId})`)
-            .catch(err => console.error(`[sdk-client-manager] Error destroying session ${sessionId} during reset:`, err))
-        )
-      );
+    // Clear our tracking first — let SDK stop() handle session cleanup
+    for (const entry of this.clients.values()) {
       entry.sessions.clear();
+    }
 
-      // Then stop the client
+    for (const [key, entry] of this.clients) {
       try {
-        await entry.client.stop();
-      } catch (err) {
-        console.error(`[sdk-client-manager] Error stopping client ${key}:`, err);
+        await withTimeout(entry.client.stop(), SHUTDOWN_STOP_TIMEOUT_MS, `stop client ${key}`);
+      } catch {
+        try { await entry.client.forceStop(); } catch { /* ignore */ }
       }
     }
     this.clients.clear();
 
-    // Reset account manager to first token
     accountManager.reset();
     console.error('[sdk-client-manager] Reset complete - all clients cleared, starting from first account');
   }
@@ -236,7 +209,8 @@ class SDKClientManager {
       cwd,
       logLevel: 'error',
       autoStart: true,
-      autoRestart: false, // RC-4 fix: Disable auto-restart to prevent unbounded CLI respawning and PTY accumulation
+      autoRestart: false,
+      useStdio: false,  // TCP mode: avoids macOS stdio pipe destruction race
     };
 
     if (githubToken) {
@@ -344,10 +318,10 @@ class SDKClientManager {
     for (const entry of this.clients.values()) {
       const session = entry.sessions.get(sessionId);
       if (session) {
-        // Remove from tracking first to prevent double-destroy from sweeper
+        // Delete from tracking first to prevent double-destroy race with sweeper
         entry.sessions.delete(sessionId);
         try {
-          await withTimeout(session.destroy(), DESTROY_SESSION_TIMEOUT_MS, `destroySession(${sessionId})`);
+          await destroySessionWithRetry(session, sessionId, DESTROY_SESSION_TIMEOUT_MS);
         } catch (err) {
           console.error(`[sdk-client-manager] Failed to destroy session ${sessionId}:`, err);
         }
@@ -427,6 +401,157 @@ class SDKClientManager {
   }
 
   /**
+   * Start the periodic stale-session sweeper. Timer is unref()'d so it
+   * doesn't prevent the process from exiting.
+   */
+  private startStaleSessionSweeper(): void {
+    if (this.staleSessionTimer) return;
+    this.staleSessionTimer = setInterval(() => {
+      this.sweepStaleSessions().catch((err) => {
+        console.error('[sdk-client-manager] Sweeper error:', err);
+      });
+    }, STALE_SESSION_CLEANUP_INTERVAL_MS);
+    this.staleSessionTimer.unref();
+    console.error('[sdk-client-manager] Stale-session sweeper started');
+  }
+
+  /**
+   * Ping each client to detect dead/crashed CLI processes. Removes dead
+   * clients from the pool and force-stops them.
+   */
+  private async checkClientHealth(): Promise<void> {
+    for (const [key, entry] of this.clients.entries()) {
+      try {
+        await withTimeout(
+          entry.client.ping('health'),
+          CLIENT_HEALTH_CHECK_TIMEOUT_MS,
+          `ping client ${key}`,
+        );
+      } catch {
+        console.error(`[sdk-client-manager] Health check failed for client ${key}, removing dead client`);
+        entry.sessions.clear();
+        this.clients.delete(key);
+        try { await entry.client.forceStop(); } catch { /* already dead */ }
+      }
+    }
+  }
+
+  /**
+   * Sweep all tracked sessions. If the corresponding task (looked up by
+   * sessionId which equals taskId by convention) is terminal or missing,
+   * destroy the session with a timeout. Then recycle PTY leakers.
+   */
+  private async sweepStaleSessions(): Promise<void> {
+    // Remove dead clients first so we don't try to destroy sessions on them
+    await this.checkClientHealth();
+
+    let destroyed = 0;
+    for (const entry of this.clients.values()) {
+      for (const [sessionId, session] of entry.sessions) {
+        const task = taskManager.getTask(sessionId);
+        if (!task || TERMINAL_STATUSES.has(task.status as any)) {
+          entry.sessions.delete(sessionId);
+          try {
+            await withTimeout(
+              entry.client.deleteSession(sessionId),
+              DESTROY_SESSION_TIMEOUT_MS,
+              `delete session ${sessionId}`,
+            );
+          } catch {
+            // Fall back to local destroy if deleteSession fails
+            try {
+              await destroySessionWithRetry(session, sessionId, DESTROY_SESSION_TIMEOUT_MS);
+            } catch (err) {
+              console.error(`[sdk-client-manager] Sweeper: destroy failed for ${sessionId}: ${err}`);
+            }
+          }
+          destroyed++;
+        }
+      }
+    }
+    if (destroyed > 0) {
+      console.error(`[sdk-client-manager] Sweeper: destroyed ${destroyed} stale session(s)`);
+    }
+
+    // Every 5th sweep cycle, detect and clean up orphaned server-side sessions
+    this.sweepCycle++;
+    if (this.sweepCycle % 5 === 0) {
+      await this.detectOrphanedSessions();
+    }
+
+    await this.recyclePtyLeakers();
+  }
+
+  /**
+   * Detect server-side sessions that we're not tracking locally (orphaned from
+   * crashes). Uses listSessions() and deletes any not in our tracking map.
+   */
+  private async detectOrphanedSessions(): Promise<void> {
+    for (const [key, entry] of this.clients.entries()) {
+      try {
+        const serverSessions = await withTimeout(
+          entry.client.listSessions(),
+          CLIENT_HEALTH_CHECK_TIMEOUT_MS,
+          `listSessions ${key}`,
+        );
+        const trackedIds = new Set(entry.sessions.keys());
+        for (const meta of serverSessions) {
+          if (!trackedIds.has(meta.sessionId)) {
+            console.error(`[sdk-client-manager] Sweeper: deleting orphaned session ${meta.sessionId}`);
+            try { await entry.client.deleteSession(meta.sessionId); } catch { /* best effort */ }
+          }
+        }
+      } catch { /* listSessions failure is non-fatal */ }
+    }
+  }
+
+  /**
+   * For each client entry, check PTY FD count via lsof. If count exceeds
+   * threshold and no active sessions remain, recycle the client (stop it
+   * and remove from map so the next getClient() creates a fresh one).
+   */
+  private async recyclePtyLeakers(): Promise<void> {
+    for (const [key, entry] of this.clients.entries()) {
+      // Skip dead clients — health check will handle cleanup
+      try {
+        await withTimeout(entry.client.ping('recycle-check'), 3_000, `ping ${key}`);
+      } catch {
+        continue;
+      }
+
+      // SDK has no public API for process PID or FD count.
+      // cliProcess is private (client.ts:121). This cast is the only way
+      // to count ptmx FDs until the SDK adds a resource health endpoint.
+      const pid = (entry.client as any).cliProcess?.pid as number | undefined;
+      if (!pid) continue;
+
+      let ptmxCount = 0;
+      try {
+        const output = execSync(`lsof -p ${pid} 2>/dev/null | grep -c ptmx`, {
+          encoding: 'utf8',
+          timeout: 5_000,
+        });
+        ptmxCount = parseInt(output.trim(), 10) || 0;
+      } catch {
+        // grep returns exit code 1 when no matches → ptmxCount stays 0
+        continue;
+      }
+
+      if (ptmxCount > PTY_RECYCLE_THRESHOLD && entry.sessions.size === 0) {
+        console.error(`[sdk-client-manager] Sweeper: recycling client ${key} (${ptmxCount} ptmx FDs, 0 active sessions)`);
+        // Escalating shutdown: graceful → force
+        try {
+          await withTimeout(entry.client.stop(), RECYCLE_STOP_TIMEOUT_MS, `stop client ${key}`);
+        } catch (stopErr) {
+          console.error(`[sdk-client-manager] Sweeper: graceful stop failed for ${key}, forcing: ${stopErr}`);
+          try { await entry.client.forceStop(); } catch { /* ignore */ }
+        }
+        this.clients.delete(key);
+      }
+    }
+  }
+
+  /**
    * Check if rotation should happen based on error.
    */
   shouldRotateOnError(statusCode?: number, errorMessage?: string): boolean {
@@ -472,7 +597,6 @@ class SDKClientManager {
     this.isShuttingDown = true;
     this.pendingClients.clear();
 
-    // Stop the stale session sweeper
     if (this.staleSessionTimer) {
       clearInterval(this.staleSessionTimer);
       this.staleSessionTimer = null;
@@ -480,31 +604,25 @@ class SDKClientManager {
 
     const errors: Error[] = [];
 
-    for (const [key, entry] of this.clients) {
-      // Destroy all sessions in parallel (with timeout so one hung session doesn't block shutdown)
-      const results = await Promise.allSettled(
-        [...entry.sessions.entries()].map(([sessionId, session]) =>
-          withTimeout(session.destroy(), SHUTDOWN_DESTROY_TIMEOUT_MS, `shutdown:destroy(${sessionId})`)
-        )
-      );
-      for (const r of results) {
-        if (r.status === 'rejected') {
-          errors.push(r.reason instanceof Error ? r.reason : new Error(String(r.reason)));
-        }
-      }
+    // Clear our tracking first (prevents sweeper interference)
+    for (const entry of this.clients.values()) {
       entry.sessions.clear();
+    }
 
-      // Stop the client
+    // Let SDK stop() handle cleanup with its own retry+backoff, with forceStop fallback
+    for (const [key, entry] of this.clients) {
       try {
-        const clientErrors = await entry.client.stop();
+        const clientErrors = await withTimeout(entry.client.stop(), SHUTDOWN_STOP_TIMEOUT_MS, `stop client ${key}`);
         errors.push(...clientErrors);
       } catch (err) {
-        errors.push(new Error(`Failed to stop client for ${key}: ${err}`));
+        console.error(`[sdk-client-manager] Shutdown: stop timed out for ${key}, forcing`);
+        try { await entry.client.forceStop(); } catch (e) {
+          errors.push(new Error(`Failed to force-stop client ${key}: ${e}`));
+        }
       }
     }
 
     this.clients.clear();
-
     if (errors.length > 0) {
       console.error('[sdk-client-manager] Shutdown errors:', errors);
     }
