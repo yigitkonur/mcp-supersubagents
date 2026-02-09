@@ -1,0 +1,296 @@
+## TRIGGER.DEV CODING GUIDELINES
+
+You are working in a codebase that uses **Trigger.dev v4** for background tasks. Follow these patterns.
+
+---
+
+### TASK DEFINITION
+
+```typescript
+import { task, schemaTask, logger, metadata } from "@trigger.dev/sdk";
+import { z } from "zod";
+
+// Basic task
+export const myTask = task({
+  id: "my-task",  // globally unique, lowercase, hyphens OK
+  run: async (payload, { ctx }) => {
+    // ctx.run.id, ctx.task.id, ctx.attempt.number, ctx.environment.type
+    return result;
+  },
+});
+
+// Schema-validated task (preferred)
+export const validatedTask = schemaTask({
+  id: "validated-task",
+  schema: z.object({
+    userId: z.string().uuid(),
+    amount: z.number().positive(),
+  }),
+  run: async (payload) => {
+    // payload is validated and typed
+  },
+});
+```
+
+**Critical rules:**
+- Tasks MUST be exported and imported by the entry point (`trigger/index.ts`) to register
+- Task IDs must be globally unique within the project
+- Payloads must be JSON-serializable — no Dates (use ISO strings), no class instances, no circular refs
+- Payload size limits: Free 64KB, Pro 3MB
+
+---
+
+### TRIGGERING PATTERNS
+
+```typescript
+// Fire-and-forget
+const handle = await myTask.trigger({ userId: "123" }, {
+  idempotencyKey: "user-123-action",  // prevent duplicate runs
+  tags: ["user-123"],
+  delay: "30s",
+});
+
+// Trigger and wait for result
+const result = await myTask.triggerAndWait({ userId: "123" });
+if (result.ok) { /* result.output */ } else { /* result.error */ }
+
+// Subtask orchestration
+export const orchestrator = task({
+  id: "orchestrator",
+  run: async (payload) => {
+    const step1 = await subtaskA.triggerAndWait({ ... });
+    if (!step1.ok) throw new Error("Step 1 failed");
+    return await subtaskB.triggerAndWait({ input: step1.output });
+  },
+});
+
+// Parallel subtasks
+const result = await batch.triggerByTaskAndWait([
+  { task: taskA, payload: { ... } },
+  { task: taskB, payload: { ... } },
+]);
+
+// Batch (up to 500 per call, chunk larger sets)
+const handles = await myTask.batchTrigger(
+  items.map(item => ({ payload: { item }, options: { idempotencyKey: `item-${item.id}` } }))
+);
+```
+
+---
+
+### SCHEDULED TASKS
+
+```typescript
+import { schedules } from "@trigger.dev/sdk";
+
+export const dailyReport = schedules.task({
+  id: "daily-report",
+  cron: { pattern: "0 9 * * *", timezone: "America/New_York" },
+  run: async (payload) => {
+    // payload.timestamp, payload.lastTimestamp, payload.timezone
+  },
+});
+
+// Dynamic schedules (from backend)
+await schedules.create({
+  task: "user-report",
+  cron: "0 9 * * 1",
+  externalId: "user-123",
+  deduplicationKey: "user-123-weekly",
+});
+```
+
+- Prevent overlapping: `queue: { concurrencyLimit: 1 }`
+
+---
+
+### LOGGING CONVENTIONS
+
+```typescript
+// Format: {operation}_{phase} in snake_case — ALWAYS
+logger.info("document_process_started", {
+  correlation_id: `doc-${payload.id.slice(0, 8)}`,
+  request_id: payload.requestId,
+  run_id: ctx.run.id,
+});
+
+logger.info("document_process_completed", {
+  correlation_id: correlationId,
+  processing_time_ms: Date.now() - startTime,
+});
+
+logger.error("document_process_failed", {
+  correlation_id: correlationId,
+  error_type: error.name,
+  error_message: error.message,
+});
+```
+
+- Message format: `{operation}_{phase}` (e.g., `order_process_started`, `payment_charge_failed`)
+- Always snake_case for both message and data keys — never camelCase
+- Lifecycle phases: `_started`, `_validating`, `_calling_{service}`, `_completed`, `_failed`
+- Always include: `correlation_id`, `request_id`, `run_id`
+
+---
+
+### IDEMPOTENCY
+
+```typescript
+import { idempotencyKeys } from "@trigger.dev/sdk";
+
+// Trigger-level (prevent duplicate runs)
+await myTask.trigger({ orderId: "123" }, { idempotencyKey: "process-order-123" });
+
+// Inside task — run-scoped (safe for retries)
+const runKey = await idempotencyKeys.create(`charge-${orderId}`);
+
+// Inside task — global (unique across different runs)
+const globalKey = await idempotencyKeys.create(`order-${orderId}`, { scope: "global" });
+
+// For long-term dedup (beyond 30-day TTL), use database-level checks
+```
+
+Key patterns: `order-${orderId}`, `stripe-event-${event.id}`, `daily-report-${date}`
+
+---
+
+### RETRIES & ERROR HANDLING
+
+```typescript
+import { AbortTaskRunError } from "@trigger.dev/sdk";
+
+export const apiTask = task({
+  id: "api-task",
+  retry: {
+    maxAttempts: 5,
+    factor: 2,
+    minTimeoutInMs: 2000,
+    maxTimeoutInMs: 30000,
+    randomize: true,
+  },
+  run: async (payload, { ctx }) => {
+    try {
+      return await apiCall(payload);
+    } catch (error) {
+      // Don't retry validation/auth errors
+      if (error.status === 400 || error.status === 401 || error.status === 403) {
+        throw new AbortTaskRunError(`Unrecoverable: ${error.status}`);
+      }
+      throw error;  // Retry on transient errors
+    }
+  },
+});
+```
+
+| Use Case | Config |
+|----------|--------|
+| Network/transient | factor: 2, min: 1s, max: 30s, attempts: 5 |
+| Rate limits | factor: 3, min: 5s, max: 120s, attempts: 3 |
+| Database | factor: 1.5, min: 500ms, max: 5s, attempts: 3 |
+| No retry | maxAttempts: 1 |
+
+---
+
+### CONCURRENCY
+
+```typescript
+import { queue } from "@trigger.dev/sdk";
+
+// Per-task limit
+export const limitedTask = task({
+  id: "limited-task",
+  queue: { concurrencyLimit: 10 },
+  run: async (payload) => { /* ... */ },
+});
+
+// Shared queue (multiple tasks share concurrency pool)
+const apiQueue = queue({ name: "api-queue", concurrencyLimit: 10 });
+
+export const taskA = task({ id: "task-a", queue: apiQueue, run: async () => {} });
+export const taskB = task({ id: "task-b", queue: apiQueue, run: async () => {} });
+```
+
+Limits: External API 5-20, Database 10-50, File processing 5-10, Singleton 1.
+
+---
+
+### HOOKS & MIDDLEWARE
+
+```typescript
+export const taskWithHooks = task({
+  id: "task-with-hooks",
+  onSuccess: async ({ output, ctx }) => { await notifySuccess(ctx.run.id, output); },
+  onFailure: async ({ error, ctx }) => { await notifyFailure(ctx.run.id, error); },  // after ALL retries
+  onWait: async () => { await db.disconnect(); },
+  onResume: async () => { await db.connect(); },
+  run: async (payload) => { /* ... */ },
+});
+
+// Global middleware (src/trigger/init.ts)
+import { locals, tasks } from "@trigger.dev/sdk";
+
+const DbLocal = locals.create<Database>("db");
+export function getDb() { return locals.getOrThrow(DbLocal); }
+
+tasks.middleware("db", async ({ next }) => {
+  const db = await Database.connect();
+  locals.set(DbLocal, db);
+  await next();
+  await db.disconnect();
+});
+```
+
+---
+
+### METADATA & STREAMING
+
+```typescript
+// Progress updates (metadata limit: 256KB)
+metadata.set({ status: "processing", progress: 0 });
+metadata.set({ progress: Math.round(((i + 1) / total) * 100) });
+
+// AI streaming
+import { streamText } from "ai";
+const result = streamText({ model: openai("gpt-4o"), prompt });
+const fullStream = await metadata.stream("llm", result.fullStream);
+```
+
+For large data, store externally and put the URL in metadata.
+
+---
+
+### CONFIGURATION (trigger.config.ts)
+
+```typescript
+import { defineConfig } from "@trigger.dev/sdk";
+
+export default defineConfig({
+  project: "<project-ref>",
+  dirs: ["./src/trigger"],
+  runtime: "node",  // "node" | "node-22" | "bun"
+  logLevel: "info",
+  maxDuration: 300,  // seconds
+  retries: {
+    enabledInDev: true,
+    default: { maxAttempts: 3, factor: 2, minTimeoutInMs: 1000, maxTimeoutInMs: 60000, randomize: true },
+  },
+  build: { external: ["sharp", "sqlite3"], autoDetectExternal: true },
+});
+```
+
+---
+
+### ANTI-PATTERNS
+
+| Anti-Pattern | Solution |
+|---|---|
+| Large payloads (data blobs) | Pass IDs/URLs, not data |
+| Unexported tasks | Export + import in entry point |
+| Non-serializable payloads (Dates, classes) | Use ISO strings, plain objects |
+| Class instances across awaits | Rehydrate after every await (checkpoints) |
+| No idempotency keys | Always use for important operations |
+| Retrying non-transient errors | Use `AbortTaskRunError` for 400/401/403 |
+| Overlapping scheduled tasks | Set `queue: { concurrencyLimit: 1 }` |
+| camelCase log keys | Always snake_case |
+| PII in logs | Log UUIDs, never emails/names |
+| No run_id persistence | Always save `ctx.run.id` back to DB |

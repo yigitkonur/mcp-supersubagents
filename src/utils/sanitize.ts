@@ -36,7 +36,9 @@ export const SpawnTaskSchema = z.object({
 // --- Coder languages ---
 
 export const CODER_LANGUAGES = [
-  'typescript', 'python', 'rust', 'go', 'java', 'ruby', 'swift', 'csharp', 'kotlin', 'general',
+  'typescript', 'python', 'rust', 'go', 'java', 'ruby', 'swift', 'csharp', 'kotlin',
+  'react', 'nextjs', 'vue', 'supabase', 'tauri', 'triggerdev', 'supastarter',
+  'general',
 ] as const;
 export type CoderLanguage = typeof CODER_LANGUAGES[number];
 
@@ -46,6 +48,20 @@ export const PLANNING_TYPES = [
   'feature', 'bugfix', 'migration', 'refactor', 'architecture',
 ] as const;
 export type PlanningType = typeof PLANNING_TYPES[number];
+
+// --- Testing types ---
+
+export const TESTING_TYPES = [
+  'playwright', 'rest', 'graphql', 'suite', 'accessibility', 'performance', 'security', 'general',
+] as const;
+export type TestingType = typeof TESTING_TYPES[number];
+
+// --- Research types ---
+
+export const RESEARCH_TYPES = [
+  'security', 'library', 'performance', 'architecture', 'general',
+] as const;
+export type ResearchType = typeof RESEARCH_TYPES[number];
 
 // --- Per-tool schemas ---
 
@@ -76,6 +92,7 @@ export const SpawnPlannerSchema = z.object({
 export const SpawnTesterSchema = z.object({
   prompt: z.string().min(1).max(100000),
   context_files: z.array(contextFileSchema).min(1).max(20),
+  testing_type: z.enum(TESTING_TYPES).optional(),
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
@@ -87,6 +104,7 @@ export const SpawnTesterSchema = z.object({
 export const SpawnResearcherSchema = z.object({
   prompt: z.string().min(1).max(100000),
   context_files: z.array(contextFileSchema).max(20).optional(),
+  research_type: z.enum(RESEARCH_TYPES).optional(),
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,

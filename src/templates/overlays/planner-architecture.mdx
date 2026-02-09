@@ -1,0 +1,78 @@
+## ARCHITECTURE PLANNING GUIDELINES
+
+You are planning an **architectural change**. This affects system boundaries, component relationships, and data flow. Get it right — architecture mistakes are expensive to fix.
+
+### Discovery Phase — MANDATORY
+- **Map current component boundaries:** What modules/services exist? What are their responsibilities?
+- **Identify integration points:** How do components communicate? (function calls, HTTP, events, shared DB, message queue)
+- **Trace data flow:** Follow data from entry point to storage and back — document the full path
+- **Find coupling:** Where do components know too much about each other's internals?
+- **Identify the pain point:** What specific architectural problem are you solving? (scaling bottleneck, tangled dependencies, deployment coupling, etc.)
+
+### Design Principles
+- **Separation of concerns:** Each component has ONE reason to change
+- **Dependency direction:** Dependencies point inward (domain doesn't depend on infrastructure)
+- **Interface boundaries:** Define explicit contracts between components — not implicit coupling
+- **Minimize shared state:** Shared mutable state is the root of most architecture problems
+- **Design for the failure case:** What happens when a component is slow, down, or returns errors?
+
+### Task Structure — The Architecture Sequence
+
+```
+1. DEFINE INTERFACES / CONTRACTS
+   └─ Create the new interfaces, types, protocols that define component boundaries
+   └─ These are the contracts that consumers and implementors agree on
+   └─ No behavior change yet — just contracts
+
+2. IMPLEMENT CORE DOMAIN LOGIC
+   └─ Build the core business logic behind the new interfaces
+   └─ Pure functions and domain types — no infrastructure concerns
+   └─ Testable in isolation
+
+3. BUILD ADAPTERS
+   └─ Create adapters that connect domain logic to infrastructure (DB, HTTP, file system)
+   └─ Each adapter implements one interface
+   └─ Adapters are independently replaceable
+
+4. WIRE ORCHESTRATION
+   └─ Connect components through the defined interfaces
+   └─ Dependency injection or factory pattern for assembly
+   └─ Configuration and startup sequence
+
+5. INTEGRATION VERIFICATION
+   └─ End-to-end verification that all components work together
+   └─ Performance baseline to compare with previous architecture
+   └─ Migration plan for any data or state that needs to move
+```
+
+### Decision Documentation
+For each significant architectural decision, document using ADR (Architecture Decision Record) format:
+
+```markdown
+## ADR-[N]: [Title]
+
+**Status:** Proposed
+**Context:** [What problem are we facing?]
+**Decision:** [What we decided]
+**Consequences:**
+- [Positive consequence]
+- [Negative consequence / trade-off]
+**Reversibility:** [Easy / Hard / Irreversible] — [explanation]
+```
+
+**Classify decisions:**
+- **Reversible (two-way door):** Decide quickly, adjust later. Example: choosing a serialization format
+- **Irreversible (one-way door):** Think deeply, get input. Example: splitting a monolith, choosing a message broker
+
+### Risk Assessment — CRITICAL
+- **Migration complexity:** Can old and new architecture coexist during transition? (Strangler fig pattern)
+- **Data migration:** Does data need to move between systems/schemas? Plan this separately
+- **Performance regression:** Will the new architecture introduce latency (extra network hops, serialization)?
+- **Operational complexity:** More components = more things to deploy, monitor, debug
+- **Team impact:** Does the team understand the new architecture? Training needed?
+
+### Task Design
+- Each task: **one component or one boundary change**, independently deployable
+- Success criteria include: "Component X communicates with Y only through interface Z"
+- Never combine infrastructure changes with domain logic changes in one task
+- Include rollback strategy for each architectural change

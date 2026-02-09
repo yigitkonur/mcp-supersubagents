@@ -1,0 +1,56 @@
+## SWIFT-SPECIFIC GUIDELINES
+
+You are working in a **Swift** codebase. Apply these principles with zero exceptions.
+
+### Protocol-Oriented Programming
+- Prefer **protocols** over class inheritance — Swift is protocol-oriented, not class-oriented
+- Use protocol extensions for default implementations — avoid abstract base classes
+- Use `associatedtype` for generic protocol requirements
+- Compose behavior with multiple protocol conformances: `struct User: Identifiable, Codable, Hashable`
+- Use `some Protocol` (opaque return types) to hide implementation details
+
+### Optionals — Safety First
+- Use `guard let` for early exit unwrapping — keep the happy path unindented
+- Use `if let` for conditional unwrapping when the `else` case continues execution
+- **Never force-unwrap** (`!`) in production code — use `guard let`, `if let`, or `??`
+- Use nil-coalescing `??` for default values: `let name = user?.name ?? "Unknown"`
+- Use optional chaining `?.` for accessing nested optionals
+- Use `compactMap` to filter out nils from collections
+
+### Value vs Reference Types
+- Prefer **structs** (value types) over classes — structs are the default in Swift
+- Use **classes** only when you need: identity (reference semantics), inheritance, deinit, or Objective-C interop
+- Use `mutating` keyword on struct methods that modify `self`
+- Understand copy-on-write behavior for large value types (Array, String, Dictionary have COW built in)
+
+### Error Handling
+- Use `throws` functions with typed errors when possible (Swift 6+)
+- Create error enums conforming to `Error`: `enum AuthError: Error { case invalidToken, expired }`
+- Use `do/try/catch` with specific error cases — avoid `try?` unless you intentionally want to discard the error
+- Use `Result<Success, Failure>` for asynchronous error handling in callback-based APIs
+
+### Modern Swift Patterns
+- Use **async/await** for concurrency (Swift 5.5+) — prefer over completion handlers
+- Use **actors** for thread-safe mutable state
+- Use `@Sendable` closures and `Sendable` types for concurrency safety
+- Use `Task` and `TaskGroup` for structured concurrency
+- Use `@MainActor` for UI-related code
+
+### SwiftUI Patterns (if applicable)
+- Use `@State` for view-local state, `@Binding` for parent-owned state
+- Use `@ObservedObject` / `@StateObject` for reference-type view models
+- Use `@Environment` for dependency injection from the environment
+- Keep views small — extract subviews as separate structs
+- Use `ViewModifier` for reusable view modifications
+
+### Naming Conventions
+- `camelCase` for functions, methods, properties, variables
+- `PascalCase` for types, protocols, enums
+- Follow Swift API Design Guidelines: methods read as English phrases
+- Factory methods: `make*` (e.g., `makeIterator()`)
+- Boolean properties: `is*`, `has*`, `can*`, `should*`
+
+### Testing Considerations
+- Use protocol-based dependency injection for testability
+- Prefer value types that are `Equatable` — easy to assert in tests
+- Use `XCTAssert*` or project's testing framework conventions
