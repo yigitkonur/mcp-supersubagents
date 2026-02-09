@@ -32,10 +32,13 @@ import { questionRegistry } from './services/question-registry.js';
 import { mcpText } from './utils/format.js';
 import { TaskStatus } from './types.js';
 import type { ToolContext } from './types.js';
+import { createRequire } from 'module';
 
+const require = createRequire(import.meta.url);
+const { version: PKG_VERSION } = require('../package.json');
 
 const server = new Server(
-  { name: 'mcp-supersubagents', version: '1.4.0' },
+  { name: 'mcp-supersubagents', version: PKG_VERSION },
   {
     capabilities: {
       tools: {},
@@ -664,7 +667,7 @@ async function main() {
 
       if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', name: 'mcp-supersubagents', version: '1.4.0' }));
+        res.end(JSON.stringify({ status: 'ok', name: 'mcp-supersubagents', version: PKG_VERSION }));
         return;
       }
 

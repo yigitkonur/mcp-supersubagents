@@ -56,9 +56,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           BUMP="${{ inputs.bump || 'patch' }}"
-          npm version "$BUMP" -m "chore: bump version to %s [skip ci]"
+          npm version "$BUMP" -m "chore: bump to v%s [skip ci]"
           git push && git push --tags
           echo "bumped=true" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild after bump
+        if: steps.bump.outputs.bumped == 'true'
+        run: npm run build
 
       - name: Publish to npm
         if: steps.check.outputs.exists == 'false' || steps.bump.outputs.bumped == 'true'
