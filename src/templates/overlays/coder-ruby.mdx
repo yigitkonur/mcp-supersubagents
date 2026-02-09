@@ -1,0 +1,59 @@
+## RUBY-SPECIFIC GUIDELINES
+
+You are working in a **Ruby** codebase. Apply these principles with zero exceptions.
+
+### Ruby Idioms
+- Write **idiomatic Ruby** — use the language's expressiveness, not Java-in-Ruby
+- Use `attr_reader`, `attr_writer`, `attr_accessor` — don't write manual getters/setters
+- Use **guard clauses** for early returns: `return unless valid?` instead of wrapping in `if`
+- Prefer `unless` for single negative conditions — but never `unless...else` (use `if` instead)
+- Use **string interpolation** `"Hello #{name}"` over concatenation
+- Use `freeze` on string constants: `DEFAULT_NAME = "guest".freeze`
+
+### Blocks, Procs & Lambdas
+- Use `&block` parameter when you need to store or pass the block
+- Use `yield` when you just need to call the block inline
+- Prefer **lambdas** over procs — lambdas check arity and use `return` predictably
+- Use `Proc.new` / `proc {}` only when you need proc-specific behavior
+- Use `.map`, `.select`, `.reject`, `.reduce` — avoid manual iteration with `each` + accumulator
+
+### Gem Conventions
+- Follow the project's Gemfile conventions — respect existing gem choices
+- Use `bundler` — never install gems globally for project dependencies
+- Pin gem versions in production: `gem 'rails', '~> 7.1'`
+- Prefer well-maintained gems with active communities — check GitHub activity
+
+### Duck Typing & Protocols
+- Ruby uses **duck typing** — respond to methods, don't check types
+- Use `respond_to?(:method)` instead of `is_a?(ClassName)` when possible
+- Define clear method interfaces — document expected duck type in comments
+- Use modules for shared behavior: `include Enumerable` with `each` defined
+
+### Error Handling
+- Rescue specific exceptions, not bare `rescue` (catches `StandardError`)
+- Create custom exception classes inheriting from `StandardError`
+- Use `begin/rescue/ensure` blocks — `ensure` for cleanup
+- Use `raise` with message: `raise ArgumentError, "name cannot be blank"`
+- Never rescue `Exception` — it catches `SystemExit`, `SignalException`, etc.
+
+### Code Structure
+- Follow existing project conventions (Rails, Sinatra, plain Ruby)
+- Use modules for namespacing: `module MyApp::Services`
+- Keep methods short — if >15 lines, consider extracting
+- Use `frozen_string_literal: true` magic comment at top of files
+- Follow project's Ruby version and style guide (rubocop config)
+
+### Naming Conventions
+- `snake_case` for methods, variables, file names
+- `PascalCase` for classes and modules
+- `UPPER_SNAKE_CASE` for constants
+- Predicate methods end with `?`: `valid?`, `empty?`, `admin?`
+- Dangerous methods end with `!`: `save!`, `destroy!`, `sort!`
+- Setter methods end with `=`: `name=`
+
+### RSpec Patterns (if project uses RSpec)
+- Use `describe`/`context`/`it` hierarchy for clear test structure
+- Use `let` (lazy) and `let!` (eager) for test data — not instance variables
+- Use `subject` for the object under test
+- Use `shared_examples` for reusable test patterns
+- Prefer `expect(x).to eq(y)` over `assert_equal y, x`

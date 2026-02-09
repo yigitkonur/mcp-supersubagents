@@ -1,0 +1,268 @@
+## SUPABASE-SPECIFIC GUIDELINES
+
+You are working in a codebase that uses **Supabase**. Apply these principles with zero exceptions.
+
+### Client Initialization — Choose the Right Client
+
+- **Browser / Client Components:** Use `createBrowserClient` from `@supabase/ssr` — NOT `createClient` from `@supabase/supabase-js`
+- **Server Components / Server Actions / Route Handlers:** Use `createServerClient` from `@supabase/ssr` with cookie methods (`getAll`, `setAll`)
+- **Edge Functions / server-only scripts:** Use `createClient` from `@supabase/supabase-js` — this is the ONLY place it belongs in an SSR app
+- **Service role client:** Create with `createServerClient` using the service role key and empty cookie methods (`getAll: () => []`). NEVER use in client code
+- **NEVER create a singleton server client** — server clients are request-scoped (cookies are per-request). Use a factory function like `createServerSupabaseClient()` called per-request
+- **ALWAYS pass `<Database>` generic** to every client: `createClient<Database>(url, key)`
+- Project structure: `lib/supabase/client.ts` (browser), `lib/supabase/server.ts` (server), `lib/supabase/middleware.ts` (session refresh)
+
+### Middleware — NON-NEGOTIABLE for SSR Auth
+
+- **ALWAYS implement middleware** that calls `updateSession()` on every request — without it, sessions silently expire, causing random logouts
+- Use `matcher` config to exclude static assets: `matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)']`
+- The middleware refreshes the JWT and sets updated cookies — if you skip this, auth WILL break
+- Wrap `setAll` in try/catch in Server Components (cookies are read-only there)
+
+### TypeScript Types — Generate and Use Them
+
+- **ALWAYS generate types:** `npx supabase gen types typescript --project-id "$PROJECT_ID" > src/database.types.ts`
+- For local dev: `npx supabase gen types typescript --local > src/database.types.ts`
+- Add a `package.json` script: `"gen:types": "supabase gen types typescript --project-id $PROJECT_ID > src/database.types.ts"`
+- **Extract row types properly:** `type User = Database['public']['Tables']['users']['Row']`
+- **Insert types:** `type NewUser = Database['public']['Tables']['users']['Insert']`
+- **Update types:** `type UserUpdate = Database['public']['Tables']['users']['Update']`
+- Regenerate types after EVERY schema change — never hand-edit `database.types.ts`
+- If a view column appears incorrectly as nullable, use `MergeDeep` from `type-fest` to override
+- Known issue: field ordering in generated types can be inconsistent across runs — do NOT rely on git diff of types for CI gates
+
+### Row Level Security (RLS) — ALWAYS ENABLE
+
+- **Enable RLS on EVERY table** in the `public` schema — no exceptions. Tables without RLS are fully exposed via the API
+- RLS with no policies = zero access (not even authenticated users). Always create policies after enabling
+- **Wrap auth functions in `(select ...)`** for performance: use `(select auth.uid()) = user_id` NOT `auth.uid() = user_id` — this caches the result per-statement instead of evaluating per-row (100x+ improvement on large tables)
+- **Target specific roles:** Add `TO authenticated` on policies — don't rely on `auth.uid()` alone to exclude `anon`
+- **Separate policies per operation:** Create distinct SELECT, INSERT, UPDATE, DELETE policies — never one catch-all
+- **NEVER use `user_metadata` in RLS policies** — users can modify their own `user_metadata` via the API
+- **Add indexes on RLS-referenced columns** — e.g., if policy checks `user_id`, add `CREATE INDEX idx_table_user_id ON table(user_id)`
+- For team/tenant access patterns: `team_id IN (SELECT team_id FROM team_members WHERE user_id = (select auth.uid()))` — always put the user filter in the subquery, not the outer query
+- **Use security definer functions** for complex RLS logic — but put them in a non-public schema to prevent API exposure
+- Views bypass RLS by default. For Postgres 15+, use `CREATE VIEW ... WITH (security_invoker = true)`
+
+### Database Queries — Correct Patterns
+
+```typescript
+// CORRECT: Select with typed response
+const { data, error } = await supabase
+  .from('posts')
+  .select('id, title, author:profiles(name, avatar_url)')
+  .eq('published', true)
+  .order('created_at', { ascending: false })
+  .limit(20)
+
+// CORRECT: Insert with returning data
+const { data, error } = await supabase
+  .from('posts')
+  .insert({ title, body, user_id: userId })
+  .select()
+  .single()
+
+// CORRECT: Update with filter
+const { data, error } = await supabase
+  .from('posts')
+  .update({ title: newTitle })
+  .eq('id', postId)
+  .select()
+  .single()
+
+// CORRECT: Null check — use .is(), NOT .eq()
+const { data } = await supabase
+  .from('posts')
+  .select()
+  .is('deleted_at', null)
+```
+
+- **ALWAYS handle `error`** — never destructure only `data`. Check `if (error) throw error` or handle gracefully
+- **Select only needed columns** — `.select('id, name')` not `.select('*')` — reduces payload and improves performance
+- Use `.single()` when expecting exactly one row, `.maybeSingle()` when zero or one
+- For joins: `.select('*, comments(*)')` uses PostgREST resource embedding — requires foreign key relationships
+- For `.rpc()` joins to work, Postgres functions MUST use `RETURNS SETOF <table_name>` — NOT `RETURNS TABLE(...)`
+- Use `.or()` for OR conditions: `.or('status.eq.active,status.eq.pending')`
+- Paginate with `.range(from, to)` — never fetch unbounded results
+
+### Auth — Patterns and Anti-Patterns
+
+```typescript
+// CORRECT: Server-side user check (ALWAYS use getUser, not getSession for auth checks)
+const { data: { user }, error } = await supabase.auth.getUser()
+if (!user) redirect('/login')
+
+// CORRECT: Sign up
+const { data, error } = await supabase.auth.signUp({
+  email,
+  password,
+  options: { data: { full_name: name } } // goes to user_metadata
+})
+
+// CORRECT: Sign in with password
+const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+
+// CORRECT: Magic link / OTP
+const { error } = await supabase.auth.signInWithOtp({
+  email,
+  options: { shouldCreateUser: false } // prevent auto-signup
+})
+
+// CORRECT: OAuth
+const { data, error } = await supabase.auth.signInWithOAuth({
+  provider: 'google',
+  options: { redirectTo: `${origin}/auth/callback` }
+})
+
+// CORRECT: Auth callback route handler (app/auth/callback/route.ts)
+const { searchParams } = new URL(request.url)
+const code = searchParams.get('code')
+if (code) {
+  const supabase = await createServerSupabaseClient()
+  await supabase.auth.exchangeCodeForSession(code)
+}
+return NextResponse.redirect(new URL('/dashboard', request.url))
+```
+
+- **Use `getUser()` for auth verification, not `getSession()`** — `getSession` reads from cookies without server validation; `getUser` makes a server call to verify the JWT
+- **PKCE flow is the default** in `@supabase/ssr` — don't switch to implicit flow
+- **ALWAYS implement the `/auth/callback` route** for PKCE code exchange
+- Never store tokens manually — `@supabase/ssr` handles cookie storage automatically
+- For magic links: edit the email template to use `{{ .TokenHash }}` with `type=magiclink` params for PKCE compatibility
+- Session data from the server can be passed to client via React Context (`AuthProvider`) to avoid redundant `getUser()` calls
+
+### Storage — Buckets and Uploads
+
+- **Default to private buckets** — public buckets bypass download access control entirely
+- Private bucket access requires either: a valid JWT in the Authorization header, or a signed URL
+- **RLS policies on `storage.objects`** control all storage operations — no policies = no uploads allowed
+- **Use signed upload URLs** for client-side uploads to avoid body size limits (Next.js defaults to 1MB):
+
+```typescript
+// Server Action: create signed upload URL
+const { data, error } = await supabase.storage
+  .from('avatars')
+  .createSignedUploadUrl(`${userId}/${fileName}`)
+
+// Client: upload to signed URL
+const { error } = await supabase.storage
+  .from('avatars')
+  .uploadToSignedUrl(data.path, data.token, file)
+```
+
+- **Scope file paths to user IDs:** `{user_id}/filename.ext` — then write RLS policies that match `(storage.foldername(name))[1] = (select auth.uid())::text`
+- Signed download URLs have a configurable expiry — keep it as short as practical
+- For public assets (logos, static images): use a public bucket but understand anyone with the URL can access the file
+- **Upsert requires SELECT + UPDATE + INSERT policies** — not just INSERT
+
+### Edge Functions — Deno Runtime
+
+```typescript
+// CORRECT: Modern Edge Function pattern
+Deno.serve(async (req: Request) => {
+  // CORS handling
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+      },
+    })
+  }
+
+  // Create Supabase client with user's JWT
+  const supabase = createClient<Database>(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_ANON_KEY')!,
+    { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+  )
+
+  const { data: { user } } = await supabase.auth.getUser()
+  // ... function logic
+
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' },
+  })
+})
+```
+
+- **Use `Deno.serve()`** — do NOT import `serve` from `deno.land/std`
+- **Import specifiers:** Use `npm:@supabase/supabase-js` — NOT bare `@supabase/supabase-js`. Always pin versions: `npm:express@4.18.2`
+- **Pre-populated env vars:** `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL` are available automatically — do NOT set them manually
+- **Shared code** goes in `supabase/functions/_shared/` — import via relative path. Never cross-import between functions
+- **Fat functions pattern:** Group related routes into one function using Hono or Express — minimizes cold starts
+- Use `EdgeRuntime.waitUntil(promise)` for background tasks that shouldn't block the response
+- File writes only allowed in `/tmp`
+- Design for idempotency — Edge Functions can be retried
+
+### Realtime — Use Wisely
+
+```typescript
+// Postgres Changes (simple, but doesn't scale well)
+const channel = supabase
+  .channel('posts-changes')
+  .on('postgres_changes',
+    { event: 'INSERT', schema: 'public', table: 'posts', filter: 'room_id=eq.123' },
+    (payload) => handleNewPost(payload.new)
+  )
+  .subscribe()
+
+// Broadcast (preferred for most real-time use cases)
+const channel = supabase.channel('room-123')
+channel.on('broadcast', { event: 'cursor-move' }, ({ payload }) => {
+  updateCursor(payload)
+})
+channel.subscribe()
+channel.send({ type: 'broadcast', event: 'cursor-move', payload: { x, y } })
+
+// Presence
+const channel = supabase.channel('room-123')
+channel.on('presence', { event: 'sync' }, () => {
+  const state = channel.presenceState()
+  updateOnlineUsers(state)
+})
+channel.subscribe(async (status) => {
+  if (status === 'SUBSCRIBED') {
+    await channel.track({ user_id: userId, online_at: new Date().toISOString() })
+  }
+})
+```
+
+- **Prefer Broadcast over Postgres Changes** for scale — Postgres Changes checks RLS for every subscriber on every change (100 subscribers = 100 reads per change)
+- **Unsubscribe on cleanup:** `supabase.removeChannel(channel)` in `useEffect` cleanup / `onUnmounted`
+- Postgres Changes are processed on a single thread — they do NOT scale with compute upgrades
+- Realtime does NOT guarantee delivery — design your app to handle missed messages
+- Default limits: 100 channels per tenant, 200 concurrent users per channel, 100 events/second
+- For high-throughput: use a dedicated "broadcast" table without RLS and filter on the client
+
+### API Keys — Critical Security Rules
+
+- **Anon key / publishable key** (`NEXT_PUBLIC_SUPABASE_ANON_KEY`): Safe for client-side. RLS protects your data. This key is meant to be public
+- **Service role key / secret key**: Bypasses ALL RLS. **NEVER expose in client code, NEVER prefix with `NEXT_PUBLIC_`**
+- The service role key goes in server-only environment variables
+- When creating a client with the service role key, the `Authorization` header defaults to that key — so ALL queries bypass RLS automatically
+- **Key rotation:** Supabase is migrating from JWT-based anon/service_role keys to publishable (`sb_publishable_...`) and secret keys. Be aware that Edge Functions may need `--no-verify-jwt` with the new key format
+- In Edge Functions: verify the user via `supabase.auth.getUser()` — do NOT trust the JWT blindly
+
+### Connection Management
+
+- **Use Supavisor (connection pooler)** for server-side connections from ORMs (Prisma, Drizzle) — port `6543` for Transaction Mode, port `5432` for Session Mode
+- **Transaction Mode** (port 6543): Shares connections, higher throughput, but NO prepared statements — incompatible with Prisma unless using `@prisma/adapter-pg`
+- **Session Mode** (port 5432): Supports prepared statements, required by Prisma's default adapter
+- If using the Supabase client library (`supabase-js`), you do NOT need Supavisor — it uses the REST API (PostgREST), not direct Postgres connections
+- Keep pooler usage under 40% of max connections if also using REST API, Auth, Realtime, and Storage (they share the connection pool)
+- Add `?pgbouncer=true` to connection strings when using Prisma with Supavisor
+
+### Common Anti-Patterns — NEVER Do These
+
+- **NEVER disable RLS** "to make things work" — fix your policies instead
+- **NEVER use `select('*')` in production** — select only the columns you need
+- **NEVER put business logic in RLS policies** — keep RLS simple (auth checks only), put business logic in application code or Edge Functions
+- **NEVER manage schema through the Dashboard UI in production** — use migrations (`supabase migration new`, SQL files in `supabase/migrations/`)
+- **NEVER call `getSession()` for auth verification** on the server — it reads cookies without validating the JWT. Use `getUser()` instead
+- **NEVER store the service role key in `NEXT_PUBLIC_*` env vars** or any client-accessible location
+- **NEVER use `user_metadata` for authorization decisions** — users can modify their own metadata
+- **NEVER create tables without thinking about RLS first** — add policies immediately after table creation
+- **NEVER use bare `catch` without handling** — Supabase errors contain `code`, `message`, `details`, and `hint` fields. Log them all
+- **NEVER dump everything into the `public` schema** — use custom schemas for internal tables, keeping only API-facing tables in `public`

@@ -1,0 +1,57 @@
+## REFACTORING PLANNING GUIDELINES
+
+You are planning a **refactoring**. The codebase must work correctly at every step — never break it in the middle.
+
+### Assessment Phase — MANDATORY
+- **Identify the code smell or structural problem** — name it precisely (duplication, God class, feature envy, shotgun surgery, etc.)
+- **Map ALL usages** of the code you want to change — use `warpgrep_codebase_search` exhaustively
+- **Quantify blast radius:** How many files, functions, and callers are affected?
+- **Check for existing tests** — if tests cover the code, they're your safety net. If not, characterization tests come first
+- **Understand the current behavior completely** before planning any changes — refactoring changes structure, not behavior
+
+### Strategy — Strangler Fig Pattern
+- **Each task must leave the codebase in a working state** — never a "break it then fix it" sequence
+- **New code alongside old:** Introduce the new pattern/structure first, THEN migrate consumers, THEN remove old code
+- **Tests pass after every task** — if a task breaks tests, the task is too big or the approach is wrong
+- **Incremental over big-bang** — 5 small safe steps beat 1 large risky step
+
+### Task Structure — The Refactoring Sequence
+
+Every refactoring plan MUST follow this sequence:
+
+```
+1. ADD CHARACTERIZATION TESTS (if missing)
+   └─ Write tests that document current behavior
+   └─ These tests MUST pass before AND after every subsequent task
+
+2. INTRODUCE NEW PATTERN ALONGSIDE OLD
+   └─ Create the new abstraction/structure/function
+   └─ Old code still works unchanged
+   └─ Tests still pass
+
+3. MIGRATE CONSUMERS ONE-BY-ONE
+   └─ Each task migrates ONE consumer from old → new
+   └─ Tests pass after each migration
+   └─ Old and new coexist during this phase
+
+4. REMOVE OLD CODE
+   └─ Only after ALL consumers migrated
+   └─ Verify no remaining references
+   └─ Tests still pass
+
+5. VERIFY ALL TESTS PASS
+   └─ Full test suite run
+   └─ Manual verification of key flows if applicable
+```
+
+### Risk Assessment
+- **Behavioral change risk:** Refactoring should NOT change behavior. If it does, that's a feature change disguised as refactoring — split it
+- **Merge conflict risk:** Is anyone else working on these files? Coordinate or plan for conflict resolution
+- **Rollback plan per task:** Each task should be individually revertable with `git revert`
+- **Integration risk:** Does this refactoring affect API contracts, database queries, or external service calls?
+
+### Task Design
+- Each task: **one file or one logical change**, tests pass after
+- Success criteria: "Before: [code structure]. After: [code structure]. Behavior: unchanged"
+- Include the **exact code pattern** being replaced and the new pattern — Builder should not have to figure out the transformation
+- Reference the **specific functions/classes** being refactored with file paths and line ranges

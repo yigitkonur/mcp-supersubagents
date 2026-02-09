@@ -1,0 +1,191 @@
+## GRAPHQL API TESTING GUIDELINES
+
+You are testing a **GraphQL API**. GraphQL has unique testing patterns — errors come in the response body (not HTTP status), a single endpoint handles all operations, and schema introspection enables systematic testing.
+
+---
+
+### TOOLKIT PATTERN
+
+```bash
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"...", "variables":{}}' \
+  -w "\n\nHTTP_CODE: %{http_code}\nTIME: %{time_total}s" \
+  -s -S 2>&1 | tee .agent-workspace/qa/evidence/curl/NN-description.txt
+```
+
+---
+
+### SCHEMA INTROSPECTION
+
+Start every GraphQL test session by discovering the schema:
+
+```bash
+# Full introspection query
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ __schema { queryType { fields { name } } mutationType { fields { name } } } }"}' \
+  -s | jq .
+
+# Check specific type
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ __type(name: \"User\") { fields { name type { name kind } } } }"}' \
+  -s | jq .
+```
+
+This tells you what queries, mutations, and types are available.
+
+---
+
+### QUERY TESTING
+
+```bash
+# Simple query
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ users { id name email } }"}' \
+  -s | jq .
+
+# Query with variables
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query GetUser($id: ID!) { user(id: $id) { id name email } }", "variables":{"id":"123"}}' \
+  -s | jq .
+
+# Nested query (N+1 risk area)
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ users { id posts { id title comments { id body } } } }"}' \
+  -s | jq .
+```
+
+---
+
+### MUTATION TESTING
+
+```bash
+# Create
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { createUser(input: {name: \"Test\", email: \"test@example.com\"}) { id name } }"}' \
+  -s | jq .
+
+# Update
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { updateUser(id: \"ID\", input: {name: \"Updated\"}) { id name } }"}' \
+  -s | jq .
+
+# Delete
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { deleteUser(id: \"ID\") { success } }"}' \
+  -s | jq .
+```
+
+---
+
+### ERROR HANDLING — THE KEY DIFFERENCE
+
+**GraphQL errors are in the response body, NOT HTTP status codes.** A GraphQL request almost always returns HTTP 200 — check the `errors` field.
+
+```bash
+# This returns HTTP 200 even with errors:
+RESPONSE=$(curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ nonexistent { id } }"}' \
+  -s)
+
+# Check for errors in response body
+echo "$RESPONSE" | jq '.errors'
+echo "$RESPONSE" | jq '.errors[0].message'
+echo "$RESPONSE" | jq '.errors[0].extensions.code'
+```
+
+**Verify error format:**
+- `errors` array present
+- Each error has `message` field
+- Extensions with error codes (if the API uses them)
+- No data leakage in error messages
+
+---
+
+### AUTH & AUTHORIZATION TESTING
+
+```bash
+# No auth header — should return error in body (NOT 401)
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ me { id email } }"}' \
+  -s | jq '.errors'
+
+# Invalid token
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer invalid" \
+  -d '{"query":"{ me { id email } }"}' \
+  -s | jq '.errors'
+
+# Field-level authorization — try accessing admin fields as regular user
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -d '{"query":"{ users { id email role passwordHash } }"}' \
+  -s | jq .
+```
+
+---
+
+### INPUT VALIDATION TESTING
+
+```bash
+# Missing required field
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { createUser(input: {}) { id } }"}' \
+  -s | jq '.errors'
+
+# Invalid type
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { createUser(input: {name: 123}) { id } }"}' \
+  -s | jq '.errors'
+
+# Injection attempt — GraphQL should handle this safely
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ user(id: \"1; DROP TABLE users\") { id } }"}' \
+  -s | jq .
+```
+
+---
+
+### SUBSCRIPTION TESTING (if applicable)
+
+For WebSocket-based subscriptions, use `wscat` or `websocat`:
+```bash
+# Connect and subscribe
+wscat -c ws://localhost:3000/graphql -x '{"type":"connection_init","payload":{}}' \
+  -x '{"type":"subscribe","id":"1","payload":{"query":"subscription { messageAdded { id content } }"}}'
+```
+
+---
+
+### PERFORMANCE TESTING
+
+```bash
+# Query complexity — deeply nested queries can cause performance issues
+# Test with increasing depth to find limits
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ users { posts { comments { author { posts { comments { id } } } } } } }"}' \
+  -w "\nTIME: %{time_total}s" -s | jq .
+
+# Batch queries (if supported)
+curl -X POST http://localhost:3000/graphql \
+  -H "Content-Type: application/json" \
+  -d '[{"query":"{ user(id: \"1\") { name } }"}, {"query":"{ user(id: \"2\") { name } }"}]' \
+  -s | jq .
+```

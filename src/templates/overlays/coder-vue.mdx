@@ -1,0 +1,62 @@
+## VUE-SPECIFIC GUIDELINES
+
+You are working in a **Vue** codebase. Apply these principles with zero exceptions.
+
+### Composition API — The Default
+- Use **Composition API** with `<script setup>` — not Options API, unless the project explicitly uses it
+- `<script setup>` is the recommended syntax — all top-level bindings are automatically exposed to the template
+- Keep `<script setup>` organized: imports → props/emits → reactive state → computed → watchers → functions → lifecycle
+
+### Reactivity — ref/reactive
+- Use `ref()` for primitives and values you might reassign: `const count = ref(0)`
+- Use `reactive()` for objects/collections that you mutate: `const form = reactive({ name: '', email: '' })`
+- Access `ref` values with `.value` in script, automatic unwrapping in templates
+- **Never destructure reactive objects** — it breaks reactivity. Use `toRefs()` if needed
+- Use `shallowRef()` / `shallowReactive()` for large objects where deep reactivity is wasteful
+
+### Computed & Watch
+- Use `computed()` for derived state — automatically cached and dependency-tracked
+- Use `watch()` for side effects when reactive data changes — API calls, logging
+- Use `watchEffect()` when you want automatic dependency tracking (no explicit source)
+- Avoid watchers when computed will do — computed is simpler and more performant
+- Use `{ immediate: true }` when the watcher should run on initialization
+
+### Composables — Reusable Logic
+- Extract reusable stateful logic into composables: `useAuth()`, `useFetch()`, `useLocalStorage()`
+- Composable naming: always start with `use`
+- Composables go in `composables/` directory
+- Composables can use all Composition API features: ref, computed, watch, lifecycle hooks
+- Return reactive state and methods from composables — let the consumer decide how to use them
+
+### Pinia — State Management
+- Use **Pinia** for global state — not Vuex (Pinia is the official recommendation)
+- Use `defineStore()` with Setup Store syntax (Composition API style) — matches component patterns
+- Keep stores focused — one store per domain concern
+- Use `storeToRefs()` when destructuring store state in components — preserves reactivity
+- Actions can be async — use them for API calls and complex mutations
+
+### Single-File Component Conventions
+- Order: `<script setup>` → `<template>` → `<style scoped>`
+- Use `scoped` styles by default — prevents CSS leaking
+- Use CSS `v-bind()` for dynamic styles based on reactive data
+- Keep templates readable — extract complex logic into computed properties or composables
+- Use `<component :is="...">` for dynamic components
+
+### Props & Events
+- Define props with `defineProps<{ name: string; count?: number }>()` — TypeScript-typed
+- Define emits with `defineEmits<{ (e: 'update', value: string): void }>()` — typed events
+- Use `v-model` with `defineModel()` (Vue 3.4+) for two-way binding
+- Props are readonly — never mutate props directly. Emit an event to request parent changes
+
+### Naming Conventions
+- `PascalCase` for components in script: `import UserCard from './UserCard.vue'`
+- `PascalCase` or `kebab-case` for components in templates (follow project convention)
+- `camelCase` for composables, functions, variables
+- Props: `camelCase` in script, `kebab-case` in templates: `prop: userName` → `<Comp :user-name="...">`
+- Events: `camelCase` with `defineEmits`: `update:modelValue`, `itemClicked`
+
+### Testing Considerations
+- Write composables as pure functions when possible — testable without component mounting
+- Use `@vue/test-utils` `mount()` / `shallowMount()` for component tests
+- Use Pinia test helpers: `createTestingPinia()` with `initialState`
+- Prefer testing behavior over implementation — test what the user sees, not internal state
