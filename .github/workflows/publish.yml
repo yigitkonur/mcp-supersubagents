@@ -44,12 +44,21 @@ jobs:
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VER=$(node -p "require('./package.json').version")
           echo "name=$PKG_NAME version=$PKG_VER"
-          if npm view "${PKG_NAME}@${PKG_VER}" version --registry https://registry.npmjs.org 2>/dev/null; then
+          set +e
+          VIEW_OUTPUT=$(npm view "${PKG_NAME}@${PKG_VER}" version --registry https://registry.npmjs.org 2>&1)
+          VIEW_STATUS=$?
+          set -e
+
+          if [ "$VIEW_STATUS" -eq 0 ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Version ${PKG_VER} already exists on npm"
-          else
+          elif echo "$VIEW_OUTPUT" | grep -qi "E404\\|404 Not Found\\|not in this registry"; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Version ${PKG_VER} not found on npm"
+          else
+            echo "npm view failed unexpectedly while checking ${PKG_NAME}@${PKG_VER}"
+            echo "$VIEW_OUTPUT"
+            exit "$VIEW_STATUS"
           fi
 
       - name: Bump version
@@ -71,4 +80,6 @@ jobs:
 
       - name: Publish to npm (OIDC provenance)
         if: steps.check.outputs.exists == 'false' || steps.bump.outputs.bumped == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
