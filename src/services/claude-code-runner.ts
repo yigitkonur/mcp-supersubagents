@@ -8,7 +8,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { taskManager } from './task-manager.js';
 import { TaskStatus, ToolMetrics, isTerminalStatus } from '../types.js';
-import type { SDKMessage, SDKAssistantMessage, SDKResultSuccess, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKAssistantMessage, SDKResultSuccess, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 
 /**
  * Run a task using Claude Agent SDK.
@@ -79,6 +79,7 @@ export async function runClaudeCodeSession(
     let turnCount = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let resultError: string | undefined;
     const toolMetrics: Record<string, ToolMetrics> = {};
 
     // Stream messages
@@ -148,11 +149,13 @@ export async function runClaudeCodeSession(
             taskManager.appendOutput(taskId, `\n[Result]\n${resultMsg.result}\n`);
           }
 
-          // Surface errors from result
+          // Track SDK-level errors so the task is marked FAILED after the loop
           if (resultMsg.subtype !== 'success') {
             const errorResult = resultMsg as SDKResultError;
+            resultError = errorResult.subtype;
             taskManager.appendOutput(taskId, `\n[Result Error: ${errorResult.subtype}]\n`);
             if (errorResult.errors?.length) {
+              resultError += `: ${errorResult.errors.join('; ')}`;
               taskManager.appendOutput(taskId, `[Errors: ${errorResult.errors.join('; ')}]\n`);
             }
           }
@@ -167,8 +170,8 @@ export async function runClaudeCodeSession(
           // Extract usage — fields are at top level on SDKResultMessage
           if (resultMsg.usage) {
             const usage = resultMsg.usage;
-            if ('input_tokens' in usage) totalInputTokens += usage.input_tokens;
-            if ('output_tokens' in usage) totalOutputTokens += usage.output_tokens;
+            if (typeof usage.input_tokens === 'number') totalInputTokens += usage.input_tokens;
+            if (typeof usage.output_tokens === 'number') totalOutputTokens += usage.output_tokens;
           }
           break;
         }
@@ -194,39 +197,59 @@ export async function runClaudeCodeSession(
 
     clearTimeout(timeoutHandle);
 
-    // Session completed successfully
-    console.error(`[claude-code-runner] Task ${taskId} completed successfully`);
     console.error(`[claude-code-runner] Turns: ${turnCount}, Tokens: ${totalInputTokens}/${totalOutputTokens}`);
 
-    // Guard: check if task is already terminal before marking completed
+    // Guard: check if task is already terminal before updating status
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
       console.error(`[claude-code-runner] Task ${taskId} already terminal, skipping completion`);
       return;
     }
 
-    taskManager.updateTask(taskId, {
-      status: TaskStatus.COMPLETED,
-      endTime: new Date().toISOString(),
-      exitCode: 0,
-      sessionMetrics: {
-        quotas: {},
-        toolMetrics,
-        activeSubagents: [],
-        completedSubagents: [],
-        turnCount,
-        totalTokens: {
-          input: totalInputTokens,
-          output: totalOutputTokens,
-        },
-        provider: 'claude-cli',
-        fallbackActivated: true,
-        fallbackReason: 'copilot-accounts-exhausted',
+    const sessionMetrics = {
+      quotas: {},
+      toolMetrics,
+      activeSubagents: [],
+      completedSubagents: [],
+      turnCount,
+      totalTokens: {
+        input: totalInputTokens,
+        output: totalOutputTokens,
       },
-      // Store session ID for potential resume
-      sessionId,
-      session: undefined,
-    });
+      provider: 'claude-cli' as const,
+      fallbackActivated: true,
+      fallbackReason: 'copilot-accounts-exhausted' as const,
+    };
+
+    // If the SDK result was an error, mark FAILED — not COMPLETED
+    if (resultError) {
+      console.error(`[claude-code-runner] Task ${taskId} failed with SDK result error: ${resultError}`);
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.FAILED,
+        endTime: new Date().toISOString(),
+        exitCode: 1,
+        error: `SDK result error: ${resultError}`,
+        failureContext: {
+          errorType: 'sdk_result_error',
+          message: resultError,
+          recoverable: false,
+        },
+        sessionMetrics,
+        sessionId,
+        session: undefined,
+      });
+    } else {
+      console.error(`[claude-code-runner] Task ${taskId} completed successfully`);
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.COMPLETED,
+        endTime: new Date().toISOString(),
+        exitCode: 0,
+        sessionMetrics,
+        // Store session ID for potential resume
+        sessionId,
+        session: undefined,
+      });
+    }
   } catch (error: any) {
     clearTimeout(timeoutHandle);
 
