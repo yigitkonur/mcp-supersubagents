@@ -104,8 +104,7 @@ function exitOnBrokenPipe(source: string, value: unknown): void {
     forceExitTimer.unref();
 
     shutdownHandler(`broken_pipe:${source}`, 0)
-      .catch(() => process.exit(0))
-      .finally(() => clearTimeout(forceExitTimer));
+      .catch(() => process.exit(0));
     return;
   }
 
@@ -685,8 +684,6 @@ questionRegistry.onQuestionAsked((taskId, question) => {
 // --- Start server ---
 
 async function main() {
-  installStdIoSafetyGuards();
-
   // Initialize account manager early to read PAT tokens from env
   accountManager.initialize();
   
@@ -715,6 +712,9 @@ async function main() {
   // ============================================================================
 
   const transportMode = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
+  if (transportMode === 'stdio') {
+    installStdIoSafetyGuards();
+  }
 
   // Graceful shutdown with SDK cleanup (guard against double-shutdown)
   let isShuttingDown = false;
