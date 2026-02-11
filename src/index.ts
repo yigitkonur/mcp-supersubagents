@@ -55,6 +55,67 @@ const server = new Server(
   }
 );
 
+const BROKEN_PIPE_ERROR_CODES = new Set([
+  'EPIPE',
+  'ERR_STREAM_DESTROYED',
+  'ERR_STREAM_WRITE_AFTER_END',
+]);
+
+function extractErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const maybeCode = (value as { code?: unknown }).code;
+  return typeof maybeCode === 'string' ? maybeCode : undefined;
+}
+
+function extractErrorMessage(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  return typeof value === 'string' ? value : String(value);
+}
+
+function isBrokenPipeLikeError(value: unknown): boolean {
+  const normalizedCode = extractErrorCode(value)?.toUpperCase();
+  if (normalizedCode && BROKEN_PIPE_ERROR_CODES.has(normalizedCode)) return true;
+
+  const message = extractErrorMessage(value).toLowerCase();
+  return (
+    message.includes('epipe') ||
+    message.includes('broken pipe') ||
+    message.includes('stream destroyed') ||
+    message.includes('write after end')
+  );
+}
+
+let streamExitInProgress = false;
+let shutdownHandler: ((signal?: string, exitCode?: number) => Promise<void>) | null = null;
+
+function exitOnBrokenPipe(source: string, value: unknown): void {
+  if (streamExitInProgress || !isBrokenPipeLikeError(value)) return;
+  streamExitInProgress = true;
+
+  try {
+    console.error(`[index] ${source}: detected broken stdio pipe, exiting`);
+  } catch {
+    // Ignore write failures while exiting due to broken pipe.
+  }
+
+  if (shutdownHandler) {
+    // Ensure we never hang indefinitely during cleanup on a broken transport.
+    const forceExitTimer = setTimeout(() => process.exit(0), 5000);
+    forceExitTimer.unref();
+
+    shutdownHandler(`broken_pipe:${source}`, 0)
+      .catch(() => process.exit(0));
+    return;
+  }
+
+  process.exit(0);
+}
+
+function installStdIoSafetyGuards(): void {
+  process.stdout.on('error', (err) => exitOnBrokenPipe('stdout', err));
+  process.stderr.on('error', (err) => exitOnBrokenPipe('stderr', err));
+}
+
 // Register retry callback for rate-limited tasks (using SDK spawner)
 taskManager.onRetry(async (task) => {
   const { spawnCopilotTask } = await import('./services/sdk-spawner.js');
@@ -616,7 +677,7 @@ questionRegistry.onQuestionAsked((taskId, question) => {
   // Send resource update for subscribed clients
   const uri = taskIdToUri(taskId);
   if (subscriptionRegistry.isSubscribed(uri)) {
-    server.sendResourceUpdated({ uri });
+    server.sendResourceUpdated({ uri }).catch(() => {});
   }
 });
 
@@ -651,6 +712,25 @@ async function main() {
   // ============================================================================
 
   const transportMode = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
+  if (transportMode === 'stdio') {
+    installStdIoSafetyGuards();
+  }
+
+  // Graceful shutdown with SDK cleanup (guard against double-shutdown)
+  let isShuttingDown = false;
+  const shutdown = async (signal?: string, exitCode = 0) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
+    try {
+      await taskManager.shutdown();
+      await shutdownSDK();
+    } catch (err) {
+      console.error('Shutdown error:', err);
+    }
+    process.exit(exitCode);
+  };
+  shutdownHandler = shutdown;
 
   if (transportMode === 'http') {
     const { StreamableHTTPServerTransport } = await import(
@@ -718,22 +798,14 @@ async function main() {
     // STDIO transport (default)
     const transport = new StdioServerTransport();
     await server.connect(transport);
+
+    // If the MCP client disconnects, stdin closes; exit to avoid orphaned hot-loop processes.
+    const onStdioDisconnected = () => {
+      shutdown('stdio_disconnected', 0).catch(() => process.exit(0));
+    };
+    process.stdin.once('end', onStdioDisconnected);
+    process.stdin.once('close', onStdioDisconnected);
   }
-  
-  // Graceful shutdown with SDK cleanup (guard against double-shutdown)
-  let isShuttingDown = false;
-  const shutdown = async (signal?: string, exitCode = 0) => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-    console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
-    try {
-      await taskManager.shutdown();
-      await shutdownSDK();
-    } catch (err) {
-      console.error('Shutdown error:', err);
-    }
-    process.exit(exitCode);
-  };
 
   process.on('SIGINT', () => shutdown('SIGINT', 0));
   process.on('SIGTERM', () => shutdown('SIGTERM', 0));
@@ -742,15 +814,34 @@ async function main() {
   // Task-level error handling already catches most issues; crashing here would
   // disconnect the client and lose all in-flight work.
   process.on('unhandledRejection', (reason) => {
+    if (transportMode === 'stdio' && isBrokenPipeLikeError(reason)) {
+      exitOnBrokenPipe('unhandledRejection', reason);
+      return;
+    }
     console.error('[WARN] Unhandled rejection (non-fatal):', reason);
   });
+
+  let uncaughtExceptionInProgress = false;
   process.on('uncaughtException', (err) => {
+    if (transportMode === 'stdio' && isBrokenPipeLikeError(err)) {
+      exitOnBrokenPipe('uncaughtException', err);
+      return;
+    }
+
+    // Guard against recursive uncaught-exception loops.
+    if (uncaughtExceptionInProgress) {
+      process.exit(1);
+      return;
+    }
+    uncaughtExceptionInProgress = true;
+
     // Only crash on truly unrecoverable errors (e.g., out of memory)
     if (err.message?.includes('out of memory') || err.message?.includes('ENOMEM')) {
       console.error('[FATAL] Uncaught exception (unrecoverable):', err);
       shutdown('uncaughtException', 1).catch(() => process.exit(1));
     } else {
       console.error('[WARN] Uncaught exception (non-fatal):', err);
+      uncaughtExceptionInProgress = false;
     }
   });
 
