@@ -1,42 +1,192 @@
 /**
- * Claude Agent SDK Runner
+ * Claude Code Fallback Runner (ai-sdk-provider-claude-code)
  *
- * Standalone runner that executes tasks using Claude Agent SDK when Copilot accounts are exhausted.
- * Mirrors Copilot SDK session behavior: streams output, tracks metrics, handles errors.
+ * Executes fallback tasks through the ben-vargas provider, which wraps
+ * @anthropic-ai/claude-agent-sdk with richer streaming, metadata, and errors.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claudeCode, isAuthenticationError, isTimeoutError, type PermissionResult } from 'ai-sdk-provider-claude-code';
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3Message,
+  LanguageModelV3StreamPart,
+} from '@ai-sdk/provider';
 import { taskManager } from './task-manager.js';
-import { TaskStatus, ToolMetrics, isTerminalStatus } from '../types.js';
-import type { SDKAssistantMessage, SDKResultSuccess, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
+import { TaskStatus, ToolMetrics, isTerminalStatus, type FallbackReason } from '../types.js';
 
-/**
- * Run a task using Claude Agent SDK.
- * Streams output to task output file and tracks metrics.
- */
+const DEFAULT_TIMEOUT_MS = 1_800_000;
+const DEFAULT_MODEL = 'sonnet';
+const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'bypassPermissions';
+const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
+const activeFallbackControllers = new Map<string, AbortController>();
+
+export interface ClaudeCodeRunOptions {
+  resumeSessionId?: string;
+  fallbackReason?: FallbackReason;
+  preferredModel?: string;
+}
+
+function normalizeClaudeModel(model?: string): string {
+  if (!model) return DEFAULT_MODEL;
+
+  const normalized = model.toLowerCase();
+  if (normalized.includes('opus') || normalized === 'claude-opus-4.6') return 'opus';
+  if (normalized.includes('haiku') || normalized === 'claude-haiku-4.5') return 'haiku';
+  if (normalized.includes('sonnet') || normalized === 'claude-sonnet-4.5') return 'sonnet';
+
+  return model;
+}
+
+function resolveFallbackModel(preferredModel?: string): string {
+  const envOverride = process.env.CLAUDE_FALLBACK_MODEL?.trim();
+  if (envOverride) return normalizeClaudeModel(envOverride);
+  return normalizeClaudeModel(preferredModel);
+}
+
+function parseCsvEnv(name: string): string[] | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  const parsed = value
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function parseBudget(): number | undefined {
+  const raw = process.env.CLAUDE_FALLBACK_MAX_BUDGET_USD;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function extractToolCommand(input: Record<string, unknown>): string {
+  const candidates = ['command', 'cmd', 'input', 'value'];
+  for (const key of candidates) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return '';
+}
+
+async function canUseToolSafePolicy(
+  toolName: string,
+  input: Record<string, unknown>,
+  toolUseID: string
+): Promise<PermissionResult> {
+  if (TOOL_POLICY_MODE !== 'safe') {
+    return { behavior: 'allow', toolUseID };
+  }
+
+  if (toolName === 'Bash') {
+    const cmd = extractToolCommand(input).toLowerCase();
+    const dangerousPatterns = [
+      /\brm\s+-rf\s+\//,
+      /\bmkfs\b/,
+      /\bdd\s+if=/,
+      /\bshutdown\b/,
+      /\breboot\b/,
+      /\bchown\s+-r\s+root\b/,
+    ];
+
+    if (dangerousPatterns.some((re) => re.test(cmd))) {
+      return {
+        behavior: 'deny',
+        message: `Denied by safe policy: dangerous command (${cmd})`,
+        toolUseID,
+      };
+    }
+  }
+
+  return { behavior: 'allow', toolUseID };
+}
+
+function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record<string, unknown> {
+  const allowedTools = parseCsvEnv('CLAUDE_FALLBACK_ALLOWED_TOOLS') ?? ['*'];
+  const disallowedTools = parseCsvEnv('CLAUDE_FALLBACK_DISALLOWED_TOOLS');
+  const maxBudgetUsd = parseBudget();
+
+  const settings: Record<string, unknown> = {
+    cwd,
+    permissionMode: DEFAULT_PERMISSION_MODE,
+    allowedTools: disallowedTools ? undefined : allowedTools,
+    disallowedTools,
+    maxBudgetUsd,
+    streamingInput: 'always',
+    canUseTool: async (
+      toolName: string,
+      input: Record<string, unknown>,
+      ctx: { toolUseID: string }
+    ): Promise<PermissionResult> => {
+      return canUseToolSafePolicy(toolName, input, ctx.toolUseID);
+    },
+    resume: options.resumeSessionId,
+    verbose: process.env.DEBUG_CLAUDE_FALLBACK === 'true',
+  };
+
+  return settings;
+}
+
+function createPrompt(prompt: string): LanguageModelV3Message[] {
+  return [
+    {
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+    },
+  ];
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function parseRunOptions(optionsOrResume?: string | ClaudeCodeRunOptions): ClaudeCodeRunOptions {
+  if (typeof optionsOrResume === 'string') {
+    return { resumeSessionId: optionsOrResume };
+  }
+  return optionsOrResume ?? {};
+}
+
+export function abortClaudeCodeSession(taskId: string, reason: string = 'Task cancelled by user'): boolean {
+  const controller = activeFallbackControllers.get(taskId);
+  if (!controller) {
+    return false;
+  }
+  controller.abort(new Error(reason));
+  return true;
+}
+
 export async function runClaudeCodeSession(
   taskId: string,
   prompt: string,
   cwd: string,
   timeout: number,
-  resumeSessionId?: string
+  optionsOrResume?: string | ClaudeCodeRunOptions
 ): Promise<void> {
+  const options = parseRunOptions(optionsOrResume);
   const task = taskManager.getTask(taskId);
   if (!task) {
     console.error(`[claude-code-runner] Task ${taskId} not found`);
     return;
   }
 
-  console.error(`[claude-code-runner] Starting Claude Agent SDK session for task ${taskId}`);
-  console.error(`[claude-code-runner] CWD: ${cwd}, Timeout: ${timeout}ms, Resume: ${resumeSessionId || 'none'}`);
-
-  // Guard: don't overwrite if task already reached terminal state (e.g., cancelled)
   if (isTerminalStatus(task.status)) {
     console.error(`[claude-code-runner] Task ${taskId} already terminal (${task.status}), skipping`);
     return;
   }
 
-  // Mark as running with claude-cli provider and set fallback metadata
+  if (activeFallbackControllers.has(taskId)) {
+    console.error(`[claude-code-runner] Task ${taskId} already has an active fallback run, skipping duplicate start`);
+    return;
+  }
+
+  const effectiveTimeout = timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS;
+  const fallbackReason = options.fallbackReason ?? 'copilot_accounts_exhausted';
+  const modelId = resolveFallbackModel(options.preferredModel ?? task.model);
+
   taskManager.updateTask(taskId, {
     status: TaskStatus.RUNNING,
     provider: 'claude-cli',
@@ -50,159 +200,164 @@ export async function runClaudeCodeSession(
       totalTokens: { input: 0, output: 0 },
       provider: 'claude-cli',
       fallbackActivated: true,
-      fallbackReason: 'copilot-accounts-exhausted',
+      fallbackReason,
     },
   });
 
   const abortController = new AbortController();
+  activeFallbackControllers.set(taskId, abortController);
   const timeoutHandle = setTimeout(() => {
-    console.warn(`[claude-code-runner] Task ${taskId} timed out after ${timeout}ms`);
-    abortController.abort();
-  }, timeout);
+    abortController.abort(new Error(`Claude fallback timed out after ${effectiveTimeout}ms`));
+  }, effectiveTimeout);
+
+  const toolMetrics: Record<string, ToolMetrics> = {};
+  const toolStartTimes = new Map<string, number>();
+
+  let turnCount = 0;
+  let sessionId: string | undefined = options.resumeSessionId;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let providerCostUsd: number | undefined;
+  let providerDurationMs: number | undefined;
+  let resultError: string | undefined;
+
+  const settings = createModelSettings(cwd, options);
 
   try {
-    // Create query with options
-    const queryStream = query({
-      prompt,
-      options: {
-        cwd,
-        abortController,
-        model: 'sonnet',
-        // Auto-allow tools to avoid permission prompts
-        allowedTools: ['*'],
-        // Resume if we have a session ID
-        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-      },
-    });
+    const model = claudeCode(modelId as any, settings as any) as LanguageModelV3;
 
-    let sessionId: string | undefined;
-    let turnCount = 0;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let resultError: string | undefined;
-    const toolMetrics: Record<string, ToolMetrics> = {};
+    const callOptions: LanguageModelV3CallOptions = {
+      prompt: createPrompt(prompt),
+      abortSignal: abortController.signal,
+      providerOptions: {},
+      responseFormat: { type: 'text' },
+    };
 
-    // Stream messages
-    for await (const message of queryStream) {
-      // Extract session ID from first message
-      if (!sessionId && 'session_id' in message) {
-        sessionId = message.session_id;
-        console.error(`[claude-code-runner] Session ID: ${sessionId}`);
-      }
+    const streamResult = await model.doStream(callOptions);
+    const reader = streamResult.stream.getReader();
 
-      // Handle different message types
-      switch (message.type) {
-        case 'system': {
-          // Log init message to show available tools and model
-          const sysMsg = message as SDKSystemMessage;
-          if (sysMsg.subtype === 'init') {
-            taskManager.appendOutput(taskId, `\n[System] Model: ${sysMsg.model}, Tools: ${sysMsg.tools?.length ?? 0}, Permission: ${sysMsg.permissionMode}\n`);
-            if (sysMsg.mcp_servers?.length) {
-              taskManager.appendOutput(taskId, `[System] MCP Servers: ${sysMsg.mcp_servers.map(s => `${s.name}(${s.status})`).join(', ')}\n`);
-            }
-          }
-          break;
-        }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        case 'assistant': {
-          // SDKAssistantMessage wraps BetaMessage in .message property
-          // Content is at message.message.content, NOT message.content
-          const assistantMsg = message as SDKAssistantMessage;
-          const betaMessage = assistantMsg.message;
-          turnCount++;
+      const part = value as LanguageModelV3StreamPart | ({ type: 'tool-error'; [k: string]: unknown } & Record<string, unknown>);
+
+      switch (part.type) {
+        case 'text-start':
+          turnCount += 1;
           taskManager.appendOutput(taskId, `\n[Assistant Turn ${turnCount}]\n`);
+          break;
 
-          if (betaMessage && Array.isArray(betaMessage.content)) {
-            for (const block of betaMessage.content) {
-              if (block.type === 'text' && 'text' in block) {
-                taskManager.appendOutput(taskId, block.text);
-              } else if (block.type === 'tool_use') {
-                // Track tool usage
-                const toolName = 'name' in block ? String(block.name) : 'unknown';
-                if (!toolMetrics[toolName]) {
-                  toolMetrics[toolName] = {
-                    toolName,
-                    executionCount: 0,
-                    successCount: 0,
-                    failureCount: 0,
-                    totalDurationMs: 0,
-                  };
-                }
-                toolMetrics[toolName].executionCount++;
-                taskManager.appendOutput(taskId, `\n[Tool: ${toolName}]\n`);
-              }
-            }
+        case 'text-delta':
+          taskManager.appendOutput(taskId, part.delta);
+          break;
+
+        case 'reasoning-delta':
+          taskManager.appendOutput(taskId, `[reasoning] ${part.delta}`);
+          break;
+
+        case 'tool-call': {
+          const toolName = part.toolName || 'unknown';
+          if (!toolMetrics[toolName]) {
+            toolMetrics[toolName] = {
+              toolName,
+              executionCount: 0,
+              successCount: 0,
+              failureCount: 0,
+              totalDurationMs: 0,
+            };
+          }
+          toolMetrics[toolName].executionCount += 1;
+          toolStartTimes.set(part.toolCallId, Date.now());
+          taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}`);
+          break;
+        }
+
+        case 'tool-result': {
+          const toolName = part.toolName || 'unknown';
+          const start = toolStartTimes.get(part.toolCallId);
+          const duration = start ? Date.now() - start : 0;
+          toolStartTimes.delete(part.toolCallId);
+
+          const metrics = toolMetrics[toolName] || {
+            toolName,
+            executionCount: 0,
+            successCount: 0,
+            failureCount: 0,
+            totalDurationMs: 0,
+          };
+
+          metrics.totalDurationMs += duration;
+          metrics.lastExecutedAt = nowIso();
+          if (part.isError) {
+            metrics.failureCount += 1;
+            taskManager.appendOutput(taskId, `[tool] Failed: ${toolName}`);
+          } else {
+            metrics.successCount += 1;
+            taskManager.appendOutput(taskId, `[tool] Completed: ${toolName} (${duration}ms)`);
+          }
+          toolMetrics[toolName] = metrics;
+          break;
+        }
+
+        case 'finish': {
+          totalInputTokens = part.usage?.inputTokens?.total ?? totalInputTokens;
+          totalOutputTokens = part.usage?.outputTokens?.total ?? totalOutputTokens;
+
+          const ccMeta = part.providerMetadata?.['claude-code'] as Record<string, unknown> | undefined;
+          if (ccMeta) {
+            const maybeSession = ccMeta['sessionId'];
+            const maybeCost = ccMeta['costUsd'];
+            const maybeDuration = ccMeta['durationMs'];
+            if (typeof maybeSession === 'string') sessionId = maybeSession;
+            if (typeof maybeCost === 'number') providerCostUsd = maybeCost;
+            if (typeof maybeDuration === 'number') providerDurationMs = maybeDuration;
           }
 
-          // Surface errors (rate limit, auth failures, etc.)
-          if (assistantMsg.error) {
-            taskManager.appendOutput(taskId, `\n[Assistant Error: ${assistantMsg.error}]\n`);
+          if (part.finishReason.unified === 'error') {
+            resultError = `Claude stream ended with error (${part.finishReason.raw ?? 'unknown'})`;
           }
           break;
         }
 
-        case 'result': {
-          // SDKResultMessage has .result (string) for success, not .content
-          const resultMsg = message as SDKResultSuccess | SDKResultError;
-
-          if ('result' in resultMsg && typeof resultMsg.result === 'string') {
-            taskManager.appendOutput(taskId, `\n[Result]\n${resultMsg.result}\n`);
-          }
-
-          // Track SDK-level errors so the task is marked FAILED after the loop
-          if (resultMsg.subtype !== 'success') {
-            const errorResult = resultMsg as SDKResultError;
-            resultError = errorResult.subtype;
-            taskManager.appendOutput(taskId, `\n[Result Error: ${errorResult.subtype}]\n`);
-            if (errorResult.errors?.length) {
-              resultError += `: ${errorResult.errors.join('; ')}`;
-              taskManager.appendOutput(taskId, `[Errors: ${errorResult.errors.join('; ')}]\n`);
-            }
-          }
-
-          // Surface permission denials — critical for diagnosing tool access issues
-          if (resultMsg.permission_denials?.length) {
-            const denials = resultMsg.permission_denials.map(d => d.tool_name).join(', ');
-            taskManager.appendOutput(taskId, `\n[Permission Denials: ${denials}]\n`);
-            console.error(`[claude-code-runner] Task ${taskId} had permission denials: ${denials}`);
-          }
-
-          // Extract usage — fields are at top level on SDKResultMessage
-          if (resultMsg.usage) {
-            const usage = resultMsg.usage;
-            if (typeof usage.input_tokens === 'number') totalInputTokens += usage.input_tokens;
-            if (typeof usage.output_tokens === 'number') totalOutputTokens += usage.output_tokens;
-          }
+        case 'error':
+          resultError = String(part.error ?? 'unknown stream error');
           break;
-        }
 
-        case 'tool_progress': {
-          // Tool progress events - log to show tools are executing
-          const toolProgress = message as { tool_name: string; elapsed_time_seconds: number };
-          if (toolProgress.tool_name) {
-            taskManager.appendOutput(taskId, `[Tool Progress: ${toolProgress.tool_name} ${toolProgress.elapsed_time_seconds}s]\n`);
+        case 'stream-start':
+          if (part.warnings.length > 0) {
+            taskManager.appendOutput(taskId, `[system] Claude warnings: ${part.warnings.map((w) => w.type).join(', ')}`);
           }
-          break;
-        }
-
-        case 'stream_event':
-          // Partial streaming event - skip to reduce noise
           break;
 
         default:
-          // Other message types (user, user replay, etc.)
+          if ((part as { type?: string }).type === 'tool-error') {
+            const toolName = String((part as Record<string, unknown>).toolName ?? 'unknown');
+            const toolCallId = String((part as Record<string, unknown>).toolCallId ?? '');
+            const err = String((part as Record<string, unknown>).error ?? 'Tool error');
+            const start = toolCallId ? toolStartTimes.get(toolCallId) : undefined;
+            const duration = start ? Date.now() - start : 0;
+
+            const metrics = toolMetrics[toolName] || {
+              toolName,
+              executionCount: 0,
+              successCount: 0,
+              failureCount: 0,
+              totalDurationMs: 0,
+            };
+            metrics.failureCount += 1;
+            metrics.totalDurationMs += duration;
+            metrics.lastExecutedAt = nowIso();
+            toolMetrics[toolName] = metrics;
+
+            taskManager.appendOutput(taskId, `[tool] Failed: ${toolName} - ${err}`);
+          }
           break;
       }
     }
 
-    clearTimeout(timeoutHandle);
-
-    console.error(`[claude-code-runner] Turns: ${turnCount}, Tokens: ${totalInputTokens}/${totalOutputTokens}`);
-
-    // Guard: check if task is already terminal before updating status
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
-      console.error(`[claude-code-runner] Task ${taskId} already terminal, skipping completion`);
       return;
     }
 
@@ -218,19 +373,25 @@ export async function runClaudeCodeSession(
       },
       provider: 'claude-cli' as const,
       fallbackActivated: true,
-      fallbackReason: 'copilot-accounts-exhausted' as const,
+      fallbackReason,
+      sdkMetrics: {
+        totalPremiumRequests: 0,
+        totalApiDurationMs: providerDurationMs ?? 0,
+      },
     };
 
-    // If the SDK result was an error, mark FAILED — not COMPLETED
+    if (providerCostUsd !== undefined) {
+      taskManager.appendOutput(taskId, `[metrics] Claude fallback cost: $${providerCostUsd.toFixed(4)}`);
+    }
+
     if (resultError) {
-      console.error(`[claude-code-runner] Task ${taskId} failed with SDK result error: ${resultError}`);
       taskManager.updateTask(taskId, {
         status: TaskStatus.FAILED,
-        endTime: new Date().toISOString(),
+        endTime: nowIso(),
         exitCode: 1,
-        error: `SDK result error: ${resultError}`,
+        error: resultError,
         failureContext: {
-          errorType: 'sdk_result_error',
+          errorType: 'claude_provider_error',
           message: resultError,
           recoverable: false,
         },
@@ -238,32 +399,38 @@ export async function runClaudeCodeSession(
         sessionId,
         session: undefined,
       });
-    } else {
-      console.error(`[claude-code-runner] Task ${taskId} completed successfully`);
-      taskManager.updateTask(taskId, {
-        status: TaskStatus.COMPLETED,
-        endTime: new Date().toISOString(),
-        exitCode: 0,
-        sessionMetrics,
-        // Store session ID for potential resume
-        sessionId,
-        session: undefined,
-      });
+      return;
     }
-  } catch (error: any) {
-    clearTimeout(timeoutHandle);
 
-    // Check if aborted due to timeout
+    taskManager.updateTask(taskId, {
+      status: TaskStatus.COMPLETED,
+      endTime: nowIso(),
+      exitCode: 0,
+      sessionMetrics,
+      sessionId,
+      session: undefined,
+    });
+  } catch (error: unknown) {
+    const freshTask = taskManager.getTask(taskId);
+    if (!freshTask || isTerminalStatus(freshTask.status)) {
+      return;
+    }
+
     if (abortController.signal.aborted) {
-      console.error(`[claude-code-runner] Task ${taskId} timed out`);
-
-      // Guard: check terminal status before marking timed out
-      const freshTask = taskManager.getTask(taskId);
-      if (freshTask && !isTerminalStatus(freshTask.status)) {
+      const reason = String(abortController.signal.reason ?? '');
+      if (reason.toLowerCase().includes('cancel')) {
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.CANCELLED,
+          endTime: nowIso(),
+          error: reason || 'Task cancelled',
+          exitCode: 130,
+          session: undefined,
+        });
+      } else {
         taskManager.updateTask(taskId, {
           status: TaskStatus.TIMED_OUT,
-          endTime: new Date().toISOString(),
-          error: 'Task timed out',
+          endTime: nowIso(),
+          error: `Task timed out after ${effectiveTimeout}ms`,
           timeoutReason: 'hard_timeout',
           exitCode: 124,
           session: undefined,
@@ -272,43 +439,30 @@ export async function runClaudeCodeSession(
       return;
     }
 
-    // Handle other errors
-    console.error(`[claude-code-runner] Task ${taskId} failed:`, error);
-
-    let errorMessage = error.message || 'Unknown error';
-    let exitCode = 1;
-
-    // Classify error types
-    if (error.name === 'AbortError') {
-      errorMessage = 'Task was aborted';
-      exitCode = 130;
-    } else if (error.message?.includes('CLI not found')) {
-      errorMessage = 'Claude Code CLI not found. Install via: npm install -g @anthropic-ai/claude-code';
-      exitCode = 127;
-    } else if (error.message?.includes('authentication')) {
-      errorMessage = 'Claude Code authentication failed. Run: claude login';
-      exitCode = 1;
-    }
-
-    // Guard: check terminal status before marking failed
-    const freshTask = taskManager.getTask(taskId);
-    if (!freshTask || isTerminalStatus(freshTask.status)) {
-      console.error(`[claude-code-runner] Task ${taskId} already terminal, skipping failure update`);
-      return;
+    let errorMessage = error instanceof Error ? error.message : String(error);
+    if (isAuthenticationError(error)) {
+      errorMessage = `Claude Code authentication failed: ${errorMessage}`;
+    } else if (isTimeoutError(error)) {
+      errorMessage = `Claude Code timed out: ${errorMessage}`;
     }
 
     taskManager.updateTask(taskId, {
       status: TaskStatus.FAILED,
-      endTime: new Date().toISOString(),
+      endTime: nowIso(),
       error: errorMessage,
-      exitCode,
+      exitCode: 1,
       failureContext: {
-        errorType: error.name || 'unknown',
+        errorType: error instanceof Error ? error.name : 'unknown',
         message: errorMessage,
-        stack: error.stack,
-        recoverable: false, // Don't retry Claude Code failures with Copilot
+        stack: error instanceof Error ? error.stack : undefined,
+        recoverable: false,
       },
       session: undefined,
     });
+  } finally {
+    clearTimeout(timeoutHandle);
+    if (activeFallbackControllers.get(taskId) === abortController) {
+      activeFallbackControllers.delete(taskId);
+    }
   }
 }

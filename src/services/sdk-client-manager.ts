@@ -14,14 +14,17 @@
  * - Forwards questions to QuestionRegistry for MCP client handling
  */
 
-import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse } from '@github/copilot-sdk';
+import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse, type PermissionHandler, type PermissionRequest, type PermissionRequestResult } from '@github/copilot-sdk';
 import { execSync } from 'node:child_process';
 import { accountManager } from './account-manager.js';
 import { questionRegistry } from './question-registry.js';
 import { createSessionHooks } from './session-hooks.js';
 import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
 
-const COPILOT_PATH = process.env.COPILOT_PATH || '/opt/homebrew/bin/copilot';
+const DEFAULT_COPILOT_PATH = 'copilot';
+const COPILOT_PATH = resolveCopilotPath();
+const PERMISSION_MODE = process.env.COPILOT_PERMISSION_MODE || 'allow_all';
+const STRICT_PERMISSION_MODE = PERMISSION_MODE === 'safe';
 
 const PTY_RECYCLE_THRESHOLD = 80;
 const DESTROY_SESSION_TIMEOUT_MS = 10_000;
@@ -30,6 +33,65 @@ const CLIENT_HEALTH_CHECK_TIMEOUT_MS = 5_000;
 const RECYCLE_STOP_TIMEOUT_MS = 10_000;
 const SHUTDOWN_STOP_TIMEOUT_MS = 15_000;
 const STALE_SESSION_CLEANUP_INTERVAL_MS = 60_000;
+
+function resolveCopilotPath(): string {
+  if (process.env.COPILOT_PATH?.trim()) {
+    return process.env.COPILOT_PATH.trim();
+  }
+
+  try {
+    const resolved = execSync('command -v copilot', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1_000,
+    }).trim();
+    if (resolved) {
+      return resolved;
+    }
+  } catch {
+    // Fallback below.
+  }
+
+  // Keep macOS Homebrew path as best-effort fallback when PATH is missing.
+  if (process.platform === 'darwin') {
+    return '/opt/homebrew/bin/copilot';
+  }
+
+  return DEFAULT_COPILOT_PATH;
+}
+
+function extractShellCommand(request: PermissionRequest): string {
+  const candidates = ['command', 'cmd', 'shellCommand', 'input', 'value'];
+  for (const key of candidates) {
+    const value = request[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return '';
+}
+
+function createPermissionHandler(taskId?: string): PermissionHandler {
+  return async (request: PermissionRequest): Promise<PermissionRequestResult> => {
+    if (STRICT_PERMISSION_MODE && request.kind === 'shell') {
+      const cmd = extractShellCommand(request).toLowerCase();
+      const dangerousPatterns = [
+        /\brm\s+-rf\s+\//,
+        /\bmkfs\b/,
+        /\bdd\s+if=/,
+        /\bshutdown\b/,
+        /\breboot\b/,
+        /\bchown\s+-r\s+root\b/,
+      ];
+      if (dangerousPatterns.some((re) => re.test(cmd))) {
+        console.error(`[sdk-client-manager] Denied dangerous shell permission${taskId ? ` for task ${taskId}` : ''}: ${cmd}`);
+        return { kind: 'denied-by-rules' };
+      }
+    }
+
+    return { kind: 'approved' };
+  };
+}
 
 interface ClientEntry {
   client: CopilotClient;
@@ -243,6 +305,9 @@ class SDKClientManager {
       ...config,
     };
 
+    // Always attach explicit permission policy to avoid SDK default-deny.
+    sessionConfig.onPermissionRequest = config.onPermissionRequest ?? createPermissionHandler(taskId);
+
     // Add user input handler and session hooks when taskId is provided
     if (taskId) {
       sessionConfig.onUserInputRequest = createUserInputHandler(taskId);
@@ -280,6 +345,9 @@ class SDKClientManager {
 
     // Build resume config with user input handler and hooks if taskId provided
     const resumeConfig: Partial<SessionConfig> = { ...config };
+
+    // Re-register explicit permission policy on resume as required by SDK.
+    resumeConfig.onPermissionRequest = config?.onPermissionRequest ?? createPermissionHandler(taskId);
 
     if (taskId) {
       resumeConfig.onUserInputRequest = createUserInputHandler(taskId);

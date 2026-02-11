@@ -19,9 +19,9 @@ import { TaskStatus, type SpawnOptions, type TaskState, isTerminalStatus, ROTATA
 import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
-import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
-import { buildHandoffPrompt } from './session-snapshot.js';
-import { runClaudeCodeSession } from './claude-code-runner.js';
+import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
+import { abortClaudeCodeSession } from './claude-code-runner.js';
+import { triggerClaudeFallback } from './fallback-orchestrator.js';
 import { accountManager } from './account-manager.js';
 
 // Track if rotation callback is registered
@@ -105,9 +105,12 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
   if (!currentToken) {
     console.error(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
     setImmediate(() => {
-      const timeout = options.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
-      runClaudeCodeSession(task.id, prompt, cwd, timeout).catch((err) => {
-        console.error(`[sdk-spawner] Claude Code session error:`, err);
+      triggerClaudeFallback(task.id, {
+        reason: 'copilot_startup_no_accounts',
+        promptOverride: prompt,
+        cwd,
+      }).catch((err) => {
+        console.error(`[sdk-spawner] Claude fallback error:`, err);
       });
     });
     return task.id;
@@ -120,12 +123,24 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
       // Only update if not already in terminal state (adapter might have handled it)
       const currentTask = taskManager.getTask(task.id);
       if (currentTask && !isTerminalStatus(currentTask.status)) {
-        taskManager.updateTask(task.id, {
-          status: TaskStatus.FAILED,
-          endTime: new Date().toISOString(),
-          error: err instanceof Error ? err.message : String(err),
-          session: undefined,
-        });
+        if (isFallbackEnabled()) {
+          console.error(`[sdk-spawner] Task ${task.id} unhandled error, falling back to Claude Agent SDK`);
+          triggerClaudeFallback(task.id, {
+            reason: 'copilot_unhandled_error',
+            errorMessage: err instanceof Error ? err.message : String(err),
+            promptOverride: prompt,
+            cwd,
+          }).catch((fallbackErr) => {
+            console.error(`[sdk-spawner] Claude fallback also failed:`, fallbackErr);
+          });
+        } else {
+          taskManager.updateTask(task.id, {
+            status: TaskStatus.FAILED,
+            endTime: new Date().toISOString(),
+            error: err instanceof Error ? err.message : String(err),
+            session: undefined,
+          });
+        }
       }
     });
   });
@@ -165,12 +180,24 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
       console.error(`[sdk-spawner] Task ${task.id} execution error:`, err);
       const currentTask = taskManager.getTask(task.id);
       if (currentTask && !isTerminalStatus(currentTask.status)) {
-        taskManager.updateTask(task.id, {
-          status: TaskStatus.FAILED,
-          endTime: new Date().toISOString(),
-          error: err instanceof Error ? err.message : String(err),
-          session: undefined,
-        });
+        if (isFallbackEnabled()) {
+          console.error(`[sdk-spawner] Task ${task.id} unhandled error, falling back to Claude Agent SDK`);
+          triggerClaudeFallback(task.id, {
+            reason: 'copilot_unhandled_error',
+            errorMessage: err instanceof Error ? err.message : String(err),
+            promptOverride: prompt,
+            cwd,
+          }).catch((fallbackErr) => {
+            console.error(`[sdk-spawner] Claude fallback also failed:`, fallbackErr);
+          });
+        } else {
+          taskManager.updateTask(task.id, {
+            status: TaskStatus.FAILED,
+            endTime: new Date().toISOString(),
+            error: err instanceof Error ? err.message : String(err),
+            session: undefined,
+          });
+        }
       }
     });
   });
@@ -210,6 +237,11 @@ async function runSDKSession(
       model,
       streaming: true,
       workingDirectory: cwd,
+      infiniteSessions: {
+        enabled: true,
+        backgroundCompactionThreshold: 0.8,
+        bufferExhaustionThreshold: 0.95,
+      },
     };
 
     // Add system message for autonomous mode
@@ -331,7 +363,28 @@ async function handleSessionError(
     return;
   }
 
-  // Generic error - mark as failed
+  // Non-rotatable error — check if we should fallback to Claude Agent SDK
+  // CLI crashes, auth errors, and other unrecoverable errors should fallback
+  // rather than just marking FAILED (the user gets nothing otherwise)
+  if (isFallbackEnabled()) {
+    console.error(`[sdk-spawner] Task ${taskId} hit non-rotatable error, falling back to Claude Agent SDK`);
+
+    const session = sdkSessionAdapter.getSession(taskId);
+    const started = await triggerClaudeFallback(taskId, {
+      reason: 'copilot_non_rotatable_error',
+      errorMessage,
+      session,
+      cwd,
+      awaitCompletion: true,
+    });
+    if (started) {
+      sdkSessionAdapter.unbind(taskId);
+      return;
+    }
+    return;
+  }
+
+  // Fallback disabled — mark as failed
   taskManager.updateTask(taskId, {
     status: TaskStatus.FAILED,
     endTime: new Date().toISOString(),
@@ -339,10 +392,8 @@ async function handleSessionError(
     exitCode: 1,
     session: undefined,
   });
-  
-  // Clean up binding
+
   sdkSessionAdapter.unbind(taskId);
-  
   console.error(`[sdk-spawner] Task ${taskId} failed: ${errorMessage}`);
 }
 
@@ -404,22 +455,33 @@ async function handleRateLimit(
       // All accounts exhausted - fallback to Claude Agent SDK
       console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
 
-      // Unbind Copilot session
+      const session = sdkSessionAdapter.getSession(taskId);
+      const started = await triggerClaudeFallback(taskId, {
+        reason: 'copilot_accounts_exhausted',
+        errorMessage: 'All Copilot accounts exhausted',
+        session,
+        cwd,
+        awaitCompletion: true,
+      });
+      if (started) {
+        sdkSessionAdapter.unbind(taskId);
+        return;
+      }
+    }
+  }
+
+  // Copilot rate-limited and rotation path did not yield a runnable session.
+  if (isFallbackEnabled()) {
+    const session = sdkSessionAdapter.getSession(taskId);
+    const started = await triggerClaudeFallback(taskId, {
+      reason: 'copilot_rate_limited',
+      errorMessage,
+      session,
+      cwd,
+      awaitCompletion: true,
+    });
+    if (started) {
       sdkSessionAdapter.unbind(taskId);
-
-      // Mark task as switching provider
-      taskManager.appendOutput(taskId, '\n[system] All Copilot accounts exhausted. Switching to Claude Agent SDK...\n');
-
-      // Build handoff prompt from session snapshot
-      const handoffPrompt = buildHandoffPrompt(currentTask, 5);
-
-      // Calculate remaining timeout
-      const elapsed = Date.now() - new Date(currentTask.startTime).getTime();
-      const taskTimeout = currentTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
-      const timeoutRemaining = Math.max(1000, taskTimeout - elapsed);
-
-      // Continue with Claude Agent SDK
-      await runClaudeCodeSession(taskId, handoffPrompt, cwd, timeoutRemaining);
       return;
     }
   }
@@ -465,6 +527,9 @@ export async function cancelTask(taskId: string): Promise<boolean> {
       console.error(`[sdk-spawner] Failed to abort session for ${taskId}:`, err);
     }
   }
+
+  // Abort active Claude fallback stream if task already switched provider.
+  abortClaudeCodeSession(taskId);
 
   // Clean up binding (this also destroys the session and removes from client tracking)
   sdkSessionAdapter.unbind(taskId);
