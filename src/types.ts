@@ -2,6 +2,12 @@ import type { CopilotSession } from '@github/copilot-sdk';
 import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 
 export type Provider = 'copilot' | 'claude-cli';
+export type FallbackReason =
+  | 'copilot_startup_no_accounts'
+  | 'copilot_accounts_exhausted'
+  | 'copilot_rate_limited'
+  | 'copilot_non_rotatable_error'
+  | 'copilot_unhandled_error';
 
 export enum TaskStatus {
   PENDING = 'pending',
@@ -201,7 +207,7 @@ export interface SessionMetrics {
   /** Whether fallback to Claude Agent SDK was activated */
   fallbackActivated?: boolean;
   /** Reason for fallback */
-  fallbackReason?: string;
+  fallbackReason?: FallbackReason;
 }
 
 // ============================================================================

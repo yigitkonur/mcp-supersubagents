@@ -12,7 +12,7 @@
  * - Monitors tool execution and subagent activity
  */
 
-import type { CopilotSession, SessionEvent, MessageOptions } from '@github/copilot-sdk';
+import type { CopilotSession, SessionEvent } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import {
@@ -28,9 +28,8 @@ import {
   type SubagentInfo,
   type SessionMetrics,
 } from '../types.js';
-import { shouldFallbackToClaudeCode } from './exhaustion-fallback.js';
-import { buildHandoffPrompt } from './session-snapshot.js';
-import { runClaudeCodeSession } from './claude-code-runner.js';
+import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
+import { triggerClaudeFallback } from './fallback-orchestrator.js';
 
 // Extract specific event types from the union for type-safe handling
 type SessionErrorEvent = Extract<SessionEvent, { type: 'session.error' }>;
@@ -72,12 +71,16 @@ interface QuotaSnapshot {
 
 // Type for model metrics from SDK
 interface ModelMetricsData {
-  requests?: number;
-  cost?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
+  requests?: {
+    count?: number;
+    cost?: number;
+  };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
 }
 
 interface SessionBinding {
@@ -132,9 +135,21 @@ class SDKSessionAdapter {
    * Returns true if the account can successfully respond.
    */
   async performHealthCheck(cwd: string): Promise<boolean> {
+    const strictProbe = process.env.COPILOT_STRICT_HEALTH_CHECK === 'true';
+    const authStatus = await sdkClientManager.checkAuthStatus(cwd);
+    if (!authStatus.isAuthenticated) {
+      console.error(`[sdk-session-adapter] Health check failed: account is not authenticated`);
+      return false;
+    }
+
+    if (!strictProbe) {
+      console.error(`[sdk-session-adapter] Health check passed (auth status)`);
+      return true;
+    }
+
     const healthCheckSessionId = `health-check-${Date.now()}`;
     try {
-      console.error(`[sdk-session-adapter] Health check: Testing account with ${HEALTH_CHECK_MODEL}...`);
+      console.error(`[sdk-session-adapter] Health check: strict probe with ${HEALTH_CHECK_MODEL}...`);
       const testSession = await sdkClientManager.createSession(
         cwd,
         healthCheckSessionId,
@@ -472,7 +487,31 @@ class SDKSessionAdapter {
 
     // Handle based on error type
     if (isRateLimit) {
+      if (isFallbackEnabled()) {
+        const started = await triggerClaudeFallback(taskId, {
+          reason: 'copilot_rate_limited',
+          errorMessage: message,
+          session: binding.session,
+        });
+        if (started) {
+          this.unbind(taskId);
+          return;
+        }
+      }
       this.markAsRateLimited(taskId, binding, message, failureContext);
+    } else if (isFallbackEnabled() && !isRotatableError) {
+      // Non-rotatable error (CLI crash, auth error, etc.) — fallback to Claude Agent SDK
+      console.error(`[sdk-session-adapter] Task ${taskId} hit non-rotatable error, falling back to Claude Agent SDK`);
+
+      const started = await triggerClaudeFallback(taskId, {
+        reason: 'copilot_non_rotatable_error',
+        errorMessage: message,
+        session: binding.session,
+      });
+      if (started) {
+        this.unbind(taskId);
+        return;
+      }
     } else {
       this.markAsFailed(taskId, binding, message, statusCode, failureContext);
     }
@@ -535,25 +574,21 @@ class SDKSessionAdapter {
         // All accounts exhausted - fallback to Claude Agent SDK
         taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
 
-        // Unbind current session
-        this.unbind(taskId);
-
         // Get task and calculate remaining timeout
         const task = taskManager.getTask(taskId);
         if (!task) return false;
 
-        const elapsed = Date.now() - new Date(task.startTime).getTime();
-        const timeoutRemaining = task.timeout ? Math.max(1000, task.timeout - elapsed) : 1800000; // Default 30min
-
-        // Build handoff prompt from session snapshot
-        const handoffPrompt = buildHandoffPrompt(task, 5);
-
-        // Continue with Claude Agent SDK (don't await - let it run async)
-        runClaudeCodeSession(taskId, handoffPrompt, taskCwd, timeoutRemaining).catch((err) => {
-          console.error(`[sdk-session-adapter] Claude Code fallback failed:`, err);
+        const started = await triggerClaudeFallback(taskId, {
+          reason: 'copilot_accounts_exhausted',
+          errorMessage: 'All Copilot accounts exhausted',
+          session: binding.session,
+          cwd: taskCwd,
         });
-
-        return true; // Indicate fallback was triggered
+        if (started) {
+          // Unbind current session
+          this.unbind(taskId);
+          return true; // Indicate fallback was triggered
+        }
       }
       return false;
     }
@@ -790,6 +825,17 @@ class SDKSessionAdapter {
         if (!currentTask || isTerminalStatus(currentTask.status)) {
           return;
         }
+        if (isFallbackEnabled()) {
+          const started = await triggerClaudeFallback(taskId, {
+            reason: 'copilot_rate_limited',
+            errorMessage: 'Rate limit detected in response (max rotations exhausted)',
+            session: binding.session,
+          });
+          if (started) {
+            this.unbind(taskId);
+            return;
+          }
+        }
         this.markAsRateLimited(taskId, binding, 'Rate limit detected in response (max rotations exhausted)');
         return;
       }
@@ -812,6 +858,17 @@ class SDKSessionAdapter {
         const currentTask = taskManager.getTask(taskId);
         if (!currentTask || isTerminalStatus(currentTask.status)) {
           return;
+        }
+        if (isFallbackEnabled()) {
+          const started = await triggerClaudeFallback(taskId, {
+            reason: 'copilot_rate_limited',
+            errorMessage: 'Rate limit detected in response (rotation failed)',
+            session: binding.session,
+          });
+          if (started) {
+            this.unbind(taskId);
+            return;
+          }
         }
         this.markAsRateLimited(taskId, binding, 'Rate limit detected in response (rotation failed)');
       }
@@ -1045,15 +1102,15 @@ class SDKSessionAdapter {
     // Process model metrics if available
     if (event.data.modelMetrics) {
       for (const [model, metricsRaw] of Object.entries(event.data.modelMetrics)) {
-        const metrics = metricsRaw as unknown as ModelMetricsData;
+        const metrics = metricsRaw as ModelMetricsData;
         completionMetrics.modelUsage[model] = {
-          requests: metrics.requests || 0,
-          cost: metrics.cost || 0,
+          requests: metrics.requests?.count || 0,
+          cost: metrics.requests?.cost || 0,
           tokens: {
-            input: metrics.inputTokens || 0,
-            output: metrics.outputTokens || 0,
-            cacheRead: metrics.cacheReadTokens || 0,
-            cacheWrite: metrics.cacheWriteTokens || 0,
+            input: metrics.usage?.inputTokens || 0,
+            output: metrics.usage?.outputTokens || 0,
+            cacheRead: metrics.usage?.cacheReadTokens || 0,
+            cacheWrite: metrics.usage?.cacheWriteTokens || 0,
           },
         };
       }

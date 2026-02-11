@@ -6,6 +6,7 @@
  */
 
 import { readFileSync } from 'fs';
+import type { CopilotSession, SessionEvent } from '@github/copilot-sdk';
 import { TaskState } from '../types.js';
 
 const MAX_TURNS = 5; // Max number of turns to include
@@ -28,7 +29,6 @@ function parseOutputFile(filePath: string): MessagePair[] {
 
     // Split by common output markers
     const lines = content.split('\n');
-    let currentUser = '';
     let currentAssistant = '';
     let isAssistant = false;
 
@@ -72,16 +72,78 @@ function truncateMessage(msg: string, maxLength: number): string {
   return msg.slice(0, maxLength - 3) + '...';
 }
 
+function pairsFromSessionEvents(events: SessionEvent[]): MessagePair[] {
+  const pairs: MessagePair[] = [];
+  let pendingUser = '';
+  let pendingAssistant = '';
+
+  const flush = (): void => {
+    if (pendingUser.trim() || pendingAssistant.trim()) {
+      pairs.push({
+        user: pendingUser.trim(),
+        assistant: pendingAssistant.trim(),
+      });
+    }
+    pendingUser = '';
+    pendingAssistant = '';
+  };
+
+  for (const event of events) {
+    if (event.type === 'user.message') {
+      if (pendingAssistant.trim()) {
+        flush();
+      }
+      const content = event.data.content?.trim();
+      if (content) {
+        pendingUser = content;
+      }
+      continue;
+    }
+
+    if (event.type === 'assistant.message') {
+      const content = event.data.content?.trim();
+      if (!content) continue;
+
+      if (pendingAssistant.trim()) {
+        pendingAssistant += '\n\n' + content;
+      } else {
+        pendingAssistant = content;
+      }
+      flush();
+    }
+  }
+
+  flush();
+  return pairs;
+}
+
+function fallbackReasonIntro(reason?: string): string {
+  switch (reason) {
+    case 'copilot_startup_no_accounts':
+      return 'No Copilot account is currently available, so you are taking over before initial execution.';
+    case 'copilot_accounts_exhausted':
+      return 'All Copilot accounts are currently exhausted, so you are taking over.';
+    case 'copilot_rate_limited':
+      return 'The Copilot session is rate-limited and cannot continue within policy, so you are taking over.';
+    case 'copilot_non_rotatable_error':
+      return 'The Copilot session hit a non-rotatable error, so you are taking over.';
+    case 'copilot_unhandled_error':
+      return 'The Copilot path hit an unhandled error, so you are taking over.';
+    default:
+      return 'The previous Copilot path cannot continue, so you are taking over.';
+  }
+}
+
 /**
  * Build handoff prompt from session snapshot.
  * Includes original prompt and bounded recent context.
  */
-export function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS): string {
+export function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS, reason?: string): string {
   const parts: string[] = [];
 
   // Header explaining the handoff
   parts.push('You are continuing a task that started with GitHub Copilot SDK.');
-  parts.push('All Copilot accounts are currently exhausted, so you are taking over.');
+  parts.push(fallbackReasonIntro(reason));
   parts.push('');
 
   // Original prompt
@@ -122,4 +184,58 @@ export function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS
   }
 
   return snapshot;
+}
+
+/**
+ * Build handoff prompt with structured SDK history when available.
+ * Falls back to output-file snapshot if session history is unavailable.
+ */
+export async function buildHandoffPromptFromSession(
+  task: TaskState,
+  session: CopilotSession | undefined,
+  maxTurns: number = MAX_TURNS,
+  reason?: string
+): Promise<string> {
+  if (!session) {
+    return buildHandoffPrompt(task, maxTurns, reason);
+  }
+
+  try {
+    const events = await session.getMessages();
+    const pairs = pairsFromSessionEvents(events);
+    if (pairs.length === 0) {
+      return buildHandoffPrompt(task, maxTurns, reason);
+    }
+
+    const parts: string[] = [];
+    parts.push('You are continuing a task that started with GitHub Copilot SDK.');
+    parts.push(fallbackReasonIntro(reason));
+    parts.push('');
+    parts.push(`Original task prompt:\n${task.prompt}`);
+    parts.push('');
+    parts.push('Recent context from structured Copilot session history:');
+    parts.push('');
+
+    for (const pair of pairs.slice(-maxTurns)) {
+      if (pair.user) {
+        parts.push(`User: ${truncateMessage(pair.user, MAX_MESSAGE_LENGTH)}`);
+        parts.push('');
+      }
+      if (pair.assistant) {
+        parts.push(`Assistant: ${truncateMessage(pair.assistant, MAX_MESSAGE_LENGTH)}`);
+        parts.push('');
+      }
+    }
+
+    parts.push('Please continue working on this task. Pick up where the Copilot session left off.');
+
+    const snapshot = parts.join('\n');
+    if (snapshot.length > MAX_TOTAL_LENGTH) {
+      return snapshot.slice(0, MAX_TOTAL_LENGTH - 100) + '\n\n...[context truncated]\n\nPlease continue working on the original task.';
+    }
+    return snapshot;
+  } catch (error) {
+    console.warn(`[session-snapshot] Failed to load session history: ${error}`);
+    return buildHandoffPrompt(task, maxTurns, reason);
+  }
 }

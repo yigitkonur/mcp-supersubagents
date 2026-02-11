@@ -91,6 +91,7 @@ declare module '@github/copilot-sdk' {
   export interface SessionHooks {
     onPreToolUse?: PreToolUseHandler;
     onPostToolUse?: PostToolUseHandler;
+    onUserPromptSubmitted?: (input: { timestamp: number; cwd: string; prompt: string }, invocation: { sessionId: string }) => Promise<{ modifiedPrompt?: string; additionalContext?: string; suppressOutput?: boolean } | void> | { modifiedPrompt?: string; additionalContext?: string; suppressOutput?: boolean } | void;
     onSessionStart?: SessionStartHandler;
     onSessionEnd?: SessionEndHandler;
     onErrorOccurred?: ErrorOccurredHandler;
