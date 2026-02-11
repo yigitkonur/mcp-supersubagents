@@ -73,12 +73,12 @@ function extractErrorMessage(value: unknown): string {
 }
 
 function isBrokenPipeLikeError(value: unknown): boolean {
-  const code = extractErrorCode(value);
-  if (code && BROKEN_PIPE_ERROR_CODES.has(code)) return true;
+  const normalizedCode = extractErrorCode(value)?.toUpperCase();
+  if (normalizedCode && BROKEN_PIPE_ERROR_CODES.has(normalizedCode)) return true;
 
-  const message = extractErrorMessage(value);
+  const message = extractErrorMessage(value).toLowerCase();
   return (
-    message.includes('EPIPE') ||
+    message.includes('epipe') ||
     message.includes('broken pipe') ||
     message.includes('stream destroyed') ||
     message.includes('write after end')
@@ -86,16 +86,29 @@ function isBrokenPipeLikeError(value: unknown): boolean {
 }
 
 let streamExitInProgress = false;
+let shutdownHandler: ((signal?: string, exitCode?: number) => Promise<void>) | null = null;
 
 function exitOnBrokenPipe(source: string, value: unknown): void {
   if (streamExitInProgress || !isBrokenPipeLikeError(value)) return;
   streamExitInProgress = true;
 
   try {
-    process.stderr.write(`[index] ${source}: detected broken stdio pipe, exiting\n`);
+    console.error(`[index] ${source}: detected broken stdio pipe, exiting`);
   } catch {
     // Ignore write failures while exiting due to broken pipe.
   }
+
+  if (shutdownHandler) {
+    // Ensure we never hang indefinitely during cleanup on a broken transport.
+    const forceExitTimer = setTimeout(() => process.exit(0), 5000);
+    forceExitTimer.unref();
+
+    shutdownHandler(`broken_pipe:${source}`, 0)
+      .catch(() => process.exit(0))
+      .finally(() => clearTimeout(forceExitTimer));
+    return;
+  }
+
   process.exit(0);
 }
 
@@ -717,6 +730,7 @@ async function main() {
     }
     process.exit(exitCode);
   };
+  shutdownHandler = shutdown;
 
   if (transportMode === 'http') {
     const { StreamableHTTPServerTransport } = await import(
@@ -800,7 +814,7 @@ async function main() {
   // Task-level error handling already catches most issues; crashing here would
   // disconnect the client and lose all in-flight work.
   process.on('unhandledRejection', (reason) => {
-    if (isBrokenPipeLikeError(reason)) {
+    if (transportMode === 'stdio' && isBrokenPipeLikeError(reason)) {
       exitOnBrokenPipe('unhandledRejection', reason);
       return;
     }
@@ -809,7 +823,7 @@ async function main() {
 
   let uncaughtExceptionInProgress = false;
   process.on('uncaughtException', (err) => {
-    if (isBrokenPipeLikeError(err)) {
+    if (transportMode === 'stdio' && isBrokenPipeLikeError(err)) {
       exitOnBrokenPipe('uncaughtException', err);
       return;
     }
