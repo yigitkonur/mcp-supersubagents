@@ -78,8 +78,14 @@ jobs:
         if: steps.bump.outputs.bumped == 'true'
         run: npm run build
 
-      - name: Publish to npm (OIDC provenance)
-        if: steps.check.outputs.exists == 'false' || steps.bump.outputs.bumped == 'true'
+      - name: Publish to npm (public repo with provenance)
+        if: (steps.check.outputs.exists == 'false' || steps.bump.outputs.bumped == 'true') && github.event.repository.private == false
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
+
+      - name: Publish to npm (private repo)
+        if: (steps.check.outputs.exists == 'false' || steps.bump.outputs.bumped == 'true') && github.event.repository.private == true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
