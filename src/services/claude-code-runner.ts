@@ -8,7 +8,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { taskManager } from './task-manager.js';
 import { TaskStatus, ToolMetrics, isTerminalStatus } from '../types.js';
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKAssistantMessage, SDKResultSuccess, SDKResultError, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 
 /**
  * Run a task using Claude Agent SDK.
@@ -91,13 +91,28 @@ export async function runClaudeCodeSession(
 
       // Handle different message types
       switch (message.type) {
-        case 'assistant':
-          // Assistant message - append content
+        case 'system': {
+          // Log init message to show available tools and model
+          const sysMsg = message as SDKSystemMessage;
+          if (sysMsg.subtype === 'init') {
+            taskManager.appendOutput(taskId, `\n[System] Model: ${sysMsg.model}, Tools: ${sysMsg.tools?.length ?? 0}, Permission: ${sysMsg.permissionMode}\n`);
+            if (sysMsg.mcp_servers?.length) {
+              taskManager.appendOutput(taskId, `[System] MCP Servers: ${sysMsg.mcp_servers.map(s => `${s.name}(${s.status})`).join(', ')}\n`);
+            }
+          }
+          break;
+        }
+
+        case 'assistant': {
+          // SDKAssistantMessage wraps BetaMessage in .message property
+          // Content is at message.message.content, NOT message.content
+          const assistantMsg = message as SDKAssistantMessage;
+          const betaMessage = assistantMsg.message;
           turnCount++;
           taskManager.appendOutput(taskId, `\n[Assistant Turn ${turnCount}]\n`);
 
-          if ('content' in message && Array.isArray(message.content)) {
-            for (const block of message.content) {
+          if (betaMessage && Array.isArray(betaMessage.content)) {
+            for (const block of betaMessage.content) {
               if (block.type === 'text' && 'text' in block) {
                 taskManager.appendOutput(taskId, block.text);
               } else if (block.type === 'tool_use') {
@@ -117,32 +132,62 @@ export async function runClaudeCodeSession(
               }
             }
           }
-          break;
 
-        case 'result':
-          // Final result message
-          if ('content' in message && Array.isArray(message.content)) {
-            for (const block of message.content) {
-              if (block.type === 'text' && 'text' in block) {
-                taskManager.appendOutput(taskId, `\n${block.text}\n`);
-              }
+          // Surface errors (rate limit, auth failures, etc.)
+          if (assistantMsg.error) {
+            taskManager.appendOutput(taskId, `\n[Assistant Error: ${assistantMsg.error}]\n`);
+          }
+          break;
+        }
+
+        case 'result': {
+          // SDKResultMessage has .result (string) for success, not .content
+          const resultMsg = message as SDKResultSuccess | SDKResultError;
+
+          if ('result' in resultMsg && typeof resultMsg.result === 'string') {
+            taskManager.appendOutput(taskId, `\n[Result]\n${resultMsg.result}\n`);
+          }
+
+          // Surface errors from result
+          if (resultMsg.subtype !== 'success') {
+            const errorResult = resultMsg as SDKResultError;
+            taskManager.appendOutput(taskId, `\n[Result Error: ${errorResult.subtype}]\n`);
+            if (errorResult.errors?.length) {
+              taskManager.appendOutput(taskId, `[Errors: ${errorResult.errors.join('; ')}]\n`);
             }
           }
 
-          // Extract usage if available
-          if ('usage' in message && message.usage) {
-            const usage = message.usage as { input_tokens?: number; output_tokens?: number };
-            if (usage.input_tokens != null) totalInputTokens += usage.input_tokens;
-            if (usage.output_tokens != null) totalOutputTokens += usage.output_tokens;
+          // Surface permission denials — critical for diagnosing tool access issues
+          if (resultMsg.permission_denials?.length) {
+            const denials = resultMsg.permission_denials.map(d => d.tool_name).join(', ');
+            taskManager.appendOutput(taskId, `\n[Permission Denials: ${denials}]\n`);
+            console.error(`[claude-code-runner] Task ${taskId} had permission denials: ${denials}`);
+          }
+
+          // Extract usage — fields are at top level on SDKResultMessage
+          if (resultMsg.usage) {
+            const usage = resultMsg.usage;
+            if ('input_tokens' in usage) totalInputTokens += usage.input_tokens;
+            if ('output_tokens' in usage) totalOutputTokens += usage.output_tokens;
           }
           break;
+        }
+
+        case 'tool_progress': {
+          // Tool progress events - log to show tools are executing
+          const toolProgress = message as { tool_name: string; elapsed_time_seconds: number };
+          if (toolProgress.tool_name) {
+            taskManager.appendOutput(taskId, `[Tool Progress: ${toolProgress.tool_name} ${toolProgress.elapsed_time_seconds}s]\n`);
+          }
+          break;
+        }
 
         case 'stream_event':
-          // Partial streaming event - can extract more detailed info if needed
+          // Partial streaming event - skip to reduce noise
           break;
 
         default:
-          // Other message types (user, system, etc.)
+          // Other message types (user, user replay, etc.)
           break;
       }
     }
