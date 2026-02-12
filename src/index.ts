@@ -57,6 +57,7 @@ const server = new Server(
 
 const BROKEN_PIPE_ERROR_CODES = new Set([
   'EPIPE',
+  'EIO',
   'ERR_STREAM_DESTROYED',
   'ERR_STREAM_WRITE_AFTER_END',
 ]);
@@ -79,6 +80,7 @@ function isBrokenPipeLikeError(value: unknown): boolean {
   const message = extractErrorMessage(value).toLowerCase();
   return (
     message.includes('epipe') ||
+    message.includes('eio') ||
     message.includes('broken pipe') ||
     message.includes('stream destroyed') ||
     message.includes('write after end')
@@ -884,7 +886,11 @@ async function main() {
       exitOnBrokenPipe('unhandledRejection', reason);
       return;
     }
-    console.error('[WARN] Unhandled rejection (non-fatal):', reason);
+    try {
+      console.error('[WARN] Unhandled rejection (non-fatal):', reason);
+    } catch {
+      // If stderr itself is broken (e.g. revoked PTY), silently discard.
+    }
   });
 
   let uncaughtExceptionInProgress = false;
@@ -906,7 +912,11 @@ async function main() {
       console.error('[FATAL] Uncaught exception (unrecoverable):', err);
       shutdown('uncaughtException', 1).catch(() => process.exit(1));
     } else {
-      console.error('[WARN] Uncaught exception (non-fatal):', err);
+      try {
+        console.error('[WARN] Uncaught exception (non-fatal):', err);
+      } catch {
+        // If stderr itself is broken (e.g. revoked PTY), silently discard.
+      }
       uncaughtExceptionInProgress = false;
     }
   });
