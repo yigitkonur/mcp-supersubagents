@@ -526,6 +526,33 @@ class TaskManager {
         if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
           this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
         }
+
+        // Enforce hard timeout — session.send() doesn't have a built-in timeout,
+        // so the health check is the enforcement mechanism.
+        if (task.timeoutAt) {
+          const timeoutAt = new Date(task.timeoutAt).getTime();
+          if (now >= timeoutAt) {
+            const elapsedMs = task.startTime ? now - new Date(task.startTime).getTime() : 0;
+            console.error(`[task-manager] Health check: hard timeout reached for task ${task.id} after ${elapsedMs}ms`);
+            this.updateTask(task.id, {
+              status: TaskStatus.TIMED_OUT,
+              endTime: new Date(now).toISOString(),
+              error: `Task timed out after ${task.timeout ?? elapsedMs}ms`,
+              timeoutReason: 'hard_timeout',
+              timeoutContext: {
+                timeoutMs: task.timeout,
+                elapsedMs,
+                detectedBy: 'health_check',
+              },
+              session: undefined,
+            });
+            // Abort the session — import handled at module level
+            if (task.session) {
+              task.session.abort().catch(() => {});
+            }
+            continue;
+          }
+        }
         
         // Check for stalled sessions (no output for extended period)
         if (task.lastOutputAt) {
@@ -703,6 +730,19 @@ class TaskManager {
     }
 
     return updated;
+  }
+
+  /**
+   * Write to output file only — skips in-memory array and callbacks.
+   * Use for verbose debug data (reasoning, internal events) that should be
+   * available in the file for debugging but not waste tokens in MCP resources.
+   */
+  appendOutputFileOnly(id: string, line: string): void {
+    const normalizedId = normalizeTaskId(id);
+    const task = this.tasks.get(normalizedId);
+    if (task?.cwd) {
+      appendToOutputFile(task.cwd, task.id, line);
+    }
   }
 
   appendOutput(id: string, line: string): void {

@@ -4,7 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema, ListToolsRequestSchema,
-  GetTaskRequestSchema, ListTasksRequestSchema, CancelTaskRequestSchema,
+  GetTaskRequestSchema, GetTaskPayloadRequestSchema, ListTasksRequestSchema, CancelTaskRequestSchema,
   ListResourcesRequestSchema, ReadResourceRequestSchema,
   ListResourceTemplatesRequestSchema,
   SubscribeRequestSchema, UnsubscribeRequestSchema,
@@ -151,6 +151,10 @@ taskManager.onExecute(async (task) => {
 
 const resourceUpdateTimers = new Map<string, NodeJS.Timeout>();
 
+const logNotifyError = process.env.DEBUG_NOTIFICATIONS
+  ? (e: unknown) => console.error('[notify]', e instanceof Error ? e.message : e)
+  : () => {};
+
 // Single onOutput registration: forwards to progress + debounced resource updates
 taskManager.onOutput((taskId, line) => {
   // 1. Forward to progress registry (if client registered a progressToken)
@@ -158,11 +162,19 @@ taskManager.onOutput((taskId, line) => {
 
   // 2. Debounced resource updated notification (max 1/sec per task)
   const uri = taskIdToUri(taskId);
-  if (subscriptionRegistry.isSubscribed(uri) && !resourceUpdateTimers.has(taskId)) {
-    resourceUpdateTimers.set(taskId, setTimeout(() => {
-      resourceUpdateTimers.delete(taskId);
-      server.sendResourceUpdated({ uri }).catch(() => {});
-    }, 1000));
+  if (!resourceUpdateTimers.has(taskId)) {
+    const needsUpdate = subscriptionRegistry.isSubscribed(uri) || subscriptionRegistry.isSubscribed('task:///all');
+    if (needsUpdate) {
+      resourceUpdateTimers.set(taskId, setTimeout(() => {
+        resourceUpdateTimers.delete(taskId);
+        if (subscriptionRegistry.isSubscribed(uri)) {
+          server.sendResourceUpdated({ uri }).catch(logNotifyError);
+        }
+        if (subscriptionRegistry.isSubscribed('task:///all')) {
+          server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+        }
+      }, 1000));
+    }
   }
 });
 
@@ -173,7 +185,7 @@ taskManager.onStatusChange((task, previousStatus) => {
   server.notification({
     method: 'notifications/tasks/status',
     params: { ...mcpTask },
-  }).catch(() => {});
+  }).catch(logNotifyError);
 
   // 2. Progress notification for state transition
   progressRegistry.sendProgress(task.id, `Status: ${previousStatus} → ${task.status}`);
@@ -186,20 +198,26 @@ taskManager.onStatusChange((task, previousStatus) => {
   // 4. Resource updated notification (if subscribed)
   const uri = taskIdToUri(task.id);
   if (subscriptionRegistry.isSubscribed(uri)) {
-    server.sendResourceUpdated({ uri }).catch(() => {});
+    server.sendResourceUpdated({ uri }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed('task:///all')) {
+    server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed('system:///status')) {
+    server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
   }
 });
 
 // Task created: resource list changed
 taskManager.onTaskCreated(() => {
-  server.sendResourceListChanged().catch(() => {});
+  server.sendResourceListChanged().catch(logNotifyError);
 });
 
 // Task deleted: cleanup subscription + resource list changed
 taskManager.onTaskDeleted((taskId) => {
   progressRegistry.unregister(taskId);
   subscriptionRegistry.unsubscribe(taskIdToUri(taskId));
-  server.sendResourceListChanged().catch(() => {});
+  server.sendResourceListChanged().catch(logNotifyError);
 });
 
 // --- Initialization ---
@@ -301,6 +319,23 @@ server.setRequestHandler(CancelTaskRequestSchema, async (request) => {
   return buildMCPTask(taskManager.getTask(taskId)!);
 });
 
+// tasks/result — return filtered output as CallToolResult-compatible payload
+server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
+  const { taskId } = request.params;
+  const task = taskManager.getTask(taskId);
+  if (!task) {
+    throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
+  }
+  if (!TERMINAL_STATUSES.has(task.status)) {
+    throw new McpError(ErrorCode.InvalidParams, `Task ${taskId} is still ${task.status}`);
+  }
+  const filtered = filterOutputForResource(task.output);
+  return {
+    content: [{ type: 'text' as const, text: filtered.join('\n') }],
+    isError: task.status === TaskStatus.FAILED,
+  };
+});
+
 // --- MCP Resource handlers ---
 // Resources replace list_tasks, get_status, get_task_session_detail tools
 // Use: task:///all for task list, task:///{id} for details, task:///{id}/session for execution log
@@ -360,6 +395,26 @@ server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
   ],
 }));
 
+// Noise line prefixes that callers don't need (verbose debug → file only)
+const NOISE_PREFIXES = [
+  '[reasoning]', '[usage]', '[quota]', '[hooks]', '[session]',
+];
+
+/**
+ * Filter output lines for MCP resource consumers.
+ * Keeps agent text + significant tool activity. Strips internal metadata.
+ */
+function filterOutputForResource(output: string[]): string[] {
+  return output.filter(line => {
+    for (const prefix of NOISE_PREFIXES) {
+      if (line.startsWith(prefix)) return false;
+    }
+    // Drop redundant turn-ended / message-complete markers (kept in file)
+    if (line.startsWith('[assistant] Turn ended') || line.startsWith('[assistant] Message complete')) return false;
+    return true;
+  });
+}
+
 // Helper: Parse output to execution log entries
 function parseOutputToExecutionLog(output: string[]) {
   const entries: Array<{ turn: number; tools: Array<{ name: string; duration?: string }> }> = [];
@@ -367,10 +422,24 @@ function parseOutputToExecutionLog(output: string[]) {
   let currentEntry: { turn: number; tools: Array<{ name: string; duration?: string }> } | null = null;
 
   for (const line of output) {
+    // New format: "--- Turn N ---"
+    if (line.startsWith('--- Turn ')) {
+      if (currentEntry) entries.push(currentEntry);
+      currentTurn++;
+      currentEntry = { turn: currentTurn, tools: [] };
+      continue;
+    }
+    // Legacy format
     if (line.includes('[assistant] Message complete') || line.includes('[turn]')) {
       if (currentEntry) entries.push(currentEntry);
       currentTurn++;
       currentEntry = { turn: currentTurn, tools: [] };
+      continue;
+    }
+    // New compact format: "[tool] toolName (Nms)"
+    const compactMatch = line.match(/^\[tool\] (\S+) \((\d+)ms\)$/);
+    if (compactMatch && currentEntry) {
+      currentEntry.tools.push({ name: compactMatch[1], duration: `${compactMatch[2]}ms` });
       continue;
     }
     if (line.includes('[tool] Starting:')) {
@@ -402,8 +471,8 @@ function extractMessageStats(output: string[]): {
   let totalMessages = 0;
   
   for (const line of output) {
-    // Count rounds/turns
-    if (line.includes('[assistant] Message complete') || line.includes('[turn]')) {
+    // Count rounds/turns (new format: "--- Turn N ---", legacy: Message complete / [turn])
+    if (line.startsWith('--- Turn ') || line.includes('[assistant] Message complete') || line.includes('[turn]')) {
       round++;
       totalMessages++;
     }
@@ -467,7 +536,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       contents: [{
         uri,
         mimeType: 'application/json',
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(data),
       }],
     };
   }
@@ -508,7 +577,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       contents: [{
         uri,
         mimeType: 'application/json',
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(data),
       }],
     };
   }
@@ -527,8 +596,6 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const data = {
       task_id: task.id,
       status: task.status,
-      session_id: task.sessionId,
-      prompt_preview: task.prompt.slice(0, 300) + (task.prompt.length > 300 ? '...' : ''),
       execution_summary: {
         turns: executionLog.length,
         tool_calls: toolCount,
@@ -545,7 +612,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       contents: [{
         uri,
         mimeType: 'application/json',
-        text: JSON.stringify(data, null, 2),
+        text: JSON.stringify(data),
       }],
     };
   }
@@ -561,6 +628,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   }
 
   const msgStats = extractMessageStats(task.output);
+  const filtered = filterOutputForResource(task.output);
   
   const data = {
     id: task.id,
@@ -568,17 +636,15 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     session_id: task.sessionId,
     can_send_message: canSendMessage(task),
     
-    // Progress tracking - shows iteration progress
+    // Progress tracking
     progress: {
       round: msgStats.round,
       total_messages: msgStats.totalMessages,
-      last_user_message: msgStats.lastUserMessage,
     },
     
-    // Prompt and output
-    prompt_preview: task.prompt.slice(0, 500) + (task.prompt.length > 500 ? '...' : ''),
+    // Output (filtered for token efficiency)
     output_lines: task.output.length,
-    output_tail: task.output.slice(-50).join('\n'),
+    output_tail: filtered.slice(-50).join('\n'),
     
     // Timing
     started: task.startTime,
@@ -638,7 +704,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     contents: [{
       uri,
       mimeType: 'application/json',
-      text: JSON.stringify(data, null, 2),
+      text: JSON.stringify(data),
     }],
   };
 });
@@ -677,7 +743,7 @@ questionRegistry.onQuestionAsked((taskId, question) => {
   // Send resource update for subscribed clients
   const uri = taskIdToUri(taskId);
   if (subscriptionRegistry.isSubscribed(uri)) {
-    server.sendResourceUpdated({ uri }).catch(() => {});
+    server.sendResourceUpdated({ uri }).catch(logNotifyError);
   }
 });
 

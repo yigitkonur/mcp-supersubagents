@@ -45,7 +45,8 @@ export function createSessionHooks(taskId: string): SessionHooks {
     onSessionStart: async (input: SessionStartHookInput): Promise<SessionStartHookOutput | void> => {
       console.error(`[session-hooks] Session started for task ${taskId}: source=${input.source}`);
 
-      taskManager.appendOutput(taskId, `[hooks] Session ${input.source === 'resume' ? 'resumed' : 'started'}`);
+      // Hook lifecycle → file only (internal metadata)
+      taskManager.appendOutputFileOnly(taskId, `[hooks] Session ${input.source === 'resume' ? 'resumed' : 'started'}`);
 
       // Initialize session metrics
       const task = taskManager.getTask(taskId);
@@ -74,7 +75,8 @@ export function createSessionHooks(taskId: string): SessionHooks {
     onSessionEnd: async (input: SessionEndHookInput): Promise<SessionEndHookOutput | void> => {
       console.error(`[session-hooks] Session ended for task ${taskId}: reason=${input.reason}`);
 
-      taskManager.appendOutput(taskId, `[hooks] Session ended: ${input.reason}`);
+      // Hook lifecycle → file only
+      taskManager.appendOutputFileOnly(taskId, `[hooks] Session ended: ${input.reason}`);
 
       // Generate session summary if available
       if (input.finalMessage) {

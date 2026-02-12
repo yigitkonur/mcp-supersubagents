@@ -286,7 +286,8 @@ class SDKSessionAdapter {
       case 'assistant.reasoning': {
         const reasoning = event.data.content || binding.reasoningBuffer.join('');
         if (reasoning) {
-          taskManager.appendOutput(taskId, `[reasoning] ${reasoning}`);
+          // Write reasoning to file only — not to in-memory output (saves tokens for caller)
+          taskManager.appendOutputFileOnly(taskId, `[reasoning] ${reasoning}`);
         }
         binding.reasoningBuffer.length = 0;
         break;
@@ -298,14 +299,16 @@ class SDKSessionAdapter {
 
       case 'assistant.turn_end': {
         if (binding.reasoningBuffer.length) {
-          taskManager.appendOutput(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+          // Reasoning → file only (verbose debug, not for caller tokens)
+          taskManager.appendOutputFileOnly(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
           binding.reasoningBuffer.length = 0;
         }
         if (binding.outputBuffer.length) {
           taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
           binding.outputBuffer.length = 0;
         }
-        taskManager.appendOutput(taskId, `[assistant] Turn ended: ${event.data.turnId}`);
+        // Turn ended marker → file only (Turn started is sufficient for caller)
+        taskManager.appendOutputFileOnly(taskId, `[assistant] Turn ended: ${event.data.turnId}`);
         break;
       }
 
@@ -358,9 +361,8 @@ class SDKSessionAdapter {
         break;
 
       case 'user.message':
-        // User message sent - log truncated version
-        const content = event.data.content;
-        taskManager.appendOutput(taskId, `[user] ${content.length > 100 ? content.slice(0, 100) + '...' : content}`);
+        // User message → file only (caller already knows what it sent)
+        taskManager.appendOutputFileOnly(taskId, `[user] ${event.data.content.length > 100 ? event.data.content.slice(0, 100) + '...' : event.data.content}`);
         break;
 
       default:
@@ -375,12 +377,13 @@ class SDKSessionAdapter {
    * Handle session.start event
    */
   private handleSessionStart(taskId: string, event: Extract<SessionEvent, { type: 'session.start' }>): void {
-    taskManager.appendOutput(taskId, `[session] Started: ${event.data.sessionId}`);
+    // Session setup details → file only (internal metadata, not useful to caller)
+    taskManager.appendOutputFileOnly(taskId, `[session] Started: ${event.data.sessionId}`);
     if (event.data.selectedModel) {
-      taskManager.appendOutput(taskId, `[session] Model: ${event.data.selectedModel}`);
+      taskManager.appendOutputFileOnly(taskId, `[session] Model: ${event.data.selectedModel}`);
     }
     if (event.data.context?.cwd) {
-      taskManager.appendOutput(taskId, `[session] CWD: ${event.data.context.cwd}`);
+      taskManager.appendOutputFileOnly(taskId, `[session] CWD: ${event.data.context.cwd}`);
     }
   }
 
@@ -389,7 +392,7 @@ class SDKSessionAdapter {
    */
   private handleTurnStart(taskId: string, event: AssistantTurnStartEvent, binding: SessionBinding): void {
     binding.turnCount++;
-    taskManager.appendOutput(taskId, `[assistant] Turn ${binding.turnCount} started: ${event.data.turnId}`);
+    taskManager.appendOutput(taskId, `--- Turn ${binding.turnCount} ---`);
     
     // Update session metrics
     this.updateSessionMetrics(taskId, binding);
@@ -404,6 +407,15 @@ class SDKSessionAdapter {
       
       // Finalize session metrics
       this.updateSessionMetrics(taskId, binding);
+
+      // Emit compact summary line (replaces verbose per-turn [usage]/[quota])
+      const totalTokens = binding.totalTokens.input + binding.totalTokens.output;
+      const elapsed = Date.now() - binding.startTime.getTime();
+      const toolCount = Array.from(binding.toolMetrics.values()).reduce((s, m) => s + m.executionCount, 0);
+      taskManager.appendOutput(
+        taskId,
+        `[summary] ${binding.turnCount} turns | ${toolCount} tool calls | ${Math.round(totalTokens / 1000)}K tokens | ${Math.round(elapsed / 1000)}s`
+      );
       
       taskManager.updateTask(taskId, {
         status: TaskStatus.COMPLETED,
@@ -428,6 +440,16 @@ class SDKSessionAdapter {
     event: SessionErrorEvent,
     binding: SessionBinding
   ): Promise<void> {
+    // Flush any buffered output before handling the error
+    if (binding.outputBuffer.length) {
+      taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
+      binding.outputBuffer.length = 0;
+    }
+    if (binding.reasoningBuffer.length) {
+      taskManager.appendOutputFileOnly(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+      binding.reasoningBuffer.length = 0;
+    }
+
     const { errorType, message, statusCode, providerCallId, stack } = event.data;
 
     taskManager.appendOutput(taskId, `[error] ${errorType}: ${message} (status: ${statusCode || 'unknown'})`);
@@ -807,12 +829,15 @@ class SDKSessionAdapter {
     event: AssistantMessageEvent,
     binding: SessionBinding
   ): Promise<void> {
+    // Prefer the final content from the event; fall back to accumulated buffer.
+    // After appending, clear the buffer so assistant.turn_end won't duplicate.
     const content = event.data.content || binding.outputBuffer.join('');
     if (content) {
       taskManager.appendOutput(taskId, content);
     }
-    taskManager.appendOutput(taskId, `[assistant] Message complete: ${event.data.messageId}`);
     binding.outputBuffer.length = 0;
+    // Message complete UUID → file only (noise for caller)
+    taskManager.appendOutputFileOnly(taskId, `[assistant] Message complete: ${event.data.messageId}`);
     binding.lastMessageId = event.data.messageId;
 
     // String-based rate limit detection fallback
@@ -890,7 +915,8 @@ class SDKSessionAdapter {
     binding.totalTokens.input += inputTokens || 0;
     binding.totalTokens.output += outputTokens || 0;
 
-    taskManager.appendOutput(
+    // Per-turn usage → file only (cumulative summary emitted at completion)
+    taskManager.appendOutputFileOnly(
       taskId,
       `[usage] Model: ${model}, Input: ${inputTokens || 0}, Output: ${outputTokens || 0}${cost ? `, Cost: $${cost.toFixed(4)}` : ''}`
     );
@@ -913,7 +939,8 @@ class SDKSessionAdapter {
         binding.quotas.set(tier, quotaInfo);
         
         if (snapshot.remainingPercentage <= 10) {
-          taskManager.appendOutput(
+          // Quota warning → file only (available via quotaInfo in MCP resource)
+          taskManager.appendOutputFileOnly(
             taskId,
             `[quota] Warning: ${tier} at ${snapshot.remainingPercentage}% remaining (resets: ${snapshot.resetDate || 'unknown'})`
           );
@@ -977,7 +1004,8 @@ class SDKSessionAdapter {
     }
 
     const serverInfo = mcpServerName ? ` (MCP: ${mcpServerName})` : '';
-    taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}${serverInfo}`);
+    // Tool start → file only; the completion line (with duration) will appear in-memory
+    taskManager.appendOutputFileOnly(taskId, `[tool] Starting: ${toolName}${serverInfo}`);
   }
 
   /**
@@ -1004,7 +1032,12 @@ class SDKSessionAdapter {
       
       if (success) {
         metrics.successCount++;
-        taskManager.appendOutput(taskId, `[tool] Completed: ${metrics.toolName} (${duration}ms)`);
+        // Trivial tools (<100ms): compact single line to in-memory, verbose to file
+        if (duration < 100) {
+          taskManager.appendOutputFileOnly(taskId, `[tool] Completed: ${metrics.toolName} (${duration}ms)`);
+        } else {
+          taskManager.appendOutput(taskId, `[tool] ${metrics.toolName} (${duration}ms)`);
+        }
       } else {
         metrics.failureCount++;
         const errorMsg = event.data.error?.message || 'Unknown error';
@@ -1083,7 +1116,18 @@ class SDKSessionAdapter {
     event: SessionShutdownEvent,
     binding: SessionBinding
   ): void {
-    taskManager.appendOutput(taskId, `[session] Shutdown: ${event.data.shutdownType}`);
+    // Flush any remaining buffered output before shutdown
+    if (binding.outputBuffer.length) {
+      taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
+      binding.outputBuffer.length = 0;
+    }
+    if (binding.reasoningBuffer.length) {
+      taskManager.appendOutputFileOnly(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+      binding.reasoningBuffer.length = 0;
+    }
+
+    // Session shutdown details → file only
+    taskManager.appendOutputFileOnly(taskId, `[session] Shutdown: ${event.data.shutdownType}`);
 
     // Extract completion metrics from shutdown event
     const completionMetrics: CompletionMetrics = {
@@ -1160,6 +1204,16 @@ class SDKSessionAdapter {
     event: Extract<SessionEvent, { type: 'abort' }>,
     binding: SessionBinding
   ): void {
+    // Flush any remaining buffered output before abort
+    if (binding.outputBuffer.length) {
+      taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
+      binding.outputBuffer.length = 0;
+    }
+    if (binding.reasoningBuffer.length) {
+      taskManager.appendOutputFileOnly(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+      binding.reasoningBuffer.length = 0;
+    }
+
     taskManager.appendOutput(taskId, `[session] Aborted: ${event.data.reason}`);
     
     if (!binding.isCompleted) {

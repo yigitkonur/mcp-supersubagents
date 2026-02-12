@@ -272,35 +272,16 @@ async function runSDKSession(
       session,
     });
 
-    // Send the prompt and wait for completion
-    // The session adapter will handle mid-session events including rate limits
+    // Send the prompt — completion is handled by the session adapter via
+    // session.idle event (handleSessionIdle). Using send() instead of
+    // sendAndWait() avoids a double-completion race where both sendAndWait's
+    // internal handler and the adapter compete to mark COMPLETED and destroy
+    // the session.
     console.error(`[sdk-spawner] Sending prompt for task ${taskId}: "${prompt.slice(0, 50)}..."`);
     
-    const result = await session.sendAndWait({ prompt }, timeout);
+    await session.send({ prompt });
 
-    // Check if task was handled by adapter (rate limit rotation, cancellation, etc.)
-    const currentTask = taskManager.getTask(taskId);
-    if (!currentTask || isTerminalStatus(currentTask.status)) {
-      console.error(`[sdk-spawner] Task ${taskId} already in terminal state: ${currentTask?.status}`);
-      return;
-    }
-
-    // Mark completion if still running
-    if (currentTask.status === TaskStatus.RUNNING) {
-      if (result?.data.content) {
-        taskManager.appendOutput(taskId, `[final] ${result.data.content}`);
-      }
-      taskManager.updateTask(taskId, {
-        status: TaskStatus.COMPLETED,
-        endTime: new Date().toISOString(),
-        exitCode: 0,
-        session: undefined,
-      });
-      // Destroy session to release PTY FDs
-      sdkSessionAdapter.unbind(taskId);
-    }
-
-    console.error(`[sdk-spawner] Task ${taskId} completed successfully`);
+    console.error(`[sdk-spawner] Prompt sent for task ${taskId}, adapter will handle completion`);
 
   } catch (error) {
     // Check if adapter already handled this error (e.g., via session.error event)
@@ -319,7 +300,8 @@ async function runSDKSession(
 
 /**
  * Handle session errors including rate limits.
- * This handles errors thrown by sendAndWait that weren't caught by event handlers.
+ * This handles errors thrown by session.send() (e.g., connection failures)
+ * that aren't caught by the adapter's session.error event handler.
  */
 async function handleSessionError(
   taskId: string,
@@ -414,7 +396,7 @@ function extractStatusCode(errorMessage: string): number | undefined {
 
 /**
  * Handle rate limit detection using multi-account rotation.
- * This is called for errors caught by sendAndWait, not by event handlers.
+ * This is called for connection-level errors caught by session.send().
  */
 async function handleRateLimit(
   taskId: string,

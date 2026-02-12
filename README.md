@@ -163,7 +163,7 @@ File: `.cursor/mcp.json` in your project root
 
 No build step required -- `npx` runs the package directly.
 
-> **Note:** You need at least one GitHub PAT token with Copilot access. For rate-limit resilience, configure multiple tokens via `GITHUB_PAT_TOKENS`. See [Multi-Account Rotation](#multi-account-rotation) for details.
+> **Note:** GitHub PAT tokens with Copilot access are recommended but not required. Without PATs, tasks automatically fall back to the Claude Agent SDK (requires `claude` CLI). For rate-limit resilience, configure multiple tokens via `GITHUB_PAT_TOKENS`. See [Multi-Account Rotation](#multi-account-rotation) for details.
 
 ---
 
@@ -175,6 +175,8 @@ Super Subagents supports two transport modes:
 |------|----------|-------------|
 | **STDIO** (default) | Claude Desktop, Cursor, Windsurf | `npx mcp-supersubagents` |
 | **HTTP Streamable** | Self-hosted, Docker, LAN sharing | `MCP_TRANSPORT=http npx mcp-supersubagents` |
+
+> **⚠️ HTTP Streamable is recommended for production use.** STDIO transport closes the connection after the initial tool response. Since spawned tasks run asynchronously in the background, the STDIO client disconnects before completion — which means MCP task notifications and resource subscriptions cannot be delivered. HTTP Streamable keeps a persistent session so you receive `notifications/tasks/status` events and can poll `tasks/result` while agents work.
 
 ### Self-Hosted HTTP Streamable
 
@@ -302,6 +304,24 @@ All status and monitoring is done through MCP resources (not polling):
 | `task:///all` | All tasks with status, progress, pending questions |
 | `task:///{id}` | Full task details: output, metrics, config |
 | `task:///{id}/session` | Execution log: turns, tool calls, durations |
+
+The server also implements the MCP Task primitive. When a task completes, use `tasks/result` to retrieve filtered output:
+
+```
+→ tasks/result { taskId: "brave-tiger-42" }
+← { content: [{ type: "text", text: "..." }], isError: false }
+```
+
+### Two-Tier Output
+
+Output is split into two tiers to minimize token costs for callers:
+
+| Tier | Destination | What's Included |
+|------|-------------|-----------------|
+| **Caller-facing** | In-memory (`task.output`), MCP resources, `tasks/result` | Agent text, turn markers (`--- Turn N ---`), significant tool calls (>100ms), errors, `[summary]` line |
+| **Debug** | Output file only (`{cwd}/.super-agents/{id}.output`) | Everything above + `[reasoning]` blocks, `[usage]`/`[quota]` per turn, `[hooks]` lifecycle, `[session]` metadata, trivial tool calls |
+
+This means **~90% fewer tokens** when reading task results via MCP, while full verbose output remains available in the file for debugging.
 
 Clients can subscribe to resource URIs for real-time change notifications (debounced to max 1/sec per task). Each task also writes a live output file you can `tail -f`:
 
@@ -436,9 +456,15 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 | `GH_PAT_TOKEN` | -- | Fallback PAT token(s), comma-separated |
 | `GITHUB_TOKEN` / `GH_TOKEN` | -- | Single token fallback |
 | `ENABLE_OPUS` | `false` | Show `claude-opus-4.6` in tool descriptions (opus is always usable via alias) |
+| `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable automatic fallback to Claude Agent SDK when all PATs are exhausted |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` (30 min) | Default task timeout |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` (1 hr) | Maximum allowed timeout |
 | `MCP_TASK_STALL_WARN_MS` | `300000` (5 min) | No-output warning threshold |
+| `DEBUG_NOTIFICATIONS` | `false` | Log MCP notification errors to stderr |
+| `DEBUG_CLAUDE_FALLBACK` | `false` | Verbose logging for Claude Agent SDK fallback path |
+| `DEBUG_SDK_EVENTS` | `false` | Log all Copilot SDK events |
+
+> **No PAT tokens?** If no GitHub PAT is configured, tasks automatically use the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents/claude-agent-sdk) as a fallback (requires `claude` CLI installed). Set `DISABLE_CLAUDE_CODE_FALLBACK=true` to prevent this.
 
 ---
 
@@ -536,6 +562,15 @@ npm start
 ---
 
 ## Troubleshooting
+
+<details>
+<summary><strong>Tasks spawn but I never see results (STDIO)</strong></summary>
+
+- STDIO transport closes the connection after returning the initial `spawn_*` response. Since tasks run asynchronously, the client disconnects before completion.
+- **Solution:** Use HTTP Streamable transport (`MCP_TRANSPORT=http`) for persistent sessions. This keeps the connection open so you receive `notifications/tasks/status` events and can call `tasks/result` to retrieve output.
+- Alternatively, check the output file directly: `tail -f .super-agents/{task-id}.output`.
+
+</details>
 
 <details>
 <summary><strong>Rate limits / 429 errors</strong></summary>

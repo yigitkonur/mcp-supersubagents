@@ -19,6 +19,7 @@ const DEFAULT_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MODEL = 'sonnet';
 const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'bypassPermissions';
 const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
+const DEBUG = process.env.DEBUG_CLAUDE_FALLBACK === 'true';
 const activeFallbackControllers = new Map<string, AbortController>();
 
 export interface ClaudeCodeRunOptions {
@@ -220,6 +221,7 @@ export async function runClaudeCodeSession(
   let providerCostUsd: number | undefined;
   let providerDurationMs: number | undefined;
   let resultError: string | undefined;
+  let inTextBlock = false; // Track whether we're inside a text content block
 
   const settings = createModelSettings(cwd, options);
 
@@ -240,24 +242,79 @@ export async function runClaudeCodeSession(
       const { done, value } = await reader.read();
       if (done) break;
 
-      const part = value as LanguageModelV3StreamPart | ({ type: 'tool-error'; [k: string]: unknown } & Record<string, unknown>);
+      const part = value as LanguageModelV3StreamPart | ({ type: string; [k: string]: unknown } & Record<string, unknown>);
+
+      if (DEBUG) {
+        console.error(`[claude-code-runner] Stream part: ${part.type}`);
+      }
 
       switch (part.type) {
         case 'text-start':
-          turnCount += 1;
-          taskManager.appendOutput(taskId, `\n[Assistant Turn ${turnCount}]\n`);
+          // text-start is a content block boundary, not a turn boundary.
+          // Only emit a turn marker if this is the first text block or
+          // a new text block after a tool execution (i.e., a new agent turn).
+          if (!inTextBlock) {
+            turnCount += 1;
+            taskManager.appendOutput(taskId, `\n[Assistant Turn ${turnCount}]\n`);
+          }
+          inTextBlock = true;
           break;
 
         case 'text-delta':
           taskManager.appendOutput(taskId, part.delta);
           break;
 
+        case 'text-end':
+          inTextBlock = false;
+          break;
+
+        case 'reasoning-start':
+          break;
+
         case 'reasoning-delta':
-          taskManager.appendOutput(taskId, `[reasoning] ${part.delta}`);
+          // Reasoning → file only (saves tokens for caller)
+          taskManager.appendOutputFileOnly(taskId, `[reasoning] ${part.delta}`);
+          break;
+
+        case 'reasoning-end':
+          break;
+
+        // V3 tool-input-* events: emitted by ai-sdk-provider-claude-code BEFORE tool-call
+        case 'tool-input-start': {
+          inTextBlock = false; // Tool execution ends the current text block
+          const inputToolName = (part as Record<string, unknown>).toolName as string || 'unknown';
+          const inputToolId = (part as Record<string, unknown>).id as string || '';
+          if (!toolMetrics[inputToolName]) {
+            toolMetrics[inputToolName] = {
+              toolName: inputToolName,
+              executionCount: 0,
+              successCount: 0,
+              failureCount: 0,
+              totalDurationMs: 0,
+            };
+          }
+          toolMetrics[inputToolName].executionCount += 1;
+          toolStartTimes.set(inputToolId, Date.now());
+          taskManager.appendOutput(taskId, `[tool] Starting: ${inputToolName}`);
+          break;
+        }
+
+        case 'tool-input-delta':
+          // Tool input streaming — log in debug mode only to avoid noise
+          if (DEBUG) {
+            const delta = (part as Record<string, unknown>).delta as string || '';
+            if (delta.length > 0) {
+              taskManager.appendOutput(taskId, `[tool-input] ${delta.slice(0, 200)}`);
+            }
+          }
+          break;
+
+        case 'tool-input-end':
           break;
 
         case 'tool-call': {
           const toolName = part.toolName || 'unknown';
+          // Only create metrics if tool-input-start didn't already (backward compat)
           if (!toolMetrics[toolName]) {
             toolMetrics[toolName] = {
               toolName,
@@ -267,9 +324,12 @@ export async function runClaudeCodeSession(
               totalDurationMs: 0,
             };
           }
-          toolMetrics[toolName].executionCount += 1;
-          toolStartTimes.set(part.toolCallId, Date.now());
-          taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}`);
+          // Only increment if tool-input-start didn't already track this call
+          if (!toolStartTimes.has(part.toolCallId)) {
+            toolMetrics[toolName].executionCount += 1;
+            toolStartTimes.set(part.toolCallId, Date.now());
+            taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}`);
+          }
           break;
         }
 
@@ -322,11 +382,25 @@ export async function runClaudeCodeSession(
 
         case 'error':
           resultError = String(part.error ?? 'unknown stream error');
+          taskManager.appendOutput(taskId, `[error] ${resultError}`);
           break;
 
         case 'stream-start':
           if (part.warnings.length > 0) {
             taskManager.appendOutput(taskId, `[system] Claude warnings: ${part.warnings.map((w) => w.type).join(', ')}`);
+          }
+          break;
+
+        case 'source':
+          if (DEBUG) {
+            taskManager.appendOutput(taskId, `[source] ${JSON.stringify((part as Record<string, unknown>).source ?? '')}`);
+          }
+          break;
+
+        case 'file':
+          if (DEBUG) {
+            const filePart = part as Record<string, unknown>;
+            taskManager.appendOutput(taskId, `[file] ${filePart.mimeType ?? 'unknown'}`);
           }
           break;
 
@@ -351,6 +425,8 @@ export async function runClaudeCodeSession(
             toolMetrics[toolName] = metrics;
 
             taskManager.appendOutput(taskId, `[tool] Failed: ${toolName} - ${err}`);
+          } else if (DEBUG) {
+            console.error(`[claude-code-runner] Unhandled stream part type: ${(part as { type?: string }).type}`);
           }
           break;
       }
@@ -401,6 +477,15 @@ export async function runClaudeCodeSession(
       });
       return;
     }
+
+    // Emit compact summary before marking completed
+    const elapsedMs = Date.now() - (task?.startTime ? new Date(task.startTime).getTime() : Date.now());
+    const toolCallCount = Object.values(toolMetrics).reduce((s, m) => s + (m.executionCount || 0), 0);
+    const totalTokens = totalInputTokens + totalOutputTokens;
+    taskManager.appendOutput(
+      taskId,
+      `[summary] ${turnCount} turns | ${toolCallCount} tool calls | ${Math.round(totalTokens / 1000)}K tokens | ${Math.round(elapsedMs / 1000)}s`
+    );
 
     taskManager.updateTask(taskId, {
       status: TaskStatus.COMPLETED,
