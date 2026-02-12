@@ -94,10 +94,30 @@ Each agent runs as an autonomous Copilot SDK session in the background. When it 
 
 ## Get Started
 
-### Option 1: Auto-install (recommended)
+### Option 1: One-line install (recommended)
 
 ```bash
-npx @automcp/cli install super-subagents --client claude-desktop
+# Claude Desktop
+npx install-mcp mcp-supersubagents --client claude-desktop
+
+# Claude Code CLI
+npx install-mcp mcp-supersubagents --client claude-code
+
+# Cursor
+npx install-mcp mcp-supersubagents --client cursor
+
+# VS Code / Copilot
+npx install-mcp mcp-supersubagents --client vscode
+
+# Other clients: windsurf, cline, roo-cline, goose, zed, opencode, warp, codex, aider, gemini-cli
+npx install-mcp mcp-supersubagents --client <client-name>
+```
+
+With environment variables for PAT tokens:
+
+```bash
+npx install-mcp mcp-supersubagents --client claude-desktop \
+  --header "GITHUB_PAT_TOKENS: ghp_token1,ghp_token2"
 ```
 
 ### Option 2: Manual config

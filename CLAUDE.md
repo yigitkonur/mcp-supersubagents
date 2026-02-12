@@ -29,7 +29,7 @@ HTTP endpoints: `/mcp` (main), `/health` (health check). Sessions managed via `m
 
 Binary names: `mcp-supersubagents`, `copilot-mcp-server`, `super-subagents`.
 
-Tests in `tests/` are manual scripts (no test runner configured): `mcp-test.ts`, `mcp-test-comprehensive.ts`, `mcp-test-multitoken.ts`.
+No automated test suite. Use `mcp-cli` for manual verification (see README).
 
 ## Environment Variables
 
@@ -149,7 +149,7 @@ Templates reference `.agent-workspace/plans/`, `.agent-workspace/researches/`, `
 
 ## Gotchas
 
-- **Version mismatch** — `src/index.ts` hardcodes `version: '1.4.0'` but package.json says `1.4.1`. Update index.ts when bumping version.
+- **Version** — `src/index.ts` reads version from `package.json` at runtime. No manual sync needed.
 - **super-planner always uses Opus** — model parameter is ignored; always resolves to claude-opus-4.6.
 - **Session ID = Task ID** — Copilot session ID is set to the task ID for easy mapping.
 - **TCP mode** — `sdk-client-manager.ts` creates CopilotClient with `useStdio: false` (TCP) to avoid macOS stdio pipe race conditions.
@@ -160,6 +160,4 @@ Templates reference `.agent-workspace/plans/`, `.agent-workspace/researches/`, `
 ## Additional Documentation
 
 - `docs/ARCHITECTURE.md` — detailed system architecture, state machines, protocol flow
-- `FALLBACK_IMPLEMENTATION.md` — Claude Agent SDK fallback implementation details
-- `playwright-notes/` — 16 markdown guides for browser testing patterns (reference for tester agent)
 - `README.md` — user guide, quick start, tool reference, workflows
