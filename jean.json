@@ -1,0 +1,12 @@
+{
+  "name": "mcp-supersubagents",
+  "description": "MCP server for spawning parallel AI sub-agents via Copilot/Claude SDKs (npm TypeScript, stdio transport)",
+  "basePort": 2200,
+  "setup": [
+    "cp \"$JEAN_ROOT_PATH/.env\" .env 2>/dev/null || echo 'No .env to copy, skipping'",
+    "mkdir -p .claude && cp \"$JEAN_ROOT_PATH/.claude/settings.local.json\" .claude/settings.local.json 2>/dev/null || echo 'No settings.local.json to copy, skipping'",
+    "npm ci",
+    "npm run build"
+  ],
+  "run": "tsc --watch --noEmitOnError false"
+}
