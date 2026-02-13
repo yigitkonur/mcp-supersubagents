@@ -1,12 +1,12 @@
 {
   "name": "mcp-supersubagents",
-  "description": "MCP server for spawning parallel AI sub-agents via Copilot/Claude SDKs (npm TypeScript, stdio transport)",
-  "basePort": 2200,
+  "description": "MCP server for spawning parallel AI sub-agents via Copilot/Claude SDKs (npm TypeScript, HTTP Streamable transport)",
+  "basePort": 2100,
   "setup": [
-    "cp \"$JEAN_ROOT_PATH/.env\" .env 2>/dev/null || echo 'No .env to copy, skipping'",
-    "mkdir -p .claude && cp \"$JEAN_ROOT_PATH/.claude/settings.local.json\" .claude/settings.local.json 2>/dev/null || echo 'No settings.local.json to copy, skipping'",
+    "cp \"$JEAN_ROOT_PATH/.env\" .env 2>/dev/null || true",
+    "mkdir -p .claude && cp \"$JEAN_ROOT_PATH/.claude/settings.local.json\" .claude/settings.local.json 2>/dev/null || true",
     "npm ci",
     "npm run build"
   ],
-  "run": "tsc --watch --noEmitOnError false"
+  "run": "MCP_TRANSPORT=http MCP_PORT=2100 npm run dev"
 }
