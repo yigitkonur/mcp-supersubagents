@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-MCP server for spawning and managing parallel AI sub-agents via GitHub Copilot SDK (primary) with automatic fallback to Claude Agent SDK. Exposes 8 MCP tools for task orchestration with dependency chaining, multi-account PAT rotation, and specialized agent templates (coder, planner, researcher, tester). Node.js >= 18.0.0.
+MCP server for spawning and managing parallel AI sub-agents via GitHub Copilot SDK (primary) with automatic fallback to Claude Agent SDK. Exposes 4 MCP tools for task orchestration with dependency chaining, multi-account PAT rotation, and specialized agent templates (coder, planner, researcher, tester). Node.js >= 18.0.0.
 
 ## Build & Run
 
@@ -18,14 +18,7 @@ npm run mcp:smoke   # MCP stdio protocol smoke test
 
 Note: `--noEmitOnError false` means the build succeeds even with TypeScript errors.
 
-Transport modes:
-```bash
-npx mcp-supersubagents                          # STDIO (default)
-MCP_TRANSPORT=http npx mcp-supersubagents       # HTTP Streamable (default port 3000)
-MCP_TRANSPORT=http MCP_PORT=8080 npx mcp-supersubagents
-```
-
-HTTP endpoints: `/mcp` (main), `/health` (health check). Sessions managed via `mcp-session-id` header.
+Transport: STDIO only (no HTTP).
 
 Binary names: `mcp-supersubagents`, `copilot-mcp-server`, `super-subagents`.
 
@@ -84,16 +77,12 @@ src/
 │   ├── task-status-mapper.ts   # Internal TaskStatus → MCP Task mapping
 │   ├── client-context.ts       # Workspace root discovery & default cwd
 │   └── session-hooks.ts        # SDK event hooks (message, error, shutdown)
-├── tools/                      # 8 MCP tool handlers
-│   ├── spawn-coder.ts          # Coding tasks (min 1000 char prompt, requires .md context files)
-│   ├── spawn-planner.ts        # Planning/architecture (min 300 chars, always uses Opus model)
-│   ├── spawn-tester.ts         # Testing/QA (min 300 chars, requires context files)
-│   ├── spawn-researcher.ts     # Research (min 200 chars)
-│   ├── spawn-task.ts           # Generic spawn (legacy)
+├── tools/                      # 4 MCP tool handlers
+│   ├── spawn-agent.ts          # Unified spawn: role=coder|planner|tester|researcher
 │   ├── send-message.ts         # Resume completed task with follow-up
 │   ├── cancel-task.ts          # Cancel one or all tasks
 │   ├── answer-question.ts      # Respond to pending ask_user questions
-│   └── shared-spawn.ts         # Shared spawn logic for all specialized tools
+│   └── shared-spawn.ts         # Shared spawn logic used by spawn-agent
 ├── templates/                  # Agent system prompts (.mdx)
 │   ├── index.ts                # Template loading & matryoshka composition
 │   ├── super-coder.mdx         # Coder agent system prompt
@@ -111,7 +100,7 @@ src/
 ```
 
 **Key flows:**
-- **Spawn** → `shared-spawn.ts` validates brief → `task-manager.ts` creates task → resolves dependencies (with circular dependency detection) → `sdk-spawner.ts` creates Copilot session → `sdk-session-adapter.ts` streams events to TaskState
+- **Spawn** → `spawn-agent.ts` routes by role → `shared-spawn.ts` validates brief → `task-manager.ts` creates task → resolves dependencies (with circular dependency detection) → `sdk-spawner.ts` creates Copilot session → `sdk-session-adapter.ts` streams events to TaskState
 - **Rate limit** → `account-manager.ts` rotates to next PAT (round-robin, 60s cooldown) → if all exhausted → `exhaustion-fallback.ts` triggers → `session-snapshot.ts` extracts context → `claude-code-runner.ts` takes over
 - **Persistence** → tasks written to `~/.super-agents/{md5(cwd)}.json` (atomic temp+rename) → on restart, RUNNING/PENDING tasks marked FAILED, RATE_LIMITED tasks preserved for auto-retry
 
@@ -153,7 +142,7 @@ Templates reference `.agent-workspace/plans/`, `.agent-workspace/researches/`, `
 - **super-planner always uses Opus** — model parameter is ignored; always resolves to claude-opus-4.6.
 - **Session ID = Task ID** — Copilot session ID is set to the task ID for easy mapping.
 - **TCP mode** — `sdk-client-manager.ts` creates CopilotClient with `useStdio: false` (TCP) to avoid macOS stdio pipe race conditions.
-- **Stdout must be clean** — STDIO transport is default; all logging uses `console.error` (stderr). Any stdout pollution corrupts MCP protocol.
+- **Stdout must be clean** — STDIO transport is the only mode; all logging uses `console.error` (stderr). Any stdout pollution corrupts MCP protocol.
 - **Unhandled errors are non-fatal** — the server catches unhandled rejections and uncaught exceptions to keep MCP transport alive. Only OOM crashes the process.
 - **Two `.super-agents/` locations** — persistence: `~/.super-agents/{md5(cwd)}.json`, output: `{cwd}/.super-agents/{task-id}.output`.
 

@@ -46,7 +46,7 @@ export interface SpawnHandlerConfig<T> {
 
 /**
  * Generic factory that creates a spawn tool handler.
- * Eliminates identical boilerplate across spawn-coder, spawn-planner, spawn-tester, spawn-researcher.
+ * Eliminates identical boilerplate across spawn roles (coder, planner, tester, researcher).
  *
  * Each handler: parse → validate → map to SharedSpawnParams → call handleSharedSpawn.
  */
@@ -94,7 +94,7 @@ export async function handleSharedSpawn(
   ctx?: ToolContext,
 ): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
   // 1. Validate the brief
-  const validation = validateBrief(config.toolName, params.prompt, params.context_files);
+  const validation = await validateBrief(config.toolName, params.prompt, params.context_files);
   if (!validation.valid) {
     return mcpValidationError(formatValidationError(config.toolName, validation.errors));
   }
@@ -111,7 +111,7 @@ export async function handleSharedSpawn(
   }
 
   // 3. Assemble prompt with context file contents
-  const enrichedPrompt = assemblePromptWithContext(params.prompt, params.context_files);
+  const enrichedPrompt = await assemblePromptWithContext(params.prompt, params.context_files);
 
   // 4. Apply matryoshka template (base + specialization overlay)
   const finalPrompt = config.taskType && isValidTaskType(config.taskType)

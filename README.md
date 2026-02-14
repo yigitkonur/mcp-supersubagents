@@ -187,78 +187,52 @@ No build step required -- `npx` runs the package directly.
 
 ---
 
-## Transport Modes
-
-Super Subagents supports two transport modes:
-
-| Mode | Use Case | How to Start |
-|------|----------|-------------|
-| **STDIO** (default) | Claude Desktop, Cursor, Windsurf | `npx mcp-supersubagents` |
-| **HTTP Streamable** | Self-hosted, Docker, LAN sharing | `MCP_TRANSPORT=http npx mcp-supersubagents` |
-
-> **⚠️ HTTP Streamable is recommended for production use.** STDIO transport closes the connection after the initial tool response. Since spawned tasks run asynchronously in the background, the STDIO client disconnects before completion — which means MCP task notifications and resource subscriptions cannot be delivered. HTTP Streamable keeps a persistent session so you receive `notifications/tasks/status` events and can poll `tasks/result` while agents work.
-
-### Self-Hosted HTTP Streamable
-
-```bash
-# Start on default port 3001
-MCP_TRANSPORT=http npx mcp-supersubagents
-
-# Custom port
-MCP_TRANSPORT=http MCP_PORT=8080 npx mcp-supersubagents
-```
-
-```json
-{
-  "mcpServers": {
-    "supersubagents-http": {
-      "type": "streamable-http",
-      "url": "http://localhost:3001/mcp"
-    }
-  }
-}
-```
-
----
-
 ## Tool Reference
 
 Super Subagents exposes **4 MCP tools** for task orchestration:
 
 <table>
 <tr>
-<td width="25%" align="center"><strong>🚀 spawn_task</strong><br>Create a new agent</td>
+<td width="25%" align="center"><strong>🚀 spawn_agent</strong><br>Create a new agent</td>
 <td width="25%" align="center"><strong>💬 send_message</strong><br>Follow-up on a task</td>
 <td width="25%" align="center"><strong>🛑 cancel_task</strong><br>Cancel one or all</td>
 <td width="25%" align="center"><strong>❓ answer_question</strong><br>Respond to agent</td>
 </tr>
 </table>
 
-### `spawn_task`
+### `spawn_agent`
 
-Create a new autonomous agent task. The agent runs in an isolated session with NO shared memory -- your prompt is its only context.
+Spawn an autonomous AI agent. The agent runs in an isolated session with NO shared memory -- your prompt + context_files are its only context.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `prompt` | string | Yes | Complete self-contained instructions for the agent |
-| `task_type` | string | No | Agent template: `super-coder`, `super-planner`, `super-researcher`, `super-tester`, `super-questioner`, `super-arabic` |
-| `context_files` | array | No | Files to read and inject into the prompt. Each item: `{ path, description }` |
-| `model` | string | No | Model to use. Default: `claude-sonnet-4.5` |
+| `role` | string | Yes | Agent role: `coder`, `planner`, `tester`, or `researcher` |
+| `prompt` | string | Yes | Complete self-contained instructions. Min length varies by role. |
+| `context_files` | array | No | Files to inject into prompt. Each item: `{ path, description }`. Required for coder (min 1 .md) and tester (min 1). Max 20 files, 200KB each, 500KB total. |
+| `specialization` | string | No | Role-specific: coder (typescript/python/react), planner (feature/bugfix/migration), tester (playwright/rest/suite), researcher (security/library/performance) |
+| `model` | string | No | Model to use. Default: `claude-sonnet-4.5`. Planner always uses `claude-opus-4.6`. |
 | `cwd` | string | No | Absolute path to working directory |
 | `timeout` | number | No | Max execution time in ms. Default: 1800000 (30 min) |
+| `autonomous` | boolean | No | Run without asking for confirmation. Default: true |
 | `depends_on` | string[] | No | Task IDs that must complete before this starts |
 | `labels` | string[] | No | Labels for grouping/filtering (max 10) |
 
+**Roles and minimum prompt lengths:**
+- **coder** — Implementation tasks. Min 1000-char prompt + min 1 `.md` context file. Include: OBJECTIVE, FILES, CRITERIA, CONSTRAINTS, PATTERNS.
+- **planner** — Architecture/planning. Min 300-char prompt. Always uses opus. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
+- **tester** — QA/testing. Min 300-char prompt + min 1 context file. Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
+- **researcher** — Investigation. Min 200-char prompt. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
+
 ```json
 {
+  "role": "coder",
   "prompt": "Refactor the auth module to use JWT refresh tokens. Read /src/services/auth.ts for current implementation...",
-  "task_type": "super-coder",
-  "model": "claude-sonnet-4.5",
+  "context_files": [{ "path": "/path/to/plan.md" }],
   "labels": ["backend", "auth"]
 }
 ```
 
-> **Tip:** For better validation and guided briefs, use the specialized tools: `spawn_coder`, `spawn_planner`, `spawn_tester`, `spawn_researcher`. These enforce structured prompts and produce dramatically better results.
+**Recommended workflow:** researcher → planner → coder → tester. Chain with `depends_on`.
 
 ### `send_message`
 
@@ -266,12 +240,9 @@ Send a follow-up message to a completed or failed task's session. Resumes the sa
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `task_id` | string | Yes* | Task ID to send message to |
-| `session_id` | string | Yes* | Alternative: session ID directly |
+| `task_id` | string | Yes | Task ID to send message to |
 | `message` | string | No | Message to send. Default: `"continue"` |
 | `timeout` | number | No | Max execution time in ms |
-
-*Provide either `task_id` or `session_id`.
 
 ```json
 { "task_id": "brave-tiger-42", "message": "Now add unit tests for the changes you made" }
@@ -366,10 +337,10 @@ Templates wrap your prompt with specialized system instructions. The agent sees 
 | `super-arabic` | Responds entirely in Arabic. | Arabic-language tasks |
 
 ```json
-{ "prompt": "Fix the null check in auth.ts line 45", "task_type": "super-coder" }
+{ "role": "coder", "prompt": "Fix the null check in auth.ts line 45...", "context_files": [{ "path": "/path/to/plan.md" }] }
 ```
 
-Without a `task_type`, the agent gets your raw prompt with no system instructions.
+The `role` parameter selects the agent template. Each role has a specialized system prompt.
 
 ---
 
@@ -436,9 +407,9 @@ Circular dependencies are detected and rejected at spawn time.
 ### Example: Chained pipeline
 
 ```
-spawn_planner → plan-tiger-42         [running]
-spawn_coder   → code-falcon-17        [waiting for plan-tiger-42]
-spawn_tester  → test-panda-88         [waiting for code-falcon-17]
+spawn_agent(role: "planner") → plan-tiger-42    [running]
+spawn_agent(role: "coder")   → code-falcon-17   [waiting for plan-tiger-42]
+spawn_agent(role: "tester")  → test-panda-88    [waiting for code-falcon-17]
 
 plan-tiger-42 completes → code-falcon-17 auto-starts
 code-falcon-17 completes → test-panda-88 auto-starts
@@ -493,24 +464,26 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 ### Parallel Feature Development
 
 ```
-1. spawn_task({
+1. spawn_agent({
+     role: "coder",
      prompt: "Implement the /api/users endpoint. Read the OpenAPI spec at /docs/api.yaml for the schema...",
-     task_type: "super-coder",
+     context_files: [{ path: "/path/to/spec.md" }],
      labels: ["backend", "users-feature"]
    })
    → Task: brave-tiger-42
 
-2. spawn_task({
+2. spawn_agent({
+     role: "tester",
      prompt: "Write E2E tests for the /api/users endpoint using the test patterns in /tests/...",
-     task_type: "super-tester",
+     context_files: [{ path: "/path/to/test-patterns.md" }],
      depends_on: ["brave-tiger-42"],
      labels: ["testing", "users-feature"]
    })
    → Task: calm-falcon-17 (waiting for brave-tiger-42)
 
-3. spawn_task({
+3. spawn_agent({
+     role: "researcher",
      prompt: "Research best practices for user data pagination. Compare cursor vs offset...",
-     task_type: "super-researcher",
      labels: ["research", "users-feature"]
    })
    → Task: swift-panda-88 (starts immediately, runs in parallel with brave-tiger-42)
@@ -528,9 +501,9 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 ### Plan-Code-Test Pipeline
 
 ```
-1. spawn_planner  → Creates architecture plan with builder-briefing.md
-2. spawn_coder    → depends_on planner, uses briefing as context_file
-3. spawn_tester   → depends_on coder, uses tester-checklist.md as context_file
+1. spawn_agent(role: "planner")  → Creates architecture plan with builder-briefing.md
+2. spawn_agent(role: "coder")    → depends_on planner, uses briefing as context_file
+3. spawn_agent(role: "tester")   → depends_on coder, uses tester-checklist.md as context_file
 ```
 
 Each stage auto-starts when its dependencies complete. The planner always uses `claude-opus-4.6` for maximum reasoning quality.
@@ -584,15 +557,6 @@ npm start
 ## Troubleshooting
 
 <details>
-<summary><strong>Tasks spawn but I never see results (STDIO)</strong></summary>
-
-- STDIO transport closes the connection after returning the initial `spawn_*` response. Since tasks run asynchronously, the client disconnects before completion.
-- **Solution:** Use HTTP Streamable transport (`MCP_TRANSPORT=http`) for persistent sessions. This keeps the connection open so you receive `notifications/tasks/status` events and can call `tasks/result` to retrieve output.
-- Alternatively, check the output file directly: `tail -f .super-agents/{task-id}.output`.
-
-</details>
-
-<details>
 <summary><strong>Rate limits / 429 errors</strong></summary>
 
 - Configure multiple PAT tokens via `GITHUB_PAT_TOKENS` for automatic rotation.
@@ -625,10 +589,10 @@ npm start
 <details>
 <summary><strong>Agent produces poor results</strong></summary>
 
-- Use the specialized tools (`spawn_coder`, `spawn_planner`, `spawn_tester`, `spawn_researcher`) instead of `spawn_task`. They enforce structured briefs and produce dramatically better results.
+- Use `spawn_agent` with the appropriate role (`coder`, `planner`, `tester`, `researcher`). Each role enforces structured briefs and produces dramatically better results.
 - Agents run with NO shared memory -- your prompt is their ONLY context. Include all necessary file paths, background, and success criteria.
 - Attach context files (`.md`) with detailed plans or specifications.
-- For coding tasks, provide a minimum of 1,000 characters with objective, files, success criteria, constraints, and patterns.
+- For coding tasks (role: `coder`), provide a minimum of 1,000 characters with objective, files, success criteria, constraints, and patterns.
 
 </details>
 

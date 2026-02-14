@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { questionRegistry } from '../services/question-registry.js';
-import { mcpText, formatError } from '../utils/format.js';
+import { mcpText, mcpError } from '../utils/format.js';
 
 const AnswerQuestionSchema = z.object({
   task_id: z.string().min(1).describe('Task ID with pending question'),
@@ -32,7 +32,7 @@ answer_question { "task_id": "abc123", "answer": "2" }
 answer_question { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
 \`\`\`
 
-Check task status with \`get_status\` to see pending questions.`,
+Check pending questions via resource \`task:///all\`.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -49,7 +49,7 @@ Check task status with \`get_status\` to see pending questions.`,
   },
 };
 
-export async function handleAnswerQuestion(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleAnswerQuestion(args: unknown): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
   try {
     const parsed = AnswerQuestionSchema.parse(args || {});
     const taskId = parsed.task_id.toLowerCase().trim();
@@ -57,22 +57,22 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
     // Check if task exists
     const task = taskManager.getTask(taskId);
     if (!task) {
-      return mcpText(formatError('Task not found', 'Use `list_tasks` to find valid task IDs.'));
+      return mcpError('Task not found', 'Read resource `task:///all` to find valid task IDs.');
     }
 
     // Check if there's a pending question
     if (!questionRegistry.hasPendingQuestion(taskId)) {
       // Check if task has pendingQuestion in state (might be stale)
       if (task.pendingQuestion) {
-        return mcpText(formatError(
+        return mcpError(
           'Question registry mismatch',
           'Task shows pending question but registry is empty. The question may have timed out.'
-        ));
+        );
       }
-      return mcpText(formatError(
+      return mcpError(
         'No pending question',
-        `Task \`${taskId}\` does not have a pending question. Check status with \`get_status\`.`
-      ));
+        `Task \`${taskId}\` does not have a pending question. Read resource \`task:///all\` to check status.`
+      );
     }
 
     // Get the question for context
@@ -83,13 +83,11 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
 
     if (!result.success) {
       // Build helpful error message with valid options
-      const parts: string[] = [];
-      parts.push(`**Error:** ${result.error}`);
-      parts.push('');
-      
+      const parts: string[] = [`**Error:** ${result.error}`, ''];
+
       if (question) {
         parts.push(`**Question:** ${question.question}`);
-        
+
         if (question.choices && question.choices.length > 0) {
           parts.push('');
           parts.push('**Valid options:**');
@@ -97,14 +95,14 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
             parts.push(`- \`${i + 1}\` → ${choice}`);
           });
         }
-        
+
         if (question.allowFreeform) {
           parts.push('');
           parts.push('**Custom answer:** `CUSTOM: your answer here`');
         }
       }
-      
-      return mcpText(parts.join('\n'));
+
+      return { content: [{ type: 'text', text: parts.join('\n') }], isError: true as const };
     }
 
     // Success - build confirmation
@@ -127,14 +125,11 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
 
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return mcpText(formatError(
-        'Invalid input',
-        'Required: task_id (string), answer (string)'
-      ));
+      return mcpError('Invalid input', 'Required: task_id (string), answer (string)');
     }
-    return mcpText(formatError(
+    return mcpError(
       error instanceof Error ? error.message : 'Unknown error',
       'Check task_id is valid and task has a pending question.'
-    ));
+    );
   }
 }

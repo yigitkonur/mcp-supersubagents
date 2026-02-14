@@ -5,7 +5,7 @@
  * Provides last N turns with message truncation to prevent excessive context size.
  */
 
-import { readFileSync } from 'fs';
+import { readFile } from 'fs/promises';
 import type { CopilotSession, SessionEvent } from '@github/copilot-sdk';
 import { TaskState } from '../types.js';
 
@@ -22,9 +22,9 @@ interface MessagePair {
  * Parse output file and extract recent message pairs.
  * Simple heuristic: split on common markers.
  */
-function parseOutputFile(filePath: string): MessagePair[] {
+async function parseOutputFile(filePath: string): Promise<MessagePair[]> {
   try {
-    const content = readFileSync(filePath, 'utf-8');
+    const content = await readFile(filePath, 'utf-8');
     const pairs: MessagePair[] = [];
 
     // Split by common output markers
@@ -138,7 +138,7 @@ function fallbackReasonIntro(reason?: string): string {
  * Build handoff prompt from session snapshot.
  * Includes original prompt and bounded recent context.
  */
-export function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS, reason?: string): string {
+export async function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS, reason?: string): Promise<string> {
   const parts: string[] = [];
 
   // Header explaining the handoff
@@ -152,7 +152,7 @@ export function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX_TURNS
 
   // Extract recent context if output file exists
   if (task.outputFilePath) {
-    const pairs = parseOutputFile(task.outputFilePath);
+    const pairs = await parseOutputFile(task.outputFilePath);
     const recentPairs = pairs.slice(-maxTurns);
 
     if (recentPairs.length > 0) {
@@ -197,14 +197,14 @@ export async function buildHandoffPromptFromSession(
   reason?: string
 ): Promise<string> {
   if (!session) {
-    return buildHandoffPrompt(task, maxTurns, reason);
+    return await buildHandoffPrompt(task, maxTurns, reason);
   }
 
   try {
     const events = await session.getMessages();
     const pairs = pairsFromSessionEvents(events);
     if (pairs.length === 0) {
-      return buildHandoffPrompt(task, maxTurns, reason);
+      return await buildHandoffPrompt(task, maxTurns, reason);
     }
 
     const parts: string[] = [];
@@ -236,6 +236,6 @@ export async function buildHandoffPromptFromSession(
     return snapshot;
   } catch (error) {
     console.warn(`[session-snapshot] Failed to load session history: ${error}`);
-    return buildHandoffPrompt(task, maxTurns, reason);
+    return await buildHandoffPrompt(task, maxTurns, reason);
   }
 }

@@ -1082,6 +1082,10 @@ class SDKSessionAdapter {
       subagent.status = 'completed';
       subagent.endedAt = new Date().toISOString();
       binding.completedSubagents.push(subagent);
+      // Cap to prevent unbounded growth during long sessions
+      if (binding.completedSubagents.length > 200) {
+        binding.completedSubagents = binding.completedSubagents.slice(-100);
+      }
       binding.activeSubagents.delete(toolCallId);
     }
 
@@ -1094,13 +1098,17 @@ class SDKSessionAdapter {
    */
   private handleSubagentFailed(taskId: string, event: SubagentFailedEvent, binding: SessionBinding): void {
     const { agentName, toolCallId, error } = event.data;
-    
+
     const subagent = binding.activeSubagents.get(toolCallId);
     if (subagent) {
       subagent.status = 'failed';
       subagent.error = error;
       subagent.endedAt = new Date().toISOString();
       binding.completedSubagents.push(subagent);
+      // Cap to prevent unbounded growth during long sessions
+      if (binding.completedSubagents.length > 200) {
+        binding.completedSubagents = binding.completedSubagents.slice(-100);
+      }
       binding.activeSubagents.delete(toolCallId);
     }
 

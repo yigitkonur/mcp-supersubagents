@@ -3,7 +3,7 @@ import { TaskState, TaskStatus, TERMINAL_STATUSES } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
 import { TASK_STALL_WARN_MS, TASK_TTL_MS } from '../config/timeouts.js';
-import { createOutputFile, appendToOutputFile, finalizeOutputFile } from './output-file.js';
+import { createOutputFile, appendToOutputFile, finalizeOutputFile, getOutputPath, closeAllOutputHandles } from './output-file.js';
 
 const MAX_TASKS = 100;
 
@@ -103,17 +103,16 @@ class TaskManager {
   private taskDeletedCallback: ((taskId: string) => void) | null = null;
 
   constructor() {
-    this.startCleanup();
-    this.startHealthCheck();
+    // Timers are started lazily in setCwd() after workspace is known
   }
 
   /**
    * Set the current workspace and load persisted tasks
    * Also triggers auto-retry for rate-limited tasks
    */
-  setCwd(cwd: string): void {
+  async setCwd(cwd: string): Promise<void> {
     this.currentCwd = cwd;
-    const loadedTasks = loadTasks(cwd);
+    const loadedTasks = await loadTasks(cwd);
     
     // Load tasks into the map
     for (const task of loadedTasks) {
@@ -129,6 +128,10 @@ class TaskManager {
 
     // Process waiting tasks whose dependencies are already satisfied
     this.processWaitingTasks();
+
+    // Start periodic timers now that we have a workspace
+    if (!this.cleanupInterval) this.startCleanup();
+    if (!this.healthCheckInterval) this.startHealthCheck();
 
     // Persist recovered state so restart recovery isn't repeated forever
     if (loadedTasks.length > 0) {
@@ -253,9 +256,8 @@ class TaskManager {
     
     const bypassedDeps = task.dependsOn || [];
 
-    // Clear dependencies so retries won't re-block
-    task.dependsOn = [];
-    this.schedulePersist('state');
+    // Clear dependencies so retries won't re-block (route through updateTask for consistency)
+    this.updateTask(task.id, { dependsOn: [] });
 
     console.error(`[task-manager] Force starting ${task.id}, bypassing deps: ${bypassedDeps.join(', ')}`);
 
@@ -481,25 +483,26 @@ class TaskManager {
     this.lastPersistTrigger = trigger;
 
     this.persistTimeout = setTimeout(() => {
-      this.persistNow();
+      this.persistNow().catch(() => {});
     }, debounceMs);
   }
 
   /**
    * Persist tasks immediately
    */
-  private persistNow(): void {
+  private async persistNow(): Promise<void> {
     if (!this.currentCwd) {
       return;
     }
     const tasks = Array.from(this.tasks.values());
-    saveTasks(this.currentCwd, tasks);
+    await saveTasks(this.currentCwd, tasks);
   }
 
   private startCleanup(): void {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, CLEANUP_INTERVAL_MS);
+    this.cleanupInterval.unref();
   }
 
   /**
@@ -510,6 +513,7 @@ class TaskManager {
     this.healthCheckInterval = setInterval(() => {
       this.checkSessionHealth();
     }, HEALTH_CHECK_INTERVAL_MS);
+    this.healthCheckInterval.unref();
   }
 
   /**
@@ -651,8 +655,12 @@ class TaskManager {
     }
     
     const startTime = new Date().toISOString();
-    // Create output file for live monitoring
-    const outputFilePath = cwd ? createOutputFile(cwd, id) : null;
+    // Eagerly construct the expected output path so callers can reference it immediately.
+    // Actual file creation is async fire-and-forget.
+    const outputFilePath = cwd ? getOutputPath(cwd, id) : null;
+    if (cwd) {
+      createOutputFile(cwd, id).catch(() => {});
+    }
     
     const task: TaskState = {
       id,
@@ -693,33 +701,39 @@ class TaskManager {
     }
 
     const previousStatus = task.status;
-    const updated = { ...task, ...updates };
-    const statusChanged = updates.status && updates.status !== previousStatus;
-    if (updates.status && statusChanged && TERMINAL_STATUSES.has(updates.status)) {
+
+    // Mutate in-place to prevent reference drift with appendOutput.
+    // Both appendOutput and updateTask operate on the same Map entry;
+    // replacing the object (spread) would cause appendOutput to push
+    // to a stale reference that's no longer in the Map.
+    Object.assign(task, updates);
+
+    const statusChanged = updates.status !== undefined && updates.status !== previousStatus;
+    if (statusChanged && TERMINAL_STATUSES.has(task.status)) {
       // Clear session reference on terminal status (SDK adapter handles actual cleanup)
-      updated.session = undefined;
-      if (!updates.endTime) {
-        updated.endTime = new Date().toISOString();
+      task.session = undefined;
+      if (!task.endTime) {
+        task.endTime = new Date().toISOString();
       }
-      // Finalize output file with completion status
+      // Finalize output file with completion status (async, fire-and-forget)
       if (task.cwd) {
-        finalizeOutputFile(task.cwd, task.id, updates.status, updates.error);
+        finalizeOutputFile(task.cwd, task.id, task.status, task.error).catch(() => {});
       }
     }
     // Also clear session reference on RATE_LIMITED transition (session is no longer valid)
-    if (updates.status === TaskStatus.RATE_LIMITED && statusChanged) {
-      updated.session = undefined;
+    if (task.status === TaskStatus.RATE_LIMITED && statusChanged) {
+      task.session = undefined;
     }
-    this.tasks.set(normalizedId, updated);
+    // No need to re-set in Map — object reference is unchanged
     this.schedulePersist('state');
 
     // Fire status change callback
-    if (updates.status && updates.status !== previousStatus) {
-      try { this.statusChangeCallback?.(updated, previousStatus); } catch {}
+    if (statusChanged) {
+      try { this.statusChangeCallback?.(task, previousStatus); } catch {}
     }
 
-    if (updates.status && updates.status !== previousStatus) {
-      if (updates.status === TaskStatus.RATE_LIMITED || previousStatus === TaskStatus.RATE_LIMITED) {
+    if (statusChanged) {
+      if (task.status === TaskStatus.RATE_LIMITED || previousStatus === TaskStatus.RATE_LIMITED) {
         this.scheduleRateLimitCheck();
       }
     }
@@ -729,7 +743,7 @@ class TaskManager {
       this.processWaitingTasks();
     }
 
-    return updated;
+    return task;
   }
 
   /**
@@ -741,7 +755,7 @@ class TaskManager {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (task?.cwd) {
-      appendToOutputFile(task.cwd, task.id, line);
+      appendToOutputFile(task.cwd, task.id, line).catch(() => {});
     }
   }
 
@@ -758,10 +772,10 @@ class TaskManager {
       }
       task.output.push(line);
       try { this.outputCallback?.(id, line); } catch {}
-      
-      // Write to output file for live monitoring
+
+      // Write to output file for live monitoring (async, fire-and-forget)
       if (task.cwd) {
-        appendToOutputFile(task.cwd, task.id, line);
+        appendToOutputFile(task.cwd, task.id, line).catch(() => {});
       }
       
       if (task.output.length > MAX_OUTPUT_LINES) {
@@ -857,8 +871,11 @@ class TaskManager {
     }
     await Promise.allSettled(abortPromises);
 
+    // Close all output file handles
+    await closeAllOutputHandles();
+
     // Final persist before shutdown
-    this.persistNow();
+    await this.persistNow();
   }
 }
 

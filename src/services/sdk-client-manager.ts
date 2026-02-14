@@ -15,7 +15,10 @@
  */
 
 import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse, type PermissionHandler, type PermissionRequest, type PermissionRequestResult } from '@github/copilot-sdk';
-import { execSync } from 'node:child_process';
+import { execSync, exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
 import { accountManager } from './account-manager.js';
 import { questionRegistry } from './question-registry.js';
 import { createSessionHooks } from './session-hooks.js';
@@ -595,11 +598,10 @@ class SDKClientManager {
 
       let ptmxCount = 0;
       try {
-        const output = execSync(`lsof -p ${pid} 2>/dev/null | grep -c ptmx`, {
-          encoding: 'utf8',
+        const { stdout } = await execAsync(`lsof -p ${pid} 2>/dev/null | grep -c ptmx`, {
           timeout: 5_000,
         });
-        ptmxCount = parseInt(output.trim(), 10) || 0;
+        ptmxCount = parseInt(stdout.trim(), 10) || 0;
       } catch {
         // grep returns exit code 1 when no matches → ptmxCount stays 0
         continue;

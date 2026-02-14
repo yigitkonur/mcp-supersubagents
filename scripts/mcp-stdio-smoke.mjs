@@ -134,10 +134,10 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
 async function spawnAndWait(client, cwd, index, prompt, taskTimeoutMs, waitTimeoutMs) {
 
   const spawnResult = await client.callTool({
-    name: 'spawn_task',
+    name: 'spawn_agent',
     arguments: {
+      role: 'researcher',
       prompt,
-      task_type: 'super-coder',
       cwd,
       timeout: taskTimeoutMs,
       autonomous: true,
@@ -204,7 +204,7 @@ async function main() {
 
     const tools = await client.listTools();
     assert(Array.isArray(tools.tools), 'tools/list did not return a tools array');
-    assert(tools.tools.some((t) => t.name === 'spawn_task'), 'spawn_task tool not found');
+    assert(tools.tools.some((t) => t.name === 'spawn_agent'), 'spawn_agent tool not found');
     assert(tools.tools.some((t) => t.name === 'cancel_task'), 'cancel_task tool not found');
     log(`tools/list ok (${tools.tools.length} tools)`);
 
@@ -224,16 +224,16 @@ async function main() {
     log('cleared previous tasks');
 
     let firstPrompt =
-      'MCP smoke test #1. Print exactly one short line that contains MCP_SMOKE_OK and then stop.';
+      '🎯 WHAT TO RESEARCH: MCP smoke test task #1 — verify the agent can execute basic operations.\n🤔 WHY IT MATTERS: This validates the MCP server spawn → execute → complete lifecycle works end-to-end.\n📚 WHAT\'S ALREADY KNOWN: The server initializes correctly and tools are registered.\n❓ SPECIFIC QUESTIONS:\n1. Can the agent receive and process a prompt?\n2. Can the agent produce output that includes the marker MCP_SMOKE_OK?\nPlease print exactly one short line that contains the text MCP_SMOKE_OK and then stop immediately.\n📤 HANDOFF TARGET: Automated test harness.';
     let secondPrompt =
-      'MCP smoke test #2. Print exactly one short line that contains MCP_SMOKE_OK and then stop.';
+      '🎯 WHAT TO RESEARCH: MCP smoke test task #2 — verify sequential task execution works.\n🤔 WHY IT MATTERS: This validates that the MCP server can handle back-to-back task spawns in the same session.\n📚 WHAT\'S ALREADY KNOWN: Task #1 completed successfully in this session.\n❓ SPECIFIC QUESTIONS:\n1. Can a second task execute after the first completes?\n2. Does the agent produce output containing MCP_SMOKE_OK?\nPlease print exactly one short line that contains the text MCP_SMOKE_OK and then stop immediately.\n📤 HANDOFF TARGET: Automated test harness.';
 
     if (scenario === 'lorem') {
       await fs.rm(loremPath, { force: true });
       firstPrompt =
-        'Create a file named lorem.txt in the current working directory with exactly one line: LOREM_AGENT_1. Then stop.';
+        '🎯 WHAT TO RESEARCH: File creation smoke test — verify the agent can create files on disk.\n🤔 WHY IT MATTERS: This validates that the Claude Agent SDK fallback path can execute file operations end-to-end.\n📚 WHAT\'S ALREADY KNOWN: The MCP server is running and tools are available.\n❓ SPECIFIC QUESTIONS:\n1. Can the agent create a file in the working directory?\n2. Does the file contain the expected marker text?\nCreate a file named lorem.txt in the current working directory with exactly one line: LOREM_AGENT_1. Then stop immediately.\n📤 HANDOFF TARGET: Automated test harness.';
       secondPrompt =
-        'Append a new line to lorem.txt in the current working directory with exactly: LOREM_AGENT_2. Then stop.';
+        '🎯 WHAT TO RESEARCH: File append smoke test — verify the agent can modify existing files.\n🤔 WHY IT MATTERS: This validates sequential file operations work correctly in back-to-back task execution.\n📚 WHAT\'S ALREADY KNOWN: Task #1 created lorem.txt with LOREM_AGENT_1.\n❓ SPECIFIC QUESTIONS:\n1. Can the agent append to an existing file?\n2. Does the file contain both markers after the append?\nAppend a new line to lorem.txt in the current working directory with exactly: LOREM_AGENT_2. Then stop immediately.\n📤 HANDOFF TARGET: Automated test harness.';
       log(`scenario=lorem (target=${loremPath})`);
     } else {
       log(`scenario=${scenario}`);

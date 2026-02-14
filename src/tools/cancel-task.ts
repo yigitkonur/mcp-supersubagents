@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { clientContext } from '../services/client-context.js';
 import { deleteStorage } from '../services/task-persistence.js';
-import { mcpText, formatError, displayStatus, formatTable } from '../utils/format.js';
+import { mcpText, mcpError, displayStatus, formatTable } from '../utils/format.js';
 
 const CancelTaskSchema = z.object({
   task_id: z.union([
@@ -63,28 +63,28 @@ interface CancelResult {
   error?: string;
 }
 
-export async function handleCancelTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }> }> {
+export async function handleCancelTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
   try {
     const parsed = CancelTaskSchema.parse(args || {});
     
     // Handle "all" - clear workspace
     if (parsed.task_id === 'all') {
       if (!parsed.clear) {
-        return mcpText(formatError(
+        return mcpError(
           'Use clear=true to clear all tasks',
           '`{ "task_id": "all", "clear": true, "confirm": true }`'
-        ));
+        );
       }
       if (!parsed.confirm) {
-        return mcpText(formatError(
+        return mcpError(
           'Confirmation required',
           '`{ "task_id": "all", "clear": true, "confirm": true }`'
-        ));
+        );
       }
       
       const cwd = clientContext.getDefaultCwd();
       const taskCount = await taskManager.clearAllTasks();
-      const deleted = deleteStorage(cwd);
+      const deleted = await deleteStorage(cwd);
       
       return mcpText(deleted 
         ? `✅ Cleared **${taskCount}** tasks from workspace.`
@@ -146,10 +146,10 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
         ];
         return mcpText(parts.filter(Boolean).join('\n'));
       } else {
-        return mcpText(formatError(
+        return mcpError(
           `Failed to cancel **${result.task_id}**: ${result.error}`,
           'Only running/pending/waiting tasks can be cancelled. Check task:///all for status.'
-        ));
+        );
       }
     }
     
@@ -173,9 +173,9 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     return mcpText(parts.join('\n'));
     
   } catch (error) {
-    return mcpText(formatError(
+    return mcpError(
       error instanceof Error ? error.message : 'Unknown error',
       'Provide task_id as string, array, or "all". Check task:///all for valid IDs.'
-    ));
+    );
   }
 }

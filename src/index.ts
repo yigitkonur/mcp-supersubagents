@@ -11,11 +11,7 @@ import {
   McpError, ErrorCode,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { spawnTaskTool, handleSpawnTask } from './tools/spawn-task.js';
-import { spawnCoderTool, handleSpawnCoder } from './tools/spawn-coder.js';
-import { spawnPlannerTool, handleSpawnPlanner } from './tools/spawn-planner.js';
-import { spawnTesterTool, handleSpawnTester } from './tools/spawn-tester.js';
-import { spawnResearcherTool, handleSpawnResearcher } from './tools/spawn-researcher.js';
+import { spawnAgentTool, handleSpawnAgent } from './tools/spawn-agent.js';
 import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
@@ -29,7 +25,7 @@ import { buildMCPTask } from './services/task-status-mapper.js';
 import { progressRegistry } from './services/progress-registry.js';
 import { subscriptionRegistry, taskIdToUri, uriToTaskId } from './services/subscription-registry.js';
 import { questionRegistry } from './services/question-registry.js';
-import { mcpText } from './utils/format.js';
+import { mcpText, mcpValidationError } from './utils/format.js';
 import { TaskStatus } from './types.js';
 import type { ToolContext } from './types.js';
 import { createRequire } from 'module';
@@ -244,20 +240,16 @@ server.oninitialized = async () => {
   
   // Load persisted tasks for this workspace (also triggers auto-retry for rate-limited tasks)
   const cwd = clientContext.getDefaultCwd();
-  taskManager.setCwd(cwd);
+  await taskManager.setCwd(cwd);
   
   console.error(`[index] MCP initialized - accounts: ${accountManager.getTokenCount()}, cwd: ${cwd}`);
 };
 
 // --- Tool handlers ---
 
-// 8 tools: 4 specialized spawn tools + legacy spawn_task + send_message + cancel + answer
+// 4 tools: spawn_agent + send_message + cancel + answer
 const tools = [
-  spawnCoderTool,
-  spawnPlannerTool,
-  spawnTesterTool,
-  spawnResearcherTool,
-  spawnTaskTool,
+  spawnAgentTool,
   sendMessageTool,
   cancelTaskTool,
   answerQuestionTool,
@@ -275,15 +267,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   };
 
   switch (name) {
-    case 'spawn_coder': return handleSpawnCoder(args, ctx);
-    case 'spawn_planner': return handleSpawnPlanner(args, ctx);
-    case 'spawn_tester': return handleSpawnTester(args, ctx);
-    case 'spawn_researcher': return handleSpawnResearcher(args, ctx);
-    case 'spawn_task': return handleSpawnTask(args, ctx);
+    case 'spawn_agent': return handleSpawnAgent(args, ctx);
     case 'send_message': return handleSendMessage(args, ctx);
     case 'cancel_task': return handleCancelTask(args);
     case 'answer_question': return handleAnswerQuestion(args);
-    default: return mcpText(`**Error:** Unknown tool \`${name}\`. Use MCP Resources: task:///all or task:///{id}`);
+    default: return mcpValidationError(`Unknown tool \`${name}\`. Available: spawn_agent, send_message, cancel_task, answer_question.`);
   }
 });
 
@@ -776,13 +764,10 @@ async function main() {
   }
   
   // ============================================================================
-  // Transport: STDIO (default) or HTTP Streamable (MCP_TRANSPORT=http)
+  // Transport: STDIO only
   // ============================================================================
 
-  const transportMode = (process.env.MCP_TRANSPORT || 'stdio').toLowerCase();
-  if (transportMode === 'stdio') {
-    installStdIoSafetyGuards();
-  }
+  installStdIoSafetyGuards();
 
   // Graceful shutdown with SDK cleanup (guard against double-shutdown)
   let isShuttingDown = false;
@@ -800,80 +785,16 @@ async function main() {
   };
   shutdownHandler = shutdown;
 
-  if (transportMode === 'http') {
-    const { StreamableHTTPServerTransport } = await import(
-      '@modelcontextprotocol/sdk/server/streamableHttp.js'
-    );
-    const { createServer: createHttpServer } = await import('node:http');
-    const { randomUUID } = await import('node:crypto');
+  // STDIO transport (only supported mode)
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
 
-    const PORT = parseInt(process.env.MCP_PORT || '3000', 10);
-    const sessions = new Map<string, InstanceType<typeof StreamableHTTPServerTransport>>();
-
-    const mcpHttpServer = createHttpServer(async (req, res) => {
-      const url = new URL(req.url || '/', `http://localhost:${PORT}`);
-
-      if (url.pathname === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', name: 'mcp-supersubagents', version: PKG_VERSION }));
-        return;
-      }
-
-      if (url.pathname === '/mcp') {
-        if (req.method === 'DELETE') {
-          const sessionId = req.headers['mcp-session-id'] as string | undefined;
-          if (sessionId && sessions.has(sessionId)) {
-            await sessions.get(sessionId)!.handleRequest(req, res);
-            sessions.delete(sessionId);
-          } else {
-            res.writeHead(404).end('Session not found');
-          }
-          return;
-        }
-
-        const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-        if (sessionId && sessions.has(sessionId)) {
-          await sessions.get(sessionId)!.handleRequest(req, res);
-        } else if (!sessionId && req.method === 'POST') {
-          const sessionTransport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (id: string) => {
-              sessions.set(id, sessionTransport);
-              console.error(`[http] Session initialized: ${id}`);
-            },
-            onsessionclosed: (id: string) => {
-              sessions.delete(id);
-              console.error(`[http] Session closed: ${id}`);
-            },
-          });
-
-          await server.connect(sessionTransport);
-          await sessionTransport.handleRequest(req, res);
-        } else {
-          res.writeHead(400).end('Bad request — missing session ID');
-        }
-        return;
-      }
-
-      res.writeHead(404).end('Not found');
-    });
-
-    mcpHttpServer.listen(PORT, () => {
-      console.error(`[mcp-supersubagents] HTTP Streamable transport listening on port ${PORT}`);
-    });
-  } else {
-    // STDIO transport (default)
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-
-    // If the MCP client disconnects, stdin closes; exit to avoid orphaned hot-loop processes.
-    const onStdioDisconnected = () => {
-      shutdown('stdio_disconnected', 0).catch(() => process.exit(0));
-    };
-    process.stdin.once('end', onStdioDisconnected);
-    process.stdin.once('close', onStdioDisconnected);
-  }
+  // If the MCP client disconnects, stdin closes; exit to avoid orphaned hot-loop processes.
+  const onStdioDisconnected = () => {
+    shutdown('stdio_disconnected', 0).catch(() => process.exit(0));
+  };
+  process.stdin.once('end', onStdioDisconnected);
+  process.stdin.once('close', onStdioDisconnected);
 
   process.on('SIGINT', () => shutdown('SIGINT', 0));
   process.on('SIGTERM', () => shutdown('SIGTERM', 0));
@@ -882,7 +803,7 @@ async function main() {
   // Task-level error handling already catches most issues; crashing here would
   // disconnect the client and lose all in-flight work.
   process.on('unhandledRejection', (reason) => {
-    if (transportMode === 'stdio' && isBrokenPipeLikeError(reason)) {
+    if (isBrokenPipeLikeError(reason)) {
       exitOnBrokenPipe('unhandledRejection', reason);
       return;
     }
@@ -895,7 +816,7 @@ async function main() {
 
   let uncaughtExceptionInProgress = false;
   process.on('uncaughtException', (err) => {
-    if (transportMode === 'stdio' && isBrokenPipeLikeError(err)) {
+    if (isBrokenPipeLikeError(err)) {
       exitOnBrokenPipe('uncaughtException', err);
       return;
     }

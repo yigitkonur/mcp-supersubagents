@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "super-agents": {
+      "command": "node",
+      "args": ["./build/index.js"],
+      "env": {}
+    }
+  }
+}

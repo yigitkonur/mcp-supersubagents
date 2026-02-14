@@ -1,10 +1,13 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { mkdir, readFile, writeFile, rename, unlink, access, constants } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import { TaskState, TaskStatus } from '../types.js';
 
 const STORAGE_DIR_NAME = '.super-agents';
+
+// Cache to avoid repeated mkdir calls
+let storageDirExists = false;
 
 /**
  * Get the storage directory path (~/.super-agents/)
@@ -29,14 +32,13 @@ export function getStoragePath(cwd: string): string {
 }
 
 /**
- * Ensure storage directory exists
+ * Ensure storage directory exists (async, cached)
  */
-function ensureStorageDir(): boolean {
+async function ensureStorageDir(): Promise<boolean> {
+  if (storageDirExists) return true;
   try {
-    const dir = getStorageDir();
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+    await mkdir(getStorageDir(), { recursive: true });
+    storageDirExists = true;
     return true;
   } catch (error) {
     console.error(`[task-persistence] Failed to create storage directory: ${error}`);
@@ -75,7 +77,7 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
     if (task.status === TaskStatus.RATE_LIMITED) {
       return applyTaskDefaults(task);
     }
-    
+
     // Mark running/pending as failed (server crashed)
     if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING) {
       const updated: TaskState = {
@@ -95,10 +97,10 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
 }
 
 /**
- * Save tasks to disk with atomic write
+ * Save tasks to disk with atomic write (async)
  */
-export function saveTasks(cwd: string, tasks: TaskState[]): boolean {
-  if (!ensureStorageDir()) {
+export async function saveTasks(cwd: string, tasks: TaskState[]): Promise<boolean> {
+  if (!(await ensureStorageDir())) {
     return false;
   }
 
@@ -107,44 +109,44 @@ export function saveTasks(cwd: string, tasks: TaskState[]): boolean {
 
   try {
     const data = serializeTasks(tasks);
-    
+
     // Atomic write: write to temp file, then rename
-    writeFileSync(tempPath, data, 'utf-8');
-    renameSync(tempPath, filePath);
-    
+    await writeFile(tempPath, data, 'utf-8');
+    await rename(tempPath, filePath);
+
     return true;
   } catch (error) {
     console.error(`[task-persistence] Failed to save tasks: ${error}`);
-    
+
     // Clean up temp file if it exists
     try {
-      if (existsSync(tempPath)) {
-        unlinkSync(tempPath);
-      }
+      await unlink(tempPath);
     } catch {
       // Ignore cleanup errors
     }
-    
+
     return false;
   }
 }
 
 /**
- * Load tasks from disk
+ * Load tasks from disk (async)
  * Returns empty array if file doesn't exist or is corrupted
  * Marks orphaned running tasks as failed
  */
-export function loadTasks(cwd: string): TaskState[] {
+export async function loadTasks(cwd: string): Promise<TaskState[]> {
   const filePath = getStoragePath(cwd);
 
-  if (!existsSync(filePath)) {
+  try {
+    await access(filePath, constants.R_OK);
+  } catch {
     return [];
   }
 
   try {
-    const data = readFileSync(filePath, 'utf-8');
+    const data = await readFile(filePath, 'utf-8');
     const tasks = JSON.parse(data) as TaskState[];
-    
+
     if (!Array.isArray(tasks)) {
       console.error('[task-persistence] Invalid tasks file format, starting fresh');
       return [];
@@ -161,15 +163,14 @@ export function loadTasks(cwd: string): TaskState[] {
 /**
  * Delete storage file for a cwd (for testing/cleanup)
  */
-export function deleteStorage(cwd: string): boolean {
+export async function deleteStorage(cwd: string): Promise<boolean> {
   const filePath = getStoragePath(cwd);
-  
+
   try {
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-    }
+    await unlink(filePath);
     return true;
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return true; // Already gone
     console.error(`[task-persistence] Failed to delete storage: ${error}`);
     return false;
   }

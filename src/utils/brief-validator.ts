@@ -1,4 +1,4 @@
-import { existsSync, accessSync, statSync, readFileSync, constants } from 'fs';
+import { access, stat, readFile, constants } from 'fs/promises';
 import { extname, isAbsolute } from 'path';
 
 // --- Validation rule types ---
@@ -37,7 +37,7 @@ const MAX_FILE_SIZE = 200 * 1024;   // 200KB per file
 const MAX_TOTAL_SIZE = 500 * 1024;  // 500KB total
 
 const CODER_RULES: ToolValidationRules = {
-  toolName: 'spawn_coder',
+  toolName: 'spawn_agent(role: "coder")',
   minPromptLength: 1000,
   requireContextFiles: true,
   minContextFiles: 1,
@@ -54,9 +54,9 @@ const CODER_RULES: ToolValidationRules = {
   ].join('\n'),
   workflowHint: [
     '🔄 RECOMMENDED WORKFLOW:',
-    '1. spawn_planner → creates plan at .agent-workspace/plans/[topic]/',
-    '2. spawn_coder → reference plan files in context_files',
-    '3. spawn_tester → verify the implementation',
+    '1. spawn_agent(role: "planner") → creates plan at .agent-workspace/plans/[topic]/',
+    '2. spawn_agent(role: "coder") → reference plan files in context_files',
+    '3. spawn_agent(role: "tester") → verify the implementation',
     '',
     '📎 REFERENCE FILES FROM OTHER AGENTS:',
     '• Planner output: .agent-workspace/plans/[topic]/05-handoff/builder-briefing.md',
@@ -65,7 +65,7 @@ const CODER_RULES: ToolValidationRules = {
 };
 
 const PLANNER_RULES: ToolValidationRules = {
-  toolName: 'spawn_planner',
+  toolName: 'spawn_agent(role: "planner")',
   minPromptLength: 300,
   requireContextFiles: false,
   minContextFiles: 0,
@@ -81,12 +81,12 @@ const PLANNER_RULES: ToolValidationRules = {
   ].join('\n'),
   workflowHint: [
     '📎 TIP: The planner creates files at .agent-workspace/plans/[topic]/',
-    'Use those files as context_files when spawning spawn_coder next.',
+    'Use those files as context_files when spawning spawn_agent(role: "coder") next.',
   ].join('\n'),
 };
 
 const TESTER_RULES: ToolValidationRules = {
-  toolName: 'spawn_tester',
+  toolName: 'spawn_agent(role: "tester")',
   minPromptLength: 300,
   requireContextFiles: true,
   minContextFiles: 1,
@@ -109,7 +109,7 @@ const TESTER_RULES: ToolValidationRules = {
 };
 
 const RESEARCHER_RULES: ToolValidationRules = {
-  toolName: 'spawn_researcher',
+  toolName: 'spawn_agent(role: "researcher")',
   minPromptLength: 200,
   requireContextFiles: false,
   minContextFiles: 0,
@@ -125,7 +125,7 @@ const RESEARCHER_RULES: ToolValidationRules = {
   ].join('\n'),
   workflowHint: [
     '📎 TIP: Research output goes to .agent-workspace/researches/[topic]/HANDOFF.md',
-    'Reference this file when spawning spawn_planner or spawn_coder next.',
+    'Reference this file when spawning spawn_agent(role: "planner") or spawn_agent(role: "coder") next.',
   ].join('\n'),
 };
 
@@ -134,15 +134,20 @@ export const VALIDATION_RULES: Record<string, ToolValidationRules> = {
   'spawn_planner': PLANNER_RULES,
   'spawn_tester': TESTER_RULES,
   'spawn_researcher': RESEARCHER_RULES,
+  // spawn_agent delegates to these by role name
+  'coder': CODER_RULES,
+  'planner': PLANNER_RULES,
+  'tester': TESTER_RULES,
+  'researcher': RESEARCHER_RULES,
 };
 
 // --- Validation functions ---
 
-export function validateBrief(
+export async function validateBrief(
   toolName: string,
   prompt: string,
   contextFiles?: ContextFile[],
-): ValidationResult {
+): Promise<ValidationResult> {
   const rules = VALIDATION_RULES[toolName];
   if (!rules) return { valid: true, errors: [] };
 
@@ -192,39 +197,37 @@ export function validateBrief(
       continue;
     }
 
-    // File existence check
-    if (!existsSync(file.path)) {
-      errors.push({
-        code: 'FILE_NOT_FOUND',
-        message: `FILE NOT FOUND: "${file.path}" does not exist`,
-        detail: 'Ensure the file path is correct and the file has been created.\nIf referencing planner output, make sure spawn_planner has completed first.',
-      });
-      continue;
-    }
-
-    // Readability check
+    // File existence and readability check
     try {
-      accessSync(file.path, constants.R_OK);
-    } catch {
-      errors.push({
-        code: 'FILE_NOT_READABLE',
-        message: `FILE NOT READABLE: "${file.path}" exists but cannot be read`,
-        detail: 'Check file permissions. The MCP server needs read access to this file.',
-      });
+      await access(file.path, constants.R_OK);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        errors.push({
+          code: 'FILE_NOT_FOUND',
+          message: `FILE NOT FOUND: "${file.path}" does not exist`,
+          detail: 'Ensure the file path is correct and the file has been created.\nIf referencing planner output, make sure the planner task has completed first.',
+        });
+      } else {
+        errors.push({
+          code: 'FILE_NOT_READABLE',
+          message: `FILE NOT READABLE: "${file.path}" exists but cannot be read`,
+          detail: 'Check file permissions. The MCP server needs read access to this file.',
+        });
+      }
       continue;
     }
 
     // Size check
     try {
-      const stat = statSync(file.path);
-      if (stat.size > rules.maxFileSizeBytes) {
+      const fileStat = await stat(file.path);
+      if (fileStat.size > rules.maxFileSizeBytes) {
         errors.push({
           code: 'FILE_TOO_LARGE',
-          message: `FILE TOO LARGE: "${file.path}" is ${Math.round(stat.size / 1024)}KB (max: ${Math.round(rules.maxFileSizeBytes / 1024)}KB)`,
+          message: `FILE TOO LARGE: "${file.path}" is ${Math.round(fileStat.size / 1024)}KB (max: ${Math.round(rules.maxFileSizeBytes / 1024)}KB)`,
         });
         continue;
       }
-      totalSize += stat.size;
+      totalSize += fileStat.size;
     } catch (err) {
       errors.push({
         code: 'FILE_STAT_FAILED',
@@ -281,7 +284,7 @@ export function formatValidationError(toolName: string, errors: ValidationError[
 
 // --- Context file content assembly ---
 
-export function assemblePromptWithContext(prompt: string, contextFiles?: ContextFile[]): string {
+export async function assemblePromptWithContext(prompt: string, contextFiles?: ContextFile[]): Promise<string> {
   if (!contextFiles || contextFiles.length === 0) return prompt;
 
   const sections: string[] = [prompt, '', '---', '', '## 📎 ATTACHED CONTEXT FILES', ''];
@@ -294,7 +297,7 @@ export function assemblePromptWithContext(prompt: string, contextFiles?: Context
     sections.push('');
 
     try {
-      const content = readFileSync(file.path, 'utf-8');
+      const content = await readFile(file.path, 'utf-8');
       // Truncate if over limit (should be caught by validation, but safety net)
       const truncated = content.length > MAX_FILE_SIZE
         ? content.slice(0, MAX_FILE_SIZE) + '\n\n[... TRUNCATED — file exceeds 200KB limit ...]'
