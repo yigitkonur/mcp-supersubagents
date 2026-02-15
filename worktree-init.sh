@@ -5,7 +5,7 @@ set -euo pipefail
 # worktree-init.sh — Bootstrap a git worktree for mcp-supersubagents
 #
 # Copies untracked config files (.env, .claude/settings.local.json) from the
-# main repo, then installs dependencies with npm.  Idempotent — safe to re-run.
+# main repo, then installs dependencies with pnpm.  Idempotent — safe to re-run.
 #
 # Usage:
 #   cd /path/to/worktree && bash worktree-init.sh
@@ -42,10 +42,10 @@ fi
 
 # ---- 3. Install dependencies ----
 echo ""
-echo "==> Installing npm dependencies ..."
+echo "==> Installing pnpm dependencies ..."
 cd "${WORKTREE_DIR}"
-npm ci
-echo "    npm ci complete."
+pnpm install --frozen-lockfile
+echo "    pnpm install complete."
 
 echo ""
 echo "==> Worktree ready at ${WORKTREE_DIR}"
