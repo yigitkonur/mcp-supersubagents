@@ -538,16 +538,15 @@ git clone https://github.com/yigitkonur/mcp-supersubagents.git
 cd mcp-supersubagents
 
 # Install dependencies
-npm install
-
+pnpm install
 # Build (TypeScript + copy MDX templates)
-npm run build
+pnpm build
 
 # Watch mode (auto-reload)
-npm run dev
+pnpm dev
 
 # Run the compiled server
-npm start
+pnpm start
 ```
 
 > **Build note:** `tsc` only compiles `.ts` files. The build script automatically copies `.mdx` template files to `build/templates/`. If you modify templates, rebuild to pick up changes.

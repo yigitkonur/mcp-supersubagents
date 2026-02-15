@@ -9,11 +9,11 @@ MCP server for spawning and managing parallel AI sub-agents via GitHub Copilot S
 ## Build & Run
 
 ```bash
-npm run build       # tsc --noEmitOnError false + copy .mdx templates to build/
-npm run dev         # tsx watch for hot-reload
-npm start           # node build/index.js
-npm run clean       # remove build/
-npm run mcp:smoke   # MCP stdio protocol smoke test
+pnpm build       # tsc --noEmitOnError false + copy .mdx templates to build/
+pnpm dev         # tsx watch for hot-reload
+pnpm start           # node build/index.js
+pnpm clean       # remove build/
+pnpm mcp:smoke   # MCP stdio protocol smoke test
 ```
 
 Note: `--noEmitOnError false` means the build succeeds even with TypeScript errors.
