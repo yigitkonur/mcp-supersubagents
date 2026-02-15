@@ -1,7 +1,7 @@
 {
   "name": "mcp-supersubagents",
-  "version": "1.4.14",
-  "description": "MCP server for spawning and managing GitHub Copilot CLI sub-agents \u2014 parallel task execution with planner, coder, researcher & tester specialists",
+  "version": "1.4.15",
+  "description": "MCP server for spawning and managing GitHub Copilot CLI sub-agents — parallel task execution with planner, coder, researcher & tester specialists",
   "type": "module",
   "main": "build/index.js",
   "bin": {
@@ -20,7 +20,7 @@
   "bugs": {
     "url": "https://github.com/yigitkonur/mcp-supersubagents/issues"
   },
-  "author": "Yi\u011fit Konur <yigit35@gmail.com>",
+  "author": "Yiğit Konur <yigit35@gmail.com>",
   "scripts": {
     "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/; mkdir -p build/templates/overlays && cp src/templates/overlays/*.mdx build/templates/overlays/",
     "dev": "tsx watch src/index.ts",
