@@ -56,150 +56,150 @@
 ### VE-004 — TOCTOU Race: File Validated Then Read Separately
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/brief-validator.ts:200-238, 299-305`
 - **Current Behavior:** `validateBrief()` checks file existence and size, then `assemblePromptWithContext()` reads the file in a separate async operation. Between these, a file can be swapped, grown, or replaced.
 - **Risk:** Size limit bypass, content injection via symlink redirect.
-- **Recommended Fix:** Read file content during validation (single read) and pass already-read content to assembly.
+- **Fix Applied:** Read file content during validation (single read) and pass already-read content to assembly.
 
 ---
 
 ### VE-005 — Task ID Collision: Silent Overwrite Without Detection
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/task-id-generator.ts:7-18`, `src/services/task-manager.ts:988-1035`
 - **Current Behavior:** `createTask()` sets the task in the Map with no check for existing entries. ~42.7M ID space; over 10,000 spawns, collision probability ~2.3%.
 - **Risk:** Orphaned running processes, lost task state and output.
-- **Recommended Fix:** Add collision-retry loop in `createTask()`.
+- **Fix Applied:** Add collision-retry loop in `createTask()`.
 
 ---
 
 ### VE-006 — `depends_on` Array: No Maximum Length Constraint
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/sanitize.ts:14`
 - **Current Behavior:** `sharedDependsOnSchema` has no `.max()`. Thousands of dependency IDs can be passed.
 - **Risk:** CPU exhaustion via algorithmic complexity attack on cycle detection.
-- **Recommended Fix:** Add `.max(50)` to `sharedDependsOnSchema`.
+- **Fix Applied:** Add `.max(50)` to `sharedDependsOnSchema`.
 
 ---
 
 ### VE-007 — `cwd` Parameter: No Validation or Sanitization
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/sanitize.ts:27,73,85,98,109`
 - **Current Behavior:** `cwd` is `z.string().optional()` — no absolute path check, no existence check, no workspace boundary check.
 - **Risk:** Agent operates in attacker-controlled directory. Output files written to sensitive directories.
-- **Recommended Fix:** Validate `cwd` is absolute, exists, and falls within workspace roots.
+- **Fix Applied:** Validate `cwd` is absolute, exists, and falls within workspace roots.
 
 ---
 
 ### VE-008 — `answer` Field: No Maximum Length
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/tools/answer-question.ts:15`
 - **Current Behavior:** `answer: z.string().min(1)` with no `.max()`. Arbitrary-size answers accepted.
 - **Risk:** Memory exhaustion, prompt injection at scale.
-- **Recommended Fix:** Add `.max(10000)`.
+- **Fix Applied:** Add `.max(10000)`.
 
 ---
 
 ### VE-009 — Freeform Answer: Missing Control Character Sanitization
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/question-registry.ts:186-228`
 - **Current Behavior:** `CUSTOM:` prefixed answers have control characters stripped, but freeform responses do not.
 - **Risk:** Prompt injection or agent behavior manipulation via control characters.
-- **Recommended Fix:** Apply the same control character stripping regex to all freeform answers.
+- **Fix Applied:** Apply the same control character stripping regex to all freeform answers.
 
 ---
 
 ### VE-010 — Symlink Following in Context File Reads
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/brief-validator.ts:200-238`
 - **Current Behavior:** `access()` and `stat()` follow symlinks by default.
 - **Risk:** Bypass workspace boundary assumptions via symlink indirection.
-- **Recommended Fix:** Use `lstat()` to detect symlinks, then `realpath()` to resolve and verify.
+- **Fix Applied:** Use `lstat()` to detect symlinks, then `realpath()` to resolve and verify.
 
 ---
 
 ### VE-011 — `file://` URI Parsing: Naive String Replacement
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/client-context.ts:15-18`
 - **Current Behavior:** `decodeURIComponent(r.uri.replace('file://', ''))` fails for `file://hostname/path` and edge cases.
 - **Risk:** Default CWD set to attacker-influenced location.
-- **Recommended Fix:** Use `url.fileURLToPath()` for proper RFC 8089 file URI parsing.
+- **Fix Applied:** Use `url.fileURLToPath()` for proper RFC 8089 file URI parsing.
 
 ---
 
 ### VE-012 — Zod Schema Mismatch: `SpawnAgentSchema` Weaker Than Role-Specific Schemas
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/tools/spawn-agent.ts:33-44`, `src/utils/sanitize.ts:68-114`
 - **Current Behavior:** The unified `SpawnAgentSchema` doesn't enforce role-specific context file requirements or specialization enum validation.
 - **Risk:** Defense-in-depth gap. Invalid specializations pass silently.
-- **Recommended Fix:** Add conditional Zod refinements or validate specialization against role-appropriate enums.
+- **Fix Applied:** Add conditional Zod refinements or validate specialization against role-appropriate enums.
 
 ---
 
 ### VE-013 — Cancel-All Race with Concurrent Spawn
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/tools/cancel-task.ts:81-103`
 - **Current Behavior:** A spawn already past `createTask()` check can create a new task after `clearAllTasks()` completes.
 - **Risk:** Incomplete cleanup.
-- **Recommended Fix:** Add a generation counter that spawn checks after async operations complete.
+- **Fix Applied:** Add a generation counter that spawn checks after async operations complete.
 
 ---
 
 ### VE-014 — `prompt` Field: No Final Size Check on Assembled Prompt
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/sanitize.ts:69`, `src/utils/brief-validator.ts:287-315`
 - **Current Behavior:** User prompt (100K max) + context files (500KB) + template (10-20KB) = 600KB+ with no final check.
 - **Risk:** Wasted compute if rejected by SDK.
-- **Recommended Fix:** Add final size check on assembled prompt.
+- **Fix Applied:** Add final size check on assembled prompt.
 
 ---
 
 ### VE-015 — `Math.random()` for Task IDs: Predictable in Theory
 
 - **Severity:** Info
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/utils/task-id-generator.ts:8`
 - **Current Behavior:** V8's xorshift128+ PRNG is deterministic given seed state.
 - **Risk:** Theoretical. Practical exploitation unlikely.
-- **Recommended Fix:** Use `crypto.randomInt()` instead.
+- **Fix Applied:** Use `crypto.randomInt()` instead.
 
 ---
 
 ### VE-016 — Template Cache: No Invalidation
 
 - **Severity:** Info
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/templates/index.ts:17, 102-111`
 - **Current Behavior:** Once loaded, templates cached forever. Hot patches require restart.
 - **Risk:** Operational issue only.
-- **Recommended Fix:** Add `clearTemplateCache()` callable from SIGHUP handler.
+- **Fix Applied:** Add `clearTemplateCache()` callable from SIGHUP handler.
 
 ---
 
 ### VE-017 — Question Cleanup: Double-Reject Possible
 
 - **Severity:** Info
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/question-registry.ts:348-354`
 - **Current Behavior:** `cleanup()` calls `reject()` without checking `settled`. Safe due to Promise idempotency.
 - **Risk:** None.

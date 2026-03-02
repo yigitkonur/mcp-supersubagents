@@ -62,84 +62,84 @@ All status mutations route through `updateTask()` which enforces `VALID_TRANSITI
 ### SM-001 — `appendOutput()` Mutates Terminal Tasks Without Guard
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:1142-1196`
 - **Current Behavior:** `appendOutput()` only checks `if (task)` — no terminal status guard. Late SDK events mutate the task object, overwrite `lastOutputAt`, `lastHeartbeatAt`, and can clear `timeoutReason`/`timeoutContext` on TIMED_OUT tasks.
 - **Risk:** Diagnostic data about timeouts destroyed by late events.
-- **Recommended Fix:** Add `if (isTerminalStatus(task.status)) return;` guard.
+- **Fix Applied:** Add `if (isTerminalStatus(task.status)) return;` guard.
 
 ---
 
 ### SM-003 — `processWaitingTasks()` Asymmetric Dispatch
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:1117-1124`
 - **Current Behavior:** COMPLETED triggers `processWaitingTasks` via `queueMicrotask`, while FAILED/CANCELLED/TIMED_OUT triggers it synchronously. Creates a window of inconsistency.
 - **Risk:** Waiting task failure delayed by one microtask. Not functionally broken.
-- **Recommended Fix:** Use the same dispatch mechanism for both paths.
+- **Fix Applied:** Use the same dispatch mechanism for both paths.
 
 ---
 
 ### SM-008 — `updateTask` Accepts Non-Status Mutations on Terminal Tasks
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:1046-1127`
 - **Current Behavior:** Any non-status field can be mutated on a terminal task. No enforcement of which fields are allowed post-terminal.
 - **Risk:** Late events can overwrite completion data.
-- **Recommended Fix:** After entering terminal status, only allow explicitly whitelisted fields (e.g., `completionMetrics`, `sessionMetrics`).
+- **Fix Applied:** After entering terminal status, only allow explicitly whitelisted fields (e.g., `completionMetrics`, `sessionMetrics`).
 
 ---
 
 ### SM-009 — `cleanup()` Evicts Tasks Referenced by Active Dependency Chains
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:926-976`
 - **Current Behavior:** A completed dependency task is evicted by TTL cleanup. Dependent WAITING tasks fail with "Dependencies missing" even though the dependency was satisfied.
 - **Risk:** User workflow disrupted.
-- **Recommended Fix:** Don't evict tasks that are still referenced as dependencies of non-terminal tasks.
+- **Fix Applied:** Don't evict tasks that are still referenced as dependencies of non-terminal tasks.
 
 ---
 
 ### SM-012 — `processWaitingTasks` Promotes and Executes Without Atomicity
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:317-375`
 - **Current Behavior:** If `executeCallback` throws synchronously, the error is swallowed and the task remains PENDING forever with no retry mechanism.
 - **Risk:** Stuck PENDING tasks.
-- **Recommended Fix:** Add a PENDING timeout in health check, or fail the task on execute error.
+- **Fix Applied:** Add a PENDING timeout in health check, or fail the task on execute error.
 
 ---
 
 ### SM-014 — `appendOutput` Clears Timeout Data on Terminal Tasks
 
 - **Severity:** Medium
-- **Status:** ⚠️ Open (duplicate of SM-001)
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:1149-1152`
 - **Current Behavior:** The stall-clearing logic applies to terminal tasks because there's no terminal guard on `appendOutput`.
 - **Risk:** Timeout diagnostic data lost.
-- **Recommended Fix:** Combine with SM-001 fix — add terminal guard.
+- **Fix Applied:** Combine with SM-001 fix — add terminal guard.
 
 ---
 
 ### SM-005 — `send_message` Creates New Task But Original Stays Terminal
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/tools/send-message.ts:105-124, 141-149`
 - **Current Behavior:** `send_message` creates a new task without validating session liveness.
 - **Risk:** Resume attempt may fail silently.
-- **Recommended Fix:** Check session existence before attempting resume.
+- **Fix Applied:** Check session existence before attempting resume.
 
 ---
 
 ### SM-010 — `expediteRateLimitedTasks` Reads Task After Mutation Without Re-fetch
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:611-636`
 - **Current Behavior:** Snapshot-based iteration may include tasks already retried. At worst, a wasted `updateTask` call.
 - **Risk:** Minimal.
@@ -149,7 +149,7 @@ All status mutations route through `updateTask()` which enforces `VALID_TRANSITI
 ### SM-015 — Dependency Validation at Creation Not Rechecked Before Execution
 
 - **Severity:** Low
-- **Status:** ⚠️ Open
+- **Status:** ✅ Fixed
 - **Location:** `src/services/task-manager.ts:381-411`, `src/services/sdk-spawner.ts:273-331`
 - **Current Behavior:** Once promoted to PENDING, deps are not re-checked. The SM-009 issue is the real problem.
 - **Risk:** Acceptable behavior.
