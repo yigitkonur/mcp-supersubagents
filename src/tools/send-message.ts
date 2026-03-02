@@ -163,7 +163,7 @@ export async function handleSendMessage(
   const sessionId = task.sessionId;
   const cwd = parsed.cwd || task.cwd || process.cwd();
   const timeout = parsed.timeout || task.timeout;
-  const message = (parsed.message || 'continue').trim();
+  const message = (parsed.message || '').trim() || 'continue';
 
   // Finding 1: If the task is RATE_LIMITED, mark it FAILED before spawning
   // to prevent the auto-retry scheduler from also spawning a duplicate.

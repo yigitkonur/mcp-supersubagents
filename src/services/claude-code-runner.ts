@@ -24,7 +24,8 @@ const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
 const DEBUG = process.env.DEBUG_CLAUDE_FALLBACK === 'true';
 const activeFallbackControllers = new Map<string, AbortController>();
 
-const MAX_CONCURRENT_FALLBACKS = parseInt(process.env.MAX_CONCURRENT_CLAUDE_FALLBACKS || '3', 10);
+const parsedMaxFallbacks = parseInt(process.env.MAX_CONCURRENT_CLAUDE_FALLBACKS || '3', 10);
+const MAX_CONCURRENT_FALLBACKS = Number.isFinite(parsedMaxFallbacks) && parsedMaxFallbacks > 0 ? parsedMaxFallbacks : 3;
 let activeFallbackCount = 0;
 const fallbackQueue: Array<() => void> = [];
 
@@ -675,10 +676,13 @@ export function abortAllFallbackSessions(reason: string = 'Server shutdown'): nu
   }
   activeFallbackControllers.clear();
 
-  // FB-013: Drain pending queue to release slots — they'll hit terminal check in runClaudeCodeSession
+  // FB-013: Drain pending queue — increment count for each to balance the releaseFallbackSlot() the caller will hit
   while (fallbackQueue.length > 0) {
     const resolver = fallbackQueue.shift();
-    if (resolver) resolver();
+    if (resolver) {
+      activeFallbackCount++;
+      resolver();
+    }
   }
 
   return aborted;

@@ -251,12 +251,15 @@ export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
   // RM-008: Bound warnedTasks set to prevent unbounded growth
   if (warnedTasks.size > 500) warnedTasks.clear();
 
-  // Cap finalizedKeys growth: remove entries for tasks with no open handle (fully done)
+  // Cap finalizedKeys growth: only evict entries whose handles AND queues are fully closed
+  // Keep entries that still have open handles to prevent post-finalization writes
   if (finalizedKeys.size > 1000) {
     let toRemove = finalizedKeys.size - 900;
-    for (const fk of finalizedKeys) {
+    const keysToCheck = [...finalizedKeys];
+    for (const fk of keysToCheck) {
       if (toRemove <= 0) break;
-      if (!openHandles.has(fk) && !writeQueues.has(fk)) {
+      // Only safe to evict if handle is closed AND no pending writes AND output dir cleaned
+      if (!openHandles.has(fk) && !writeQueues.has(fk) && !handleLastWriteTime.has(fk)) {
         finalizedKeys.delete(fk);
         toRemove--;
       }

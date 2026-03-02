@@ -244,18 +244,18 @@ export class ProcessRegistry {
     pgid: number | undefined,
     signal: NodeJS.Signals
   ): void {
-    if (!this.hasValidPid(pid)) {
+    if (!this.hasValidPid(pid) && !this.hasValidPid(pgid)) {
       return;
     }
     try {
       if (this.hasValidPid(pgid)) {
         process.kill(-pgid, signal);
-      } else {
+      } else if (this.hasValidPid(pid)) {
         process.kill(pid, signal);
       }
     } catch (err: any) {
       if (err.code !== 'ESRCH') {
-        log(`sendSignal: error sending ${signal} to pid=${pid}: ${err.message}`);
+        log(`sendSignal: error sending ${signal} to pid=${pid ?? 'n/a'}: ${err.message}`);
       }
     }
   }

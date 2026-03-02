@@ -717,7 +717,24 @@ class SDKSessionAdapter {
 
       // Generate a unique session ID for the retry to avoid collision with the old session
       const retrySessionId = `${taskId}-r${binding.rotationAttempts}`;
-      newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, {}, taskId);
+
+      // Reconstruct session config from task state to preserve model, streaming, and system message
+      const taskForConfig = taskManager.getTask(taskId);
+      const rotationConfig: Record<string, unknown> = {
+        model: taskForConfig?.model,
+        streaming: true,
+        workingDirectory: taskCwd,
+        infiniteSessions: {
+          enabled: true,
+          backgroundCompactionThreshold: 0.8,
+          bufferExhaustionThreshold: 0.95,
+        },
+        systemMessage: {
+          mode: 'append',
+          content: 'Work autonomously without asking for user confirmation. Complete tasks fully.',
+        },
+      };
+      newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, rotationConfig, taskId);
 
       // CC-002 + RC-2: Check isUnbound and terminal state after createSession await
       if (binding.isUnbound) {
