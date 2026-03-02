@@ -236,7 +236,7 @@ Spawn an autonomous AI agent. The agent runs in an isolated session with NO shar
 
 ### `send_message`
 
-Send a follow-up message to a completed or failed task's session. Resumes the same Copilot session so the agent retains full context of what it did.
+Send a follow-up message to a completed, failed, cancelled, rate-limited, or timed-out task's session. Resumes the same Copilot session so the agent retains full context of what it did.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -250,11 +250,11 @@ Send a follow-up message to a completed or failed task's session. Resumes the sa
 
 ### `cancel_task`
 
-Cancel one task, multiple tasks, or all tasks. Running/pending tasks are killed (SIGTERM). Completed/failed tasks are removed from memory.
+Cancel one task, multiple tasks, or all tasks. Running/pending/waiting/rate-limited tasks are killed (SIGTERM). Completed/failed tasks are removed from memory. Duplicate IDs in an array are deduplicated automatically.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `task_id` | string or string[] | Yes | Single ID, array of IDs, or `"all"` |
+| `task_id` | string or string[] | Yes | Single ID, array of IDs (max 50), or `"all"` |
 | `clear` | boolean | No | Required when `task_id="all"` |
 | `confirm` | boolean | No | Required when `clear=true` |
 
@@ -296,7 +296,7 @@ All status and monitoring is done through MCP resources (not polling):
 | `task:///{id}` | Full task details: output, metrics, config |
 | `task:///{id}/session` | Execution log: turns, tool calls, durations |
 
-The server also implements the MCP Task primitive. When a task completes, use `tasks/result` to retrieve filtered output:
+The server also implements the MCP Task primitive. Use `tasks/result` to retrieve filtered output. `isError` is `true` for any non-completed status (failed, cancelled, timed out, etc.):
 
 ```
 → tasks/result { taskId: "brave-tiger-42" }
@@ -333,8 +333,6 @@ Templates wrap your prompt with specialized system instructions. The agent sees 
 | `super-planner` | "Plan with evidence, not assumptions." Explores the codebase first, then designs atomic tasks with dependency graphs. | Architecture, design docs, task breakdown |
 | `super-researcher` | "Find truth, not confirmation." Multi-angle investigation with source authority ranking. | Codebase exploration, technical questions |
 | `super-tester` | "Test like a user, not a developer." E2E first, then integration, then unit. Collects evidence. | QA, test writing, verification |
-| `super-questioner` | Always asks a clarifying question before starting work. | Tasks with ambiguous requirements |
-| `super-arabic` | Responds entirely in Arabic. | Arabic-language tasks |
 
 ```json
 { "role": "coder", "prompt": "Fix the null check in auth.ts line 45...", "context_files": [{ "path": "/path/to/plan.md" }] }
@@ -402,7 +400,12 @@ Tasks can wait for other tasks using the `depends_on` field. The dependent task 
 }
 ```
 
-Circular dependencies are detected and rejected at spawn time.
+Dependencies are validated at spawn time:
+- **Circular dependencies** are detected via DFS traversal. The error message includes the full cycle path (e.g., `a -> b -> c -> a`).
+- **Self-dependencies** (a task depending on itself) are rejected.
+- **Duplicate dependency IDs** are rejected.
+- **Missing dependencies** (referencing a non-existent task ID) are rejected with a hint to check `task:///all`.
+- **Runtime deadlock detection** — if a waiting task's dependencies form a cycle due to later state changes, the task is failed automatically with the cycle path.
 
 ### Example: Chained pipeline
 
@@ -454,6 +457,7 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 | `DEBUG_NOTIFICATIONS` | `false` | Log MCP notification errors to stderr |
 | `DEBUG_CLAUDE_FALLBACK` | `false` | Verbose logging for Claude Agent SDK fallback path |
 | `DEBUG_SDK_EVENTS` | `false` | Log all Copilot SDK events |
+| `BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS` | `15000` (15s) | Max wait time for graceful shutdown after broken pipe before force-exiting |
 
 > **No PAT tokens?** If no GitHub PAT is configured, tasks automatically use the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents/claude-agent-sdk) as a fallback (requires `claude` CLI installed). Set `DISABLE_CLAUDE_CODE_FALLBACK=true` to prevent this.
 
@@ -520,9 +524,17 @@ pending → running → completed
                   → rate_limited → (auto-retry) → pending → running → ...
 
 pending → waiting (dependencies) → pending → running → ...
+pending / waiting → timed_out    (if timeout expires before execution starts)
+pending / waiting → cancelled
+pending / waiting → failed       (e.g. missing or circular dependencies)
 ```
 
-Eight internal states map to four MCP states (`working`, `completed`, `failed`, `cancelled`) for clients that use MCP task primitives.
+Eight internal states map to five MCP states (`working`, `input_required`, `completed`, `failed`, `cancelled`) for clients that use MCP task primitives.
+
+### Limits
+
+- Max in-memory tasks: **100** (oldest terminal tasks evicted; if all 100 are active, spawn returns an actionable error)
+- Max output lines per task: **2,000** (older lines trimmed in-place)
 
 ### Persistence
 
@@ -592,6 +604,15 @@ pnpm start
 - Agents run with NO shared memory -- your prompt is their ONLY context. Include all necessary file paths, background, and success criteria.
 - Attach context files (`.md`) with detailed plans or specifications.
 - For coding tasks (role: `coder`), provide a minimum of 1,000 characters with objective, files, success criteria, constraints, and patterns.
+
+</details>
+
+<details>
+<summary><strong>Shutdown / broken pipe issues</strong></summary>
+
+- The server performs a graceful shutdown on SIGINT/SIGTERM: it aborts all fallback sessions, cleans up SDK bindings, kills tracked processes, and closes output file handles.
+- If the MCP transport breaks (broken pipe), the server waits up to 15 seconds (configurable via `BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS`) for cleanup before force-exiting.
+- On `process.exit`, all tracked child processes are force-killed synchronously to prevent orphaned sessions.
 
 </details>
 

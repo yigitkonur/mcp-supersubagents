@@ -68,7 +68,7 @@ const server = new Server(
   {
     capabilities: {
       tools: {},                    // Tool calling
-      tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } },
+      tasks: { list: {}, cancel: {} },
       resources: { subscribe: true, listChanged: true },
     },
   }
