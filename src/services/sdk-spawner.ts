@@ -11,6 +11,7 @@
 
 import type { SessionConfig, CopilotSession } from '@github/copilot-sdk';
 import { existsSync } from 'fs';
+import { realpath as realpathAsync } from 'fs/promises';
 import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
@@ -75,9 +76,22 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
   const prompt = options.prompt?.trim() || '';
 
   // Use provided cwd, or client's first root, or server cwd as fallback
-  const cwd = options.cwd && existsSync(options.cwd)
-    ? options.cwd
-    : clientContext.getDefaultCwd();
+  const workspaceRoot = clientContext.getDefaultCwd();
+  let cwd = workspaceRoot;
+  if (options.cwd && existsSync(options.cwd)) {
+    // Validate CWD is within workspace root to prevent CWD escape (security)
+    try {
+      const resolvedCwd = await realpathAsync(options.cwd);
+      const resolvedRoot = await realpathAsync(workspaceRoot);
+      if (resolvedCwd.startsWith(resolvedRoot + '/') || resolvedCwd === resolvedRoot) {
+        cwd = options.cwd;
+      } else {
+        console.error(`[sdk-spawner] CWD "${options.cwd}" is outside workspace root "${workspaceRoot}", using workspace root`);
+      }
+    } catch {
+      console.error(`[sdk-spawner] Failed to resolve CWD "${options.cwd}", using workspace root`);
+    }
+  }
 
   const model = resolveModel(options.model, options.taskType);
 
@@ -100,12 +114,31 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     return task.id;
   }
 
+  // Extract task ID to avoid capturing the full TaskState object in closures below.
+  // This prevents the setImmediate callbacks from holding a reference to the
+  // (potentially large) TaskState and its nested session/metrics objects.
+  const taskId = task.id;
+
   // Check if any Copilot accounts are available before starting
   const currentToken = accountManager.getCurrentToken();
   if (!currentToken) {
-    console.error(`[sdk-spawner] No Copilot accounts available for task ${task.id}, using Claude Agent SDK`);
+    if (!isFallbackEnabled()) {
+      console.error(`[sdk-spawner] No Copilot accounts available and Claude fallback is disabled`);
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.FAILED,
+        error: 'No Copilot accounts configured and Claude fallback is disabled (DISABLE_CLAUDE_CODE_FALLBACK=true)',
+        endTime: new Date().toISOString(),
+        exitCode: 1,
+      });
+      return taskId;
+    }
+    console.error(`[sdk-spawner] No Copilot accounts available for task ${taskId}, using Claude Agent SDK`);
     setImmediate(() => {
-      triggerClaudeFallback(task.id, {
+      // Guard: task may have been cancelled/failed between creation and callback
+      const current = taskManager.getTask(taskId);
+      if (!current || isTerminalStatus(current.status)) return;
+
+      triggerClaudeFallback(taskId, {
         reason: 'copilot_startup_no_accounts',
         promptOverride: prompt,
         cwd,
@@ -113,19 +146,24 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
         console.error(`[sdk-spawner] Claude fallback error:`, err);
       });
     });
-    return task.id;
+    return taskId;
   }
 
   // Execute the task asynchronously with Copilot
   setImmediate(() => {
-    runSDKSession(task.id, prompt, cwd, model, options).catch((err) => {
-      console.error(`[sdk-spawner] Task ${task.id} execution error:`, err);
+    // Guard: task may have been cancelled/failed between creation and callback
+    const current = taskManager.getTask(taskId);
+    if (!current || isTerminalStatus(current.status)) return;
+
+    runSDKSession(taskId, prompt, cwd, model, options).catch((err) => {
+      console.error(`[sdk-spawner] Task ${taskId} execution error:`, err);
       // Only update if not already in terminal state (adapter might have handled it)
-      const currentTask = taskManager.getTask(task.id);
+      const currentTask = taskManager.getTask(taskId);
       if (currentTask && !isTerminalStatus(currentTask.status)) {
         if (isFallbackEnabled()) {
-          console.error(`[sdk-spawner] Task ${task.id} unhandled error, falling back to Claude Agent SDK`);
-          triggerClaudeFallback(task.id, {
+          console.error(`[sdk-spawner] Task ${taskId} unhandled error, falling back to Claude Agent SDK`);
+          sdkSessionAdapter.unbind(taskId);
+          triggerClaudeFallback(taskId, {
             reason: 'copilot_unhandled_error',
             errorMessage: err instanceof Error ? err.message : String(err),
             promptOverride: prompt,
@@ -134,7 +172,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
             console.error(`[sdk-spawner] Claude fallback also failed:`, fallbackErr);
           });
         } else {
-          taskManager.updateTask(task.id, {
+          taskManager.updateTask(taskId, {
             status: TaskStatus.FAILED,
             endTime: new Date().toISOString(),
             error: err instanceof Error ? err.message : String(err),
@@ -145,7 +183,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     });
   });
 
-  return task.id;
+  return taskId;
 }
 
 /**
@@ -154,13 +192,16 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
 export async function executeWaitingTask(task: TaskState): Promise<void> {
   // Ensure rotation callback is registered
   ensureRotationCallbackRegistered();
-  
+
+  // Extract primitives/strings from the TaskState to avoid capturing the full
+  // object (and its session/metrics references) in the setImmediate closure.
+  const taskId = task.id;
   const prompt = task.prompt?.trim() || '';
   const cwd = task.cwd || clientContext.getDefaultCwd();
   const model = resolveModel(task.model);
 
   // Update status to PENDING before running
-  taskManager.updateTask(task.id, { status: TaskStatus.PENDING });
+  taskManager.updateTask(taskId, { status: TaskStatus.PENDING });
 
   const options: SpawnOptions = {
     prompt,
@@ -176,13 +217,18 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
   };
 
   setImmediate(() => {
-    runSDKSession(task.id, prompt, cwd, model, options).catch((err) => {
-      console.error(`[sdk-spawner] Task ${task.id} execution error:`, err);
-      const currentTask = taskManager.getTask(task.id);
+    // Guard: task may have been cancelled/failed while waiting for this callback
+    const current = taskManager.getTask(taskId);
+    if (!current || isTerminalStatus(current.status)) return;
+
+    runSDKSession(taskId, prompt, cwd, model, options).catch((err) => {
+      console.error(`[sdk-spawner] Task ${taskId} execution error:`, err);
+      const currentTask = taskManager.getTask(taskId);
       if (currentTask && !isTerminalStatus(currentTask.status)) {
         if (isFallbackEnabled()) {
-          console.error(`[sdk-spawner] Task ${task.id} unhandled error, falling back to Claude Agent SDK`);
-          triggerClaudeFallback(task.id, {
+          console.error(`[sdk-spawner] Task ${taskId} unhandled error, falling back to Claude Agent SDK`);
+          sdkSessionAdapter.unbind(taskId);
+          triggerClaudeFallback(taskId, {
             reason: 'copilot_unhandled_error',
             errorMessage: err instanceof Error ? err.message : String(err),
             promptOverride: prompt,
@@ -191,7 +237,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
             console.error(`[sdk-spawner] Claude fallback also failed:`, fallbackErr);
           });
         } else {
-          taskManager.updateTask(task.id, {
+          taskManager.updateTask(taskId, {
             status: TaskStatus.FAILED,
             endTime: new Date().toISOString(),
             error: err instanceof Error ? err.message : String(err),
@@ -262,15 +308,15 @@ async function runSDKSession(
       session = await sdkClientManager.createSession(cwd, taskId, sessionConfig, taskId);
     }
 
-    // Bind the session to the task for event handling
-    // Pass the prompt so adapter can use it for resume after rotation
-    sdkSessionAdapter.bind(taskId, session, prompt);
-
-    // Store session reference in task
+    // Store reference immediately to prevent orphan if bind() throws
     taskManager.updateTask(taskId, {
       sessionId: session.sessionId,
       session,
     });
+
+    // Bind the session to the task for event handling
+    // Pass the prompt so adapter can use it for resume after rotation
+    sdkSessionAdapter.bind(taskId, session, prompt);
 
     // Send the prompt — completion is handled by the session adapter via
     // session.idle event (handleSessionIdle). Using send() instead of
@@ -352,6 +398,7 @@ async function handleSessionError(
     console.error(`[sdk-spawner] Task ${taskId} hit non-rotatable error, falling back to Claude Agent SDK`);
 
     const session = sdkSessionAdapter.getSession(taskId);
+    sdkSessionAdapter.unbind(taskId);
     const started = await triggerClaudeFallback(taskId, {
       reason: 'copilot_non_rotatable_error',
       errorMessage,
@@ -360,7 +407,6 @@ async function handleSessionError(
       awaitCompletion: true,
     });
     if (started) {
-      sdkSessionAdapter.unbind(taskId);
       return;
     }
     return;
@@ -481,45 +527,6 @@ async function handleRateLimit(
 
   sdkSessionAdapter.unbind(taskId);
   console.error(`[sdk-spawner] Task ${taskId} rate-limited, scheduled retry #${retryInfo.retryCount} at ${retryInfo.nextRetryTime}`);
-}
-
-/**
- * Cancel a running task by aborting its session.
- */
-export async function cancelTask(taskId: string): Promise<boolean> {
-  const task = taskManager.getTask(taskId);
-  if (!task) {
-    return false;
-  }
-
-  // Update status first
-  taskManager.updateTask(taskId, {
-    status: TaskStatus.CANCELLED,
-    endTime: new Date().toISOString(),
-    session: undefined,
-  });
-
-  // Try to abort the SDK session
-  const session = sdkSessionAdapter.getSession(taskId);
-  if (session) {
-    try {
-      await session.abort();
-      console.error(`[sdk-spawner] Aborted session for task ${taskId}`);
-    } catch (err) {
-      console.error(`[sdk-spawner] Failed to abort session for ${taskId}:`, err);
-    }
-  }
-
-  // Abort active Claude fallback stream if task already switched provider.
-  abortClaudeCodeSession(taskId);
-
-  // Clean up binding (this also destroys the session and removes from client tracking)
-  sdkSessionAdapter.unbind(taskId);
-
-  // Also try to destroy via client manager directly in case unbind missed it
-  await sdkClientManager.destroySession(taskId).catch(() => {});
-
-  return true;
 }
 
 /**

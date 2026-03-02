@@ -132,7 +132,7 @@ Templates reference `.agent-workspace/plans/`, `.agent-workspace/researches/`, `
 - Max labels per task: 10 (50 chars each)
 - Question timeout: 30 minutes (then Promise rejects, task may fail)
 - Cleanup interval: 5 minutes (removes expired terminal tasks)
-- Health check interval: 10 seconds (detects stalled sessions)
+- Health check interval: 10 seconds (task-level timeout enforcement and stall detection)
 - Stale session sweep: 60 seconds
 - PTY FD recycle threshold: 80 ptmx FDs triggers client recycling
 

@@ -22,6 +22,29 @@ const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
 const DEBUG = process.env.DEBUG_CLAUDE_FALLBACK === 'true';
 const activeFallbackControllers = new Map<string, AbortController>();
 
+const MAX_CONCURRENT_FALLBACKS = parseInt(process.env.MAX_CONCURRENT_CLAUDE_FALLBACKS || '3', 10);
+let activeFallbackCount = 0;
+const fallbackQueue: Array<() => void> = [];
+
+function acquireFallbackSlot(): Promise<void> {
+  if (activeFallbackCount < MAX_CONCURRENT_FALLBACKS) {
+    activeFallbackCount++;
+    return Promise.resolve();
+  }
+  return new Promise<void>(resolve => {
+    fallbackQueue.push(resolve);
+  });
+}
+
+function releaseFallbackSlot(): void {
+  activeFallbackCount--;
+  const next = fallbackQueue.shift();
+  if (next) {
+    activeFallbackCount++;
+    next();
+  }
+}
+
 export interface ClaudeCodeRunOptions {
   resumeSessionId?: string;
   fallbackReason?: FallbackReason;
@@ -179,8 +202,20 @@ export async function runClaudeCodeSession(
     return;
   }
 
-  if (activeFallbackControllers.has(taskId)) {
-    console.error(`[claude-code-runner] Task ${taskId} already has an active fallback run, skipping duplicate start`);
+  const existingController = activeFallbackControllers.get(taskId);
+  if (existingController) {
+    console.error(`[claude-code-runner] Task ${taskId} has existing fallback run, aborting it before retry`);
+    try { existingController.abort(new Error('Superseded by retry')); } catch { /* ignore */ }
+    activeFallbackControllers.delete(taskId);
+  }
+
+  // Wait for available slot (limits concurrent Claude processes)
+  await acquireFallbackSlot();
+
+  // Re-check task status after potentially waiting for slot
+  const freshCheck = taskManager.getTask(taskId);
+  if (!freshCheck || isTerminalStatus(freshCheck.status)) {
+    releaseFallbackSlot();
     return;
   }
 
@@ -224,6 +259,7 @@ export async function runClaudeCodeSession(
   let inTextBlock = false; // Track whether we're inside a text content block
 
   const settings = createModelSettings(cwd, options);
+  let reader: any;
 
   try {
     const model = claudeCode(modelId as any, settings as any) as LanguageModelV3;
@@ -236,7 +272,7 @@ export async function runClaudeCodeSession(
     };
 
     const streamResult = await model.doStream(callOptions);
-    const reader = streamResult.stream.getReader();
+    reader = streamResult.stream.getReader();
 
     while (true) {
       const { done, value } = await reader.read();
@@ -546,8 +582,29 @@ export async function runClaudeCodeSession(
     });
   } finally {
     clearTimeout(timeoutHandle);
-    if (activeFallbackControllers.get(taskId) === abortController) {
+    const ctrl = activeFallbackControllers.get(taskId);
+    if (ctrl === abortController) {
       activeFallbackControllers.delete(taskId);
     }
+    releaseFallbackSlot();
+    // Ensure abort signal is sent even if we got here via unexpected path
+    if (!abortController.signal.aborted) {
+      try { abortController.abort(new Error('Session ended')); } catch { /* ignore */ }
+    }
+    try { reader?.cancel(); } catch {}
+    for (const key in toolMetrics) delete toolMetrics[key];
+    toolStartTimes.clear();
   }
+}
+
+/**
+ * Abort all active Claude CLI fallback sessions.
+ * Called during server shutdown.
+ */
+export function abortAllFallbackSessions(): void {
+  for (const [taskId, controller] of activeFallbackControllers) {
+    console.error(`[claude-code-runner] Shutdown: aborting fallback for task ${taskId}`);
+    try { controller.abort(new Error('Server shutdown')); } catch { /* ignore */ }
+  }
+  activeFallbackControllers.clear();
 }

@@ -26,35 +26,53 @@ async function parseOutputFile(filePath: string): Promise<MessagePair[]> {
   try {
     const content = await readFile(filePath, 'utf-8');
     const pairs: MessagePair[] = [];
-
-    // Split by common output markers
     const lines = content.split('\n');
     let currentAssistant = '';
-    let isAssistant = false;
+
+    const flushTurn = (): void => {
+      const trimmed = currentAssistant.trim();
+      if (trimmed) {
+        pairs.push({ user: '', assistant: trimmed });
+      }
+      currentAssistant = '';
+    };
 
     for (const line of lines) {
-      // Detect assistant output (simple heuristic - lines without user markers)
-      if (line.startsWith('[') || line.startsWith('>') || line.trim().length === 0) {
-        // System/tool output, skip
+      // Turn boundaries: split on turn markers to produce multiple MessagePairs
+      if (/^\[Assistant Turn \d+\]/.test(line) || /^--- Turn \d+ ---/.test(line)) {
+        flushTurn();
+        continue;
+      }
+
+      // Skip header lines (task metadata)
+      if (line.startsWith('# ') || line.startsWith('─')) {
+        continue;
+      }
+
+      // Skip empty lines between sections
+      if (line.trim().length === 0) {
+        if (currentAssistant.length > 0) {
+          currentAssistant += '\n';
+        }
+        continue;
+      }
+
+      // Preserve tool completion summaries and errors (useful context for handoff)
+      if (line.startsWith('[tool] Completed:') || line.startsWith('[error]') || line.startsWith('[summary]')) {
+        currentAssistant += line + '\n';
+        continue;
+      }
+
+      // Skip other system/tool lines
+      if (line.startsWith('[') || line.startsWith('>')) {
         continue;
       }
 
       // Accumulate assistant output
-      if (!isAssistant) {
-        isAssistant = true;
-        currentAssistant = '';
-      }
       currentAssistant += line + '\n';
     }
 
-    // If we have any output, treat it as one big assistant turn
-    if (currentAssistant.trim()) {
-      pairs.push({
-        user: '',
-        assistant: currentAssistant.trim(),
-      });
-    }
-
+    flushTurn();
     return pairs;
   } catch (error) {
     console.warn(`[session-snapshot] Failed to read output file: ${error}`);
@@ -200,8 +218,15 @@ export async function buildHandoffPromptFromSession(
     return await buildHandoffPrompt(task, maxTurns, reason);
   }
 
+  let events: SessionEvent[];
   try {
-    const events = await session.getMessages();
+    events = await session.getMessages();
+  } catch (err) {
+    console.error(`[session-snapshot] Failed to get session messages (session may be shutting down): ${err}`);
+    return await buildHandoffPrompt(task, maxTurns, reason);
+  }
+
+  try {
     const pairs = pairsFromSessionEvents(events);
     if (pairs.length === 0) {
       return await buildHandoffPrompt(task, maxTurns, reason);

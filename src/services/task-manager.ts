@@ -1,11 +1,25 @@
 import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
-import { TaskState, TaskStatus, TERMINAL_STATUSES } from '../types.js';
+import { TaskState, TaskStatus, TERMINAL_STATUSES, isTerminalStatus } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
 import { TASK_STALL_WARN_MS, TASK_TTL_MS } from '../config/timeouts.js';
 import { createOutputFile, appendToOutputFile, finalizeOutputFile, getOutputPath, closeAllOutputHandles } from './output-file.js';
+import { processRegistry } from './process-registry.js';
+import { unlink } from 'fs/promises';
 
 const MAX_TASKS = 100;
+
+/** Legal state transitions - if a transition isn't in this map, it's rejected */
+const VALID_TRANSITIONS: Record<string, Set<string>> = {
+  [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED]),
+  [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED]),
+  [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED]),
+  [TaskStatus.RATE_LIMITED]: new Set([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.RUNNING]),
+  [TaskStatus.COMPLETED]: new Set([]), // terminal
+  [TaskStatus.FAILED]: new Set([]),  // terminal
+  [TaskStatus.CANCELLED]: new Set([]),  // terminal
+  [TaskStatus.TIMED_OUT]: new Set([]),  // terminal
+};
 
 /**
  * Check if adding dependencies would create a circular dependency
@@ -59,7 +73,7 @@ function areDependenciesSatisfied(task: TaskState, tasks: Map<string, TaskState>
       missing.push(depId);
     } else if (depTask.status === TaskStatus.COMPLETED) {
       // Good - dependency completed successfully
-    } else if (depTask.status === TaskStatus.FAILED || depTask.status === TaskStatus.CANCELLED) {
+    } else if (depTask.status === TaskStatus.FAILED || depTask.status === TaskStatus.CANCELLED || depTask.status === TaskStatus.TIMED_OUT) {
       failed.push(depId);
     } else {
       // PENDING, WAITING, RUNNING, RATE_LIMITED
@@ -95,6 +109,7 @@ class TaskManager {
   private persistDebounceMs = 100;
   private outputPersistDebounceMs = 1000;
   private lastPersistTrigger: 'state' | 'output' = 'state';
+  private isClearing = false;
   private retryCallback: ((task: TaskState) => Promise<string | undefined>) | null = null;
   private executeCallback: ((task: TaskState) => Promise<void>) | null = null;
   private statusChangeCallback: ((task: TaskState, previousStatus: TaskStatus) => void) | null = null;
@@ -112,8 +127,14 @@ class TaskManager {
    */
   async setCwd(cwd: string): Promise<void> {
     this.currentCwd = cwd;
-    const loadedTasks = await loadTasks(cwd);
+    const { tasks: loadedTasks, cooldowns } = await loadTasks(cwd);
     
+    // Restore cooldown state before processing tasks (so RATE_LIMITED retry uses correct cooldowns)
+    if (cooldowns && cooldowns.length > 0) {
+      const { accountManager } = await import('./account-manager.js');
+      accountManager.importCooldownState(cooldowns);
+    }
+
     // Load tasks into the map
     for (const task of loadedTasks) {
       const normalizedId = normalizeTaskId(task.id);
@@ -143,32 +164,62 @@ class TaskManager {
    * Register a callback to be called when a rate-limited task should be retried
    * Callback should return the new task ID
    */
-  onRetry(callback: (task: TaskState) => Promise<string | undefined>): void {
+  onRetry(callback: (task: TaskState) => Promise<string | undefined>): () => void {
     this.retryCallback = callback;
     this.scheduleRateLimitCheck();
+    return () => {
+      if (this.retryCallback === callback) this.retryCallback = null;
+    };
   }
 
   /**
    * Register a callback to execute a waiting task when dependencies are satisfied
    */
-  onExecute(callback: (task: TaskState) => Promise<void>): void {
+  onExecute(callback: (task: TaskState) => Promise<void>): () => void {
     this.executeCallback = callback;
+    return () => {
+      if (this.executeCallback === callback) this.executeCallback = null;
+    };
   }
 
-  onStatusChange(callback: (task: TaskState, previousStatus: TaskStatus) => void): void {
+  onStatusChange(callback: (task: TaskState, previousStatus: TaskStatus) => void): () => void {
     this.statusChangeCallback = callback;
+    return () => {
+      if (this.statusChangeCallback === callback) this.statusChangeCallback = null;
+    };
   }
 
-  onOutput(callback: (taskId: string, line: string) => void): void {
+  onOutput(callback: (taskId: string, line: string) => void): () => void {
     this.outputCallback = callback;
+    return () => {
+      if (this.outputCallback === callback) this.outputCallback = null;
+    };
   }
 
-  onTaskCreated(callback: (task: TaskState) => void): void {
+  onTaskCreated(callback: (task: TaskState) => void): () => void {
     this.taskCreatedCallback = callback;
+    return () => {
+      if (this.taskCreatedCallback === callback) this.taskCreatedCallback = null;
+    };
   }
 
-  onTaskDeleted(callback: (taskId: string) => void): void {
+  onTaskDeleted(callback: (taskId: string) => void): () => void {
     this.taskDeletedCallback = callback;
+    return () => {
+      if (this.taskDeletedCallback === callback) this.taskDeletedCallback = null;
+    };
+  }
+
+  /**
+   * Remove all registered listener callbacks to prevent memory leaks.
+   */
+  removeAllListeners(): void {
+    this.retryCallback = null;
+    this.executeCallback = null;
+    this.statusChangeCallback = null;
+    this.outputCallback = null;
+    this.taskCreatedCallback = null;
+    this.taskDeletedCallback = null;
   }
 
   /**
@@ -183,9 +234,11 @@ class TaskManager {
     }
 
     for (const task of waitingTasks) {
-      const { satisfied } = areDependenciesSatisfied(task, this.tasks);
+      if (task.status !== TaskStatus.WAITING) continue; // Skip cancelled/terminal tasks
+
+      const result = areDependenciesSatisfied(task, this.tasks);
       
-      if (satisfied && this.executeCallback) {
+      if (result.satisfied && this.executeCallback) {
         console.error(`[task-manager] Dependencies satisfied for ${task.id}, starting execution`);
         const updated = this.updateTask(task.id, { status: TaskStatus.PENDING });
         if (!updated) {
@@ -195,6 +248,18 @@ class TaskManager {
         this.executeCallback(updated).catch(err => {
           console.error(`[task-manager] Failed to execute task ${task.id}:`, err);
         });
+        continue;
+      }
+
+      // All remaining deps failed/cancelled/timed out — no way to satisfy
+      if (!result.satisfied && result.pending.length === 0 && result.failed.length > 0) {
+        const failedDepIds = result.failed.join(', ');
+        this.updateTask(task.id, {
+          status: TaskStatus.FAILED,
+          error: `Dependencies failed or were cancelled: ${failedDepIds}`,
+          endTime: new Date().toISOString(),
+        });
+        continue;
       }
     }
   }
@@ -274,7 +339,7 @@ class TaskManager {
   /**
    * Process rate-limited tasks and trigger retries for those ready
    */
-  private processRateLimitedTasks(): void {
+  private async processRateLimitedTasks(): Promise<void> {
     const rateLimitedTasks = Array.from(this.tasks.values())
       .filter(t => t.status === TaskStatus.RATE_LIMITED);
     
@@ -302,16 +367,21 @@ class TaskManager {
         console.error(`[task-manager] Auto-retrying task ${task.id} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1})`);
         
         if (this.retryCallback) {
-          // Mark original task as failed (retried) - new task will be created
-          this.updateTask(task.id, {
-            status: TaskStatus.FAILED,
-            error: `Auto-retried as new task (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
-            endTime: new Date().toISOString(),
-            exitCode: 1,
-          });
-          this.retryCallback(task).catch(err => {
-            console.error(`[task-manager] Auto-retry failed for task ${task.id}:`, err);
-          });
+          // Kill old session before spawning retry
+          processRegistry.killTask(task.id).catch(() => {});
+          try {
+            // Spawn replacement task FIRST — only mark original FAILED on success
+            const newTaskId = await this.retryCallback(task);
+            this.updateTask(task.id, {
+              status: TaskStatus.FAILED,
+              error: `Auto-retried as new task${newTaskId ? ` ${newTaskId}` : ''} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
+              endTime: new Date().toISOString(),
+              exitCode: 1,
+            });
+          } catch (err) {
+            console.error(`[task-manager] Auto-retry failed for task ${task.id}, keeping RATE_LIMITED:`, err);
+            // Don't mark FAILED — task stays RATE_LIMITED for next retry cycle
+          }
         } else {
           console.error(`[task-manager] No retry callback registered, task ${task.id} will wait`);
         }
@@ -403,25 +473,20 @@ class TaskManager {
    * Note: With SDK, sessions are managed by sdkSessionAdapter which handles cleanup
    */
   async clearAllTasks(): Promise<number> {
+    this.isClearing = true;
     const count = this.tasks.size;
-    const abortPromises: Promise<void>[] = [];
-    for (const task of this.tasks.values()) {
-      if (task.session && task.status === TaskStatus.RUNNING) {
-        abortPromises.push(
-          task.session.abort().catch(() => {
-            // Ignore failures while clearing
-          })
-        );
-      }
-    }
-    await Promise.allSettled(abortPromises);
+    await processRegistry.killAll();
     if (this.taskDeletedCallback) {
       for (const id of this.tasks.keys()) {
         try { this.taskDeletedCallback(id); } catch {}
       }
     }
+    for (const task of this.tasks.values()) {
+      this.deleteOutputFile(task);
+    }
     this.tasks.clear();
     this.scheduleRateLimitCheck();
+    this.isClearing = false;
     return count;
   }
 
@@ -445,21 +510,22 @@ class TaskManager {
       return { success: false, error: 'No retry callback registered' };
     }
     
-    // Mark original task as failed (manually retried)
-    this.updateTask(task.id, {
-      status: TaskStatus.FAILED,
-      error: `Manually retried (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
-      endTime: new Date().toISOString(),
-      exitCode: 1,
-    });
-    
-    // Trigger the retry callback - it will spawn a new task and return its ID
-    const newTaskId = await this.retryCallback(task);
-    
-    return { 
-      success: true, 
-      newTaskId: newTaskId || 'unknown',
-    };
+    try {
+      // Spawn replacement task FIRST — only mark original FAILED on success  
+      const newTaskId = await this.retryCallback(task);
+      this.updateTask(task.id, {
+        status: TaskStatus.FAILED,
+        error: `Manually retried as ${newTaskId || 'new task'} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
+        endTime: new Date().toISOString(),
+        exitCode: 1,
+      });
+      return { 
+        success: true, 
+        newTaskId: newTaskId || 'unknown',
+      };
+    } catch (err) {
+      return { success: false, error: `Retry spawn failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
   }
 
   /**
@@ -470,19 +536,24 @@ class TaskManager {
       return;
     }
 
-    // Clear existing timeout
+    // Use shorter debounce if state change, longer only for consecutive output-only
+    const debounceMs = (trigger === 'output' && this.lastPersistTrigger === 'output' && !this.persistTimeout)
+      ? this.outputPersistDebounceMs
+      : this.persistDebounceMs;
+
+    // If there's already a pending persist with shorter debounce, don't extend it
+    if (this.persistTimeout && trigger === 'output' && this.lastPersistTrigger === 'state') {
+      return; // State persist is already scheduled with shorter debounce
+    }
+
     if (this.persistTimeout) {
       clearTimeout(this.persistTimeout);
     }
 
-    // Use longer debounce for output-only changes (high frequency)
-    const debounceMs = trigger === 'output' && this.lastPersistTrigger === 'output'
-      ? this.outputPersistDebounceMs
-      : this.persistDebounceMs;
-    
     this.lastPersistTrigger = trigger;
 
     this.persistTimeout = setTimeout(() => {
+      this.persistTimeout = null;
       this.persistNow().catch(() => {});
     }, debounceMs);
   }
@@ -495,7 +566,12 @@ class TaskManager {
       return;
     }
     const tasks = Array.from(this.tasks.values());
-    await saveTasks(this.currentCwd, tasks);
+    const { accountManager } = await import('./account-manager.js');
+    const cooldowns = accountManager.exportCooldownState();
+    const ok = await saveTasks(this.currentCwd, tasks, cooldowns.length > 0 ? cooldowns : undefined);
+    if (!ok) {
+      console.error(`[task-manager] Persist failed — ${tasks.length} task(s) may be lost if server crashes`);
+    }
   }
 
   private startCleanup(): void {
@@ -523,9 +599,9 @@ class TaskManager {
   private checkSessionHealth(): void {
     const now = Date.now();
     
-    for (const task of this.tasks.values()) {
+    const snapshot = Array.from(this.tasks.values());
+    for (const task of snapshot) {
       if (task.status === TaskStatus.RUNNING) {
-        // Update heartbeat for active sessions
         const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
         if (now - lastHeartbeat >= HEALTH_CHECK_INTERVAL_MS) {
           this.updateTask(task.id, { lastHeartbeatAt: new Date(now).toISOString() });
@@ -538,22 +614,28 @@ class TaskManager {
           if (now >= timeoutAt) {
             const elapsedMs = task.startTime ? now - new Date(task.startTime).getTime() : 0;
             console.error(`[task-manager] Health check: hard timeout reached for task ${task.id} after ${elapsedMs}ms`);
-            this.updateTask(task.id, {
-              status: TaskStatus.TIMED_OUT,
-              endTime: new Date(now).toISOString(),
-              error: `Task timed out after ${task.timeout ?? elapsedMs}ms`,
-              timeoutReason: 'hard_timeout',
-              timeoutContext: {
-                timeoutMs: task.timeout,
-                elapsedMs,
-                detectedBy: 'health_check',
-              },
-              session: undefined,
+            // Kill process first, THEN update status
+            processRegistry.killTask(task.id).then(() => {
+              if (task.session) {
+                return Promise.race([
+                  task.session.abort(),
+                  new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
+                ]).catch(() => { /* swallow */ });
+              }
+            }).catch(() => { /* swallow */ }).finally(() => {
+              this.updateTask(task.id, {
+                status: TaskStatus.TIMED_OUT,
+                endTime: new Date(now).toISOString(),
+                error: `Task timed out after ${task.timeout ?? elapsedMs}ms`,
+                timeoutReason: 'hard_timeout',
+                timeoutContext: {
+                  timeoutMs: task.timeout,
+                  elapsedMs,
+                  detectedBy: 'health_check',
+                },
+                session: undefined,
+              });
             });
-            // Abort the session — import handled at module level
-            if (task.session) {
-              task.session.abort().catch(() => {});
-            }
             continue;
           }
         }
@@ -577,8 +659,33 @@ class TaskManager {
         }
       }
     }
+
+    // Check WAITING tasks for timeout
+    for (const task of this.tasks.values()) {
+      if (task.status !== TaskStatus.WAITING) continue;
+      if (task.timeoutAt && now >= new Date(task.timeoutAt).getTime()) {
+        this.updateTask(task.id, {
+          status: TaskStatus.TIMED_OUT,
+          error: 'Task timed out while waiting for dependencies',
+          endTime: new Date().toISOString(),
+          timeoutReason: 'hard_timeout',
+        });
+      }
+    }
   }
 
+
+  /**
+   * Delete output file for a task (fire-and-forget)
+   */
+  private deleteOutputFile(task: TaskState): void {
+    if (task.cwd && task.id) {
+      const outputPath = getOutputPath(task.cwd, task.id);
+      unlink(outputPath).catch(() => {
+        // Ignore - file may not exist or already deleted
+      });
+    }
+  }
 
   private cleanup(): void {
     const now = Date.now();
@@ -598,6 +705,8 @@ class TaskManager {
     }
 
     for (const id of toDelete) {
+      const task = this.tasks.get(id);
+      if (task) this.deleteOutputFile(task);
       try { this.taskDeletedCallback?.(id); } catch {}
       this.tasks.delete(id);
       removed = true;
@@ -616,6 +725,8 @@ class TaskManager {
 
       const toRemove = sorted.slice(0, this.tasks.size - MAX_TASKS);
       for (const [id] of toRemove) {
+        const task = this.tasks.get(id);
+        if (task) this.deleteOutputFile(task);
         try { this.taskDeletedCallback?.(id); } catch {}
         this.tasks.delete(id);
         removed = true;
@@ -629,19 +740,11 @@ class TaskManager {
   }
 
   createTask(prompt: string, cwd?: string, model?: string, options?: { autonomous?: boolean; isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean; switchAttempted?: boolean; timeout?: number }): TaskState {
-    let id = generateTaskId();
-    let normalizedId = normalizeTaskId(id);
-    let attempts = 0;
-    while (this.tasks.has(normalizedId) && attempts < 5) {
-      id = generateTaskId();
-      normalizedId = normalizeTaskId(id);
-      attempts += 1;
+    if (this.isClearing) {
+      throw new Error('Cannot create tasks while clearing workspace');
     }
-    if (this.tasks.has(normalizedId)) {
-      const uniqueSuffix = `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-      id = `${id}-${uniqueSuffix}`;
-      normalizedId = normalizeTaskId(id);
-    }
+    const id = generateTaskId();
+    const normalizedId = normalizeTaskId(id);
     
     // Determine initial status based on dependencies
     let initialStatus = TaskStatus.PENDING;
@@ -702,6 +805,23 @@ class TaskManager {
 
     const previousStatus = task.status;
 
+    // Validate state transition before applying
+    if (updates.status && updates.status !== task.status) {
+      const allowed = VALID_TRANSITIONS[task.status];
+      if (allowed && !allowed.has(updates.status)) {
+        console.error(`[task-manager] Rejected illegal transition ${task.status} → ${updates.status} for task ${id}`);
+        return task; // Return current state, don't apply illegal transition
+      }
+    }
+
+    // Guard: reject state transitions on already-terminal tasks
+    if (updates.status !== undefined && TERMINAL_STATUSES.has(task.status)) {
+      // Task is already terminal — don't allow further state changes
+      // (e.g., health check timeout arriving after completion)
+      console.error(`[task-manager] Rejecting ${task.status}→${updates.status} transition for ${task.id} (already terminal)`);
+      return task;
+    }
+
     // Mutate in-place to prevent reference drift with appendOutput.
     // Both appendOutput and updateTask operate on the same Map entry;
     // replacing the object (spread) would cause appendOutput to push
@@ -725,7 +845,12 @@ class TaskManager {
       task.session = undefined;
     }
     // No need to re-set in Map — object reference is unchanged
-    this.schedulePersist('state');
+    // Flush immediately for terminal transitions to minimize crash window
+    if (updates.status && isTerminalStatus(updates.status)) {
+      this.persistNow().catch(() => {});
+    } else {
+      this.schedulePersist('state');
+    }
 
     // Fire status change callback
     if (statusChanged) {
@@ -740,6 +865,11 @@ class TaskManager {
 
     // When a task completes, check if any waiting tasks can now run
     if (updates.status === TaskStatus.COMPLETED && previousStatus !== TaskStatus.COMPLETED) {
+      queueMicrotask(() => this.processWaitingTasks());
+    }
+
+    // When a task fails/cancels/times out, cascade to waiting dependents
+    if (updates.status === TaskStatus.FAILED || updates.status === TaskStatus.CANCELLED || updates.status === TaskStatus.TIMED_OUT) {
       this.processWaitingTasks();
     }
 
@@ -803,29 +933,38 @@ class TaskManager {
     return tasks;
   }
 
-  cancelTask(id: string): { success: boolean; alreadyDead?: boolean; error?: string } {
+  async cancelTask(id: string): Promise<{ success: boolean; alreadyDead?: boolean; error?: string }> {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (!task) {
       return { success: false, error: 'Task not found' };
     }
 
-    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING && task.status !== TaskStatus.WAITING) {
+    // Idempotency guard: terminal statuses are no-ops
+    if (task.status === TaskStatus.CANCELLED || task.status === TaskStatus.COMPLETED ||
+        task.status === TaskStatus.FAILED || task.status === TaskStatus.TIMED_OUT) {
+      return { success: true, alreadyDead: true };
+    }
+
+    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING && task.status !== TaskStatus.WAITING && task.status !== TaskStatus.RATE_LIMITED) {
       return { success: false, error: `Task is not cancellable (status: ${task.status})` };
     }
 
     let alreadyDead = false;
-    if (task.session) {
-      // SDK session - abort it
+
+    // Use process registry for proper escalation
+    const killed = await processRegistry.killTask(task.id);
+    if (!killed && task.session) {
       try {
-        task.session.abort();
-      } catch (err) {
-        // Session may already be done
-        alreadyDead = true;
-        console.error(`[task-manager] Cancel: session abort failed for task ${task.id}: ${err}`);
+        await Promise.race([
+          task.session.abort(),
+          new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
+        ]);
+      } catch {
+        /* already dead or timed out */
       }
-    } else if (task.status === TaskStatus.RUNNING) {
-      // Running but no session reference - already dead
+    } else if (!killed && task.status === TaskStatus.RUNNING) {
+      // Running but no session and not in registry - already dead
       alreadyDead = true;
     }
 
@@ -833,6 +972,7 @@ class TaskManager {
       status: TaskStatus.CANCELLED,
       endTime: new Date().toISOString(),
       error: alreadyDead ? 'Session had already ended before cancellation' : undefined,
+      session: undefined,
     });
     return { success: true, alreadyDead };
   }
@@ -858,18 +998,11 @@ class TaskManager {
       this.rateLimitTimer = null;
     }
 
-    // Abort all running sessions (SDK adapter handles actual cleanup)
-    const abortPromises: Promise<void>[] = [];
-    for (const task of this.tasks.values()) {
-      if (task.session && task.status === TaskStatus.RUNNING) {
-        abortPromises.push(
-          task.session.abort().catch(() => {
-            // Ignore during shutdown
-          })
-        );
-      }
-    }
-    await Promise.allSettled(abortPromises);
+    // Remove all listener callbacks
+    this.removeAllListeners();
+
+    // Kill all tracked processes with SIGTERM→SIGKILL escalation
+    await processRegistry.killAll();
 
     // Close all output file handles
     await closeAllOutputHandles();

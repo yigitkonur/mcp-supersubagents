@@ -105,7 +105,7 @@ export function calculateNextRetryTime(
   } else {
     // Priority 3: Use exponential backoff
     const index = Math.min(retryCount, DEFAULT_RETRY_DELAYS_MS.length - 1);
-    delayMs = DEFAULT_RETRY_DELAYS_MS[index];
+    delayMs = DEFAULT_RETRY_DELAYS_MS[index] + Math.floor(Math.random() * 60000); // +0-60s jitter to prevent thundering herd
   }
   
   const nextRetryTime = new Date(Date.now() + delayMs);

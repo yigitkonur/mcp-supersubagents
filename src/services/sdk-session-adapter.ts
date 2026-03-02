@@ -51,6 +51,13 @@ const RATE_LIMIT_STRING = "Sorry, you've hit a rate limit that restricts the num
 // Health check model for testing account availability
 const HEALTH_CHECK_MODEL = 'claude-haiku-4.5';
 
+// Buffer caps to prevent unbounded memory growth during long sessions
+const MAX_OUTPUT_BUFFER = 500;
+const MAX_REASONING_BUFFER = 200;
+const MAX_COMPLETED_SUBAGENTS = 200;
+const MAX_TOOL_METRICS = 500;
+const MAX_TOOL_ID_MAP = 1000;
+
 // Callback type for rotation requests
 type RotationRequestCallback = (
   taskId: string,
@@ -295,6 +302,10 @@ class SDKSessionAdapter {
 
       case 'assistant.reasoning_delta':
         binding.reasoningBuffer.push(event.data.deltaContent);
+        if (binding.reasoningBuffer.length > MAX_REASONING_BUFFER) {
+          taskManager.appendOutputFileOnly(taskId, `[reasoning] ${binding.reasoningBuffer.join('')}`);
+          binding.reasoningBuffer.length = 0;
+        }
         break;
 
       case 'assistant.turn_end': {
@@ -548,6 +559,12 @@ class SDKSessionAdapter {
     statusCode: number,
     errorMessage: string
   ): Promise<boolean> {
+    // RC-13: Defense-in-depth — guard against concurrent rotation even if caller forgot
+    if (!binding.rotationInProgress) {
+      console.error(`[sdk-session-adapter] Skipping rotation for ${taskId}: rotationInProgress not set by caller`);
+      return false;
+    }
+
     // First try the registered callback
     if (this.rotationCallback) {
       try {
@@ -606,6 +623,14 @@ class SDKSessionAdapter {
           session: binding.session,
           cwd: taskCwd,
         });
+
+        // RC-14: Check terminal state after triggerClaudeFallback await
+        const taskAfterFallback = taskManager.getTask(taskId);
+        if (!taskAfterFallback || isTerminalStatus(taskAfterFallback.status)) {
+          console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterFallback?.status ?? 'deleted'} during Claude fallback`);
+          return false;
+        }
+
         if (started) {
           // Unbind current session
           this.unbind(taskId);
@@ -627,7 +652,6 @@ class SDKSessionAdapter {
     }
 
     if (!healthCheckPassed) {
-      binding.rotationAttempts++;
       taskManager.appendOutput(taskId, `[rotation] Health check failed, trying next account (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
       if (binding.rotationAttempts >= binding.maxRotationAttempts) {
         return false;
@@ -636,26 +660,28 @@ class SDKSessionAdapter {
       return this.attemptRotationAndResume(taskId, binding, statusCode, errorMessage);
     }
 
-    // Try to resume session with new account
+    // Cross-token resume is architecturally impossible — the new token's client
+    // has no knowledge of the old session. Create a fresh session with a new ID
+    // and send a handoff prompt that includes context from the old session.
     try {
-      // RC-5: Heartbeat before long-running resumeSession
-      taskManager.appendOutput(taskId, `[rotation] Health check passed, resuming session ${binding.sessionId}...`);
+      taskManager.appendOutput(taskId, `[rotation] Health check passed, creating new session with rotated account...`);
 
-      const newSession = await sdkClientManager.resumeSession(taskCwd, binding.sessionId, {}, taskId);
+      // Generate a unique session ID for the retry to avoid collision with the old session
+      const retrySessionId = `${taskId}-r${binding.rotationAttempts}`;
+      const newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, {}, taskId);
 
-      // RC-2: Check terminal state after resumeSession await
-      const taskAfterResume = taskManager.getTask(taskId);
-      if (!taskAfterResume || isTerminalStatus(taskAfterResume.status)) {
-        console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterResume?.status ?? 'deleted'} during resumeSession`);
-        // Clean up the orphaned session
+      // RC-2: Check terminal state after createSession await
+      const taskAfterCreate = taskManager.getTask(taskId);
+      if (!taskAfterCreate || isTerminalStatus(taskAfterCreate.status)) {
+        console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterCreate?.status ?? 'deleted'} during createSession`);
         await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
         return false;
       }
 
       await this.rebindWithNewSession(taskId, binding, newSession);
       return true;
-    } catch (resumeErr) {
-      console.error(`[sdk-session-adapter] Failed to resume session after rotation:`, resumeErr);
+    } catch (createErr) {
+      console.error(`[sdk-session-adapter] Failed to create new session after rotation:`, createErr);
       return false;
     }
   }
@@ -730,12 +756,17 @@ class SDKSessionAdapter {
     console.error(`[sdk-session-adapter] Rebind task ${taskId} to new session ${newSession.sessionId}`);
 
     // Send "continue" message to resume the conversation
-    taskManager.appendOutput(taskId, `[rotation] Sending 'continue' to resume conversation...`);
+    // Since cross-token rotation creates a fresh session (no conversation history),
+    // re-send the original task prompt with a handoff note instead of just "continue"
+    const currentTask = taskManager.getTask(taskId);
+    const handoffPrompt = currentTask
+      ? `[You are continuing a task that was interrupted by a rate limit. The original prompt follows.]\n\n${currentTask.prompt}`
+      : 'continue';
+    taskManager.appendOutput(taskId, `[rotation] Sending task prompt to new session...`);
     try {
-      await newSession.sendAndWait({ prompt: 'continue' });
+      await newSession.send({ prompt: handoffPrompt });
     } catch (err) {
-      console.error(`[sdk-session-adapter] Failed to send continue message:`, err);
-      // Don't fail the rebind - the session is still valid, just the continue failed
+      console.error(`[sdk-session-adapter] Failed to send handoff prompt:`, err);
     }
   }
 
@@ -816,6 +847,11 @@ class SDKSessionAdapter {
   ): void {
     if (event.data.deltaContent) {
       binding.outputBuffer.push(event.data.deltaContent);
+      if (binding.outputBuffer.length > MAX_OUTPUT_BUFFER) {
+        // Flush early to prevent unbounded growth
+        taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
+        binding.outputBuffer.length = 0;
+      }
     }
     binding.lastMessageId = event.data.messageId;
   }
@@ -964,11 +1000,25 @@ class SDKSessionAdapter {
             binding.rotationAttempts++;  // Count proactive rotation toward the limit
             taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
             this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low')
-              .finally(() => {
-                binding.rotationInProgress = false;
-                binding.isPaused = false;
+              .then((success) => {
+                if (!binding.isUnbound) {
+                  binding.rotationInProgress = false;
+                  if (success) {
+                    binding.isPaused = false;
+                  } else {
+                    // Rotation failed — mark as rate limited instead of silently resuming on exhausted account
+                    binding.isPaused = false;
+                    taskManager.appendOutput(taskId, `[quota] Proactive rotation failed, continuing on current account`);
+                  }
+                }
               })
-              .catch(console.error);
+              .catch((err) => {
+                console.error(`[sdk-session-adapter] Proactive rotation error for ${taskId}:`, err);
+                if (!binding.isUnbound) {
+                  binding.rotationInProgress = false;
+                  binding.isPaused = false;
+                }
+              });
           }
         }
       }
@@ -988,6 +1038,19 @@ class SDKSessionAdapter {
     binding.toolStartTimes.set(toolCallId, Date.now());
     binding.toolCallIdToName.set(toolCallId, toolName);
 
+    // Evict oldest entries to prevent unbounded growth
+    if (binding.toolCallIdToName.size > MAX_TOOL_ID_MAP) {
+      const excess = binding.toolCallIdToName.size - MAX_TOOL_ID_MAP;
+      const keys = binding.toolCallIdToName.keys();
+      for (let i = 0; i < excess; i++) {
+        const k = keys.next().value;
+        if (k) {
+          binding.toolCallIdToName.delete(k);
+          binding.toolStartTimes.delete(k);
+        }
+      }
+    }
+
     // Initialize or update tool metrics
     let metrics = binding.toolMetrics.get(toolName);
     if (!metrics) {
@@ -1001,6 +1064,14 @@ class SDKSessionAdapter {
         totalDurationMs: 0,
       };
       binding.toolMetrics.set(toolName, metrics);
+      if (binding.toolMetrics.size > MAX_TOOL_METRICS) {
+        const excess = binding.toolMetrics.size - MAX_TOOL_METRICS;
+        const mkeys = binding.toolMetrics.keys();
+        for (let i = 0; i < excess; i++) {
+          const k = mkeys.next().value;
+          if (k) binding.toolMetrics.delete(k);
+        }
+      }
     }
 
     const serverInfo = mcpServerName ? ` (MCP: ${mcpServerName})` : '';
@@ -1082,9 +1153,8 @@ class SDKSessionAdapter {
       subagent.status = 'completed';
       subagent.endedAt = new Date().toISOString();
       binding.completedSubagents.push(subagent);
-      // Cap to prevent unbounded growth during long sessions
-      if (binding.completedSubagents.length > 200) {
-        binding.completedSubagents = binding.completedSubagents.slice(-100);
+      if (binding.completedSubagents.length > MAX_COMPLETED_SUBAGENTS) {
+        binding.completedSubagents = binding.completedSubagents.slice(-MAX_COMPLETED_SUBAGENTS);
       }
       binding.activeSubagents.delete(toolCallId);
     }
@@ -1105,9 +1175,8 @@ class SDKSessionAdapter {
       subagent.error = error;
       subagent.endedAt = new Date().toISOString();
       binding.completedSubagents.push(subagent);
-      // Cap to prevent unbounded growth during long sessions
-      if (binding.completedSubagents.length > 200) {
-        binding.completedSubagents = binding.completedSubagents.slice(-100);
+      if (binding.completedSubagents.length > MAX_COMPLETED_SUBAGENTS) {
+        binding.completedSubagents = binding.completedSubagents.slice(-MAX_COMPLETED_SUBAGENTS);
       }
       binding.activeSubagents.delete(toolCallId);
     }
@@ -1275,18 +1344,36 @@ class SDKSessionAdapter {
    */
   unbind(taskId: string): void {
     const binding = this.bindings.get(taskId);
-    if (binding && !binding.isUnbound) {
-      // Set flag first to prevent concurrent unbinds from double-destroying
-      binding.isUnbound = true;
-      binding.unsubscribe();
-      // Destroy the session to release PTY file descriptors (RC-1 fix)
-      const sessionId = binding.sessionId;
-      sdkClientManager.destroySession(sessionId).catch((err) => {
-        console.error(`[sdk-session-adapter] Failed to destroy session ${sessionId} during unbind:`, err);
-      });
-      this.bindings.delete(taskId);
-      console.error(`[sdk-session-adapter] Unbound and destroyed session ${sessionId} for task ${taskId}`);
+    if (!binding) {
+      return; // No binding exists — nothing to unbind
     }
+    // RC-15: Idempotent unbind — first call does the work, subsequent calls are no-ops
+    if (binding.isUnbound) {
+      console.error(`[sdk-session-adapter] Skipping unbind for ${taskId}: already unbound`);
+      return;
+    }
+    // Set flag first to prevent concurrent unbinds from double-destroying
+    binding.isUnbound = true;
+    binding.unsubscribe();
+    // Explicitly clear accumulated data structures to prevent memory leaks.
+    // Even after deleting from the Map, closures or external references may
+    // retain the binding object — clearing inner collections ensures the
+    // large per-task data is released immediately.
+    binding.toolMetrics.clear();
+    binding.toolStartTimes.clear();
+    binding.toolCallIdToName.clear();
+    binding.activeSubagents.clear();
+    binding.completedSubagents.length = 0;
+    binding.outputBuffer.length = 0;
+    binding.reasoningBuffer.length = 0;
+    binding.quotas.clear();
+    // Destroy the session to release PTY file descriptors (RC-1 fix)
+    const sessionId = binding.sessionId;
+    sdkClientManager.destroySession(sessionId).catch((err) => {
+      console.error(`[sdk-session-adapter] Failed to destroy session ${sessionId} during unbind:`, err);
+    });
+    this.bindings.delete(taskId);
+    console.error(`[sdk-session-adapter] Unbound and destroyed session ${sessionId} for task ${taskId}`);
   }
 
   /**
@@ -1361,10 +1448,11 @@ class SDKSessionAdapter {
    */
   cleanup(): void {
     for (const [taskId, binding] of this.bindings) {
+      binding.isUnbound = true;
       binding.unsubscribe();
       // Destroy session to release PTY FDs (RC-6 fix)
-      sdkClientManager.destroySession(binding.sessionId).catch((err) => {
-        console.error(`[sdk-session-adapter] Failed to destroy session ${binding.sessionId} during cleanup:`, err);
+      sdkClientManager.destroySession(binding.sessionId).catch((err: unknown) => {
+        console.error(`[sdk-session-adapter] cleanup: failed to destroy session ${binding.sessionId}:`, err);
       });
     }
     this.bindings.clear();

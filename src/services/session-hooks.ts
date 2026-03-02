@@ -35,6 +35,13 @@ import type { FailureContext } from '../types.js';
  * Create session hooks for a specific task.
  * These hooks integrate SDK lifecycle events with our task management.
  * Returns SessionHooks with single handler functions as expected by the SDK.
+ *
+ * Memory safety: Each closure only captures `taskId` (a string primitive) and
+ * the module-level `taskManager` singleton — no large objects are retained.
+ *
+ * Lifecycle: These hooks are passed to the SDK when creating a session and are
+ * tied to that session's lifetime. When the SDK destroys the session (on
+ * completion, abort, or error), the hook references are released automatically.
  */
 export function createSessionHooks(taskId: string): SessionHooks {
   return {
@@ -48,9 +55,10 @@ export function createSessionHooks(taskId: string): SessionHooks {
       // Hook lifecycle → file only (internal metadata)
       taskManager.appendOutputFileOnly(taskId, `[hooks] Session ${input.source === 'resume' ? 'resumed' : 'started'}`);
 
-      // Initialize session metrics
-      const task = taskManager.getTask(taskId);
-      if (task && !task.sessionMetrics) {
+      // Initialize session metrics — re-read task to avoid TOCTOU if future
+      // code adds awaits before this point
+      const freshTask = taskManager.getTask(taskId);
+      if (freshTask && !freshTask.sessionMetrics) {
         taskManager.updateTask(taskId, {
           sessionMetrics: {
             quotas: {},

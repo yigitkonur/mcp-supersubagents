@@ -1,10 +1,17 @@
 const URI_PREFIX = 'task:///';
+const SYSTEM_STATUS_URI = 'system:///status';
+
+function isValidSubscriptionUri(uri: string): boolean {
+  return uri === SYSTEM_STATUS_URI || uri.startsWith(URI_PREFIX);
+}
 
 class SubscriptionRegistry {
   private subscriptions = new Set<string>();
 
   subscribe(uri: string): void {
-    this.subscriptions.add(uri);
+    if (isValidSubscriptionUri(uri)) {
+      this.subscriptions.add(uri);
+    }
   }
 
   unsubscribe(uri: string): void {

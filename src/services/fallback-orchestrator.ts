@@ -1,6 +1,6 @@
 import type { CopilotSession } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
-import { isTerminalStatus, type FallbackReason } from '../types.js';
+import { isTerminalStatus, TaskStatus, type FallbackReason } from '../types.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import { buildHandoffPromptFromSession } from './session-snapshot.js';
 import { runClaudeCodeSession } from './claude-code-runner.js';
@@ -41,7 +41,7 @@ export async function triggerClaudeFallback(taskId: string, request: FallbackReq
   const cwd = request.cwd || freshTask.cwd || process.cwd();
   const taskTimeout = freshTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const elapsed = Date.now() - new Date(freshTask.startTime).getTime();
-  const timeoutRemaining = Math.max(1000, taskTimeout - elapsed);
+  const timeoutRemaining = Math.max(5 * 60 * 1000, taskTimeout - elapsed); // At least 5 minutes for Claude fallback
 
   const fallbackPrompt = request.promptOverride ?? await buildHandoffPromptFromSession(
     freshTask,
@@ -67,6 +67,16 @@ export async function triggerClaudeFallback(taskId: string, request: FallbackReq
   } else {
     run.catch((err) => {
       console.error(`[fallback-orchestrator] Claude fallback failed for ${taskId}:`, err);
+      // Mark task as FAILED if it's still non-terminal
+      const t = taskManager.getTask(taskId);
+      if (t && !isTerminalStatus(t.status)) {
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.FAILED,
+          error: `Claude fallback failed: ${err instanceof Error ? err.message : String(err)}`,
+          endTime: new Date().toISOString(),
+          exitCode: 1,
+        });
+      }
     });
   }
 

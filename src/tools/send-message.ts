@@ -14,6 +14,7 @@ import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
 import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS } from '../config/timeouts.js';
+const resumeInProgress = new Set<string>();
 
 const SendMessageSchema = z.object({
   task_id: z.string().min(1),
@@ -60,6 +61,13 @@ export const sendMessageTool = {
     },
     required: ['task_id'],
   },
+  annotations: {
+    title: 'Send Message',
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
 };
 
 export async function handleSendMessage(
@@ -99,6 +107,7 @@ export async function handleSendMessage(
     TaskStatus.FAILED,
     TaskStatus.RATE_LIMITED,
     TaskStatus.TIMED_OUT,
+    TaskStatus.CANCELLED,
   ];
 
   if (!allowedStatuses.includes(task.status)) {
@@ -110,15 +119,24 @@ export async function handleSendMessage(
     }
     return mcpError(
       `Task status "${task.status}" does not support messaging`,
-      'Only completed, failed, rate_limited, or timed_out tasks can receive messages.'
+      'Only completed, failed, rate_limited, timed_out, or cancelled tasks can receive messages.'
+    );
+  }
+
+  // Guard against concurrent resume attempts
+  if (resumeInProgress.has(taskId)) {
+    return mcpError(
+      'Session resume already in progress',
+      'Another send_message is already resuming this task. Wait for it to complete.'
     );
   }
 
   const sessionId = task.sessionId;
   const cwd = parsed.cwd || task.cwd || process.cwd();
   const timeout = parsed.timeout || task.timeout;
-  const message = parsed.message || 'continue';
+  const message = (parsed.message || 'continue').trim();
 
+  resumeInProgress.add(taskId);
   try {
     // Spawn a new task with the message to the existing session
     const newTaskId = await spawnCopilotTask({
@@ -127,7 +145,7 @@ export async function handleSendMessage(
       cwd,
       autonomous: true,
       resumeSessionId: sessionId,
-      labels: [`continued-from:${task.id}`],
+      labels: [...(task.labels || []), `continued-from:${task.id}`],
     });
 
     const newTask = taskManager.getTask(newTaskId);
@@ -158,5 +176,7 @@ export async function handleSendMessage(
       error instanceof Error ? error.message : 'Failed to send message',
       'Check that the task session is still valid. Try creating a new task with `spawn_agent` instead.'
     );
+  } finally {
+    resumeInProgress.delete(taskId);
   }
 }

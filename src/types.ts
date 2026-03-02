@@ -25,6 +25,7 @@ export type TimeoutReason =
   | 'stall'
   | 'session_error'
   | 'server_restart'
+  | 'zombie_session'
   | 'unknown';
 
 export interface TimeoutContext {
@@ -35,7 +36,8 @@ export interface TimeoutContext {
   lastOutputAgeMs?: number;
   lastHeartbeatAt?: string;
   sessionAlive?: boolean;
-  detectedBy?: 'sdk_adapter' | 'health_check' | 'startup_recovery' | 'manual';
+  inactiveMs?: number;
+  detectedBy?: 'sdk_adapter' | 'health_check' | 'startup_recovery' | 'manual' | 'zombie_sweep';
 }
 
 export interface RetryInfo {

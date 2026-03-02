@@ -256,7 +256,13 @@ const tools = [
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+  tools: tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.inputSchema,
+    ...('annotations' in t ? { annotations: (t as any).annotations } : {}),
+    ...('execution' in t ? { execution: (t as any).execution } : {}),
+  })),
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
@@ -302,7 +308,7 @@ server.setRequestHandler(CancelTaskRequestSchema, async (request) => {
   if (!task) {
     throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
   }
-  const result = taskManager.cancelTask(taskId);
+  const result = await taskManager.cancelTask(taskId);
   if (!result.success) {
     throw new McpError(ErrorCode.InvalidParams, result.error || 'Cannot cancel task');
   }
@@ -310,6 +316,9 @@ server.setRequestHandler(CancelTaskRequestSchema, async (request) => {
 });
 
 // tasks/result — return filtered output as CallToolResult-compatible payload
+const MAX_RESULT_LINES = 500;
+const MAX_RESULT_BYTES = 100_000; // 100KB
+
 server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
   const { taskId } = request.params;
   const task = taskManager.getTask(taskId);
@@ -319,9 +328,20 @@ server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
   if (!TERMINAL_STATUSES.has(task.status)) {
     throw new McpError(ErrorCode.InvalidParams, `Task ${taskId} is still ${task.status}`);
   }
-  const filtered = filterOutputForResource(task.output);
+  let filtered = filterOutputForResource(task.output);
+  const totalLines = filtered.length;
+  if (filtered.length > MAX_RESULT_LINES) {
+    filtered = filtered.slice(-MAX_RESULT_LINES);
+  }
+  let text = filtered.join('\n');
+  if (Buffer.byteLength(text) > MAX_RESULT_BYTES) {
+    text = text.slice(-MAX_RESULT_BYTES);
+  }
+  if (totalLines > MAX_RESULT_LINES) {
+    text = `[truncated: showing last ${MAX_RESULT_LINES} of ${totalLines} lines]\n${text}`;
+  }
   return {
-    content: [{ type: 'text' as const, text: filtered.join('\n') }],
+    content: [{ type: 'text' as const, text }],
     isError: task.status === TaskStatus.FAILED,
   };
 });
@@ -380,6 +400,12 @@ server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
       uriTemplate: 'task:///{task_id}/session',
       name: 'Task Session',
       description: 'Execution log with tool calls and AI responses. Replaces get_task_session_detail tool.',
+      mimeType: 'application/json',
+    },
+    {
+      uriTemplate: 'system:///status',
+      name: 'System Status',
+      description: 'Account stats, SDK health, active task counts, and rate limit status.',
       mimeType: 'application/json',
     },
   ],
@@ -573,7 +599,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   }
   
   // Handle task:///{id}/session - replaces get_task_session_detail
-  if (uri.includes('/session')) {
+  if (uri.startsWith('task:///') && uri.endsWith('/session')) {
     const taskId = uri.replace('task:///', '').replace('/session', '');
     const task = taskManager.getTask(taskId);
     if (!task) {
@@ -712,22 +738,19 @@ server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
 // --- Question notification wiring ---
 // Register callback to send MCP notifications when questions arrive
 questionRegistry.onQuestionAsked((taskId, question) => {
-  // Send MCP notification for pending question
-  server.notification({
-    method: 'notifications/tasks/question',
-    params: {
-      taskId,
-      question: question.question,
-      choices: question.choices,
-      allowFreeform: question.allowFreeform,
-      askedAt: question.askedAt,
-      sessionId: question.sessionId,
-    },
-  }).catch((err) => {
-    console.error(`[index] Failed to send question notification for task ${taskId}:`, err);
-  });
+  // Send standard MCP task status notification with input_required
+  const task = taskManager.getTask(taskId);
+  if (task) {
+    const mcpTask = buildMCPTask(task);
+    server.notification({
+      method: 'notifications/tasks/status',
+      params: { ...mcpTask },
+    }).catch((err) => {
+      console.error(`[index] Failed to send question notification for task ${taskId}:`, err);
+    });
+  }
 
-  // Also send progress notification for clients that support progress but not custom notifications
+  // Also send progress notification for clients that support progress but not task status
   progressRegistry.sendProgress(taskId, `⏸️ QUESTION: ${question.question}`);
 
   // Send resource update for subscribed clients

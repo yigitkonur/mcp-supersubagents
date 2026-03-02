@@ -2,11 +2,11 @@ import type { Task as MCPTask } from '@modelcontextprotocol/sdk/types.js';
 import { TaskState, TaskStatus } from '../types.js';
 import { TASK_TTL_MS } from '../config/timeouts.js';
 
-type MCPStatus = 'working' | 'completed' | 'failed' | 'cancelled';
+type MCPStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Map internal 8-state model to MCP 5-state model.
- * (input_required is not used since tasks are autonomous)
+ * Note: input_required is handled separately in buildMCPTask based on pendingQuestion.
  */
 export function mapInternalStatusToMCP(status: TaskStatus): MCPStatus {
   switch (status) {
@@ -157,7 +157,7 @@ export function buildStatusMessage(task: TaskState): string {
       return 'Cancelled';
 
     case TaskStatus.RATE_LIMITED: {
-      const parts: string[] = ['Rate limited'];
+      const parts: string[] = ['⏸ Paused (rate limited)'];
       
       const attempt = (task.retryInfo?.retryCount ?? 0) + 1;
       const max = task.retryInfo?.maxRetries ?? 6;
@@ -175,6 +175,15 @@ export function buildStatusMessage(task: TaskState): string {
       } else if (task.retryInfo?.nextRetryTime) {
         const retryAt = new Date(task.retryInfo.nextRetryTime);
         parts.push(`retry at: ${retryAt.toISOString()}`);
+      }
+      
+      // Add human-readable wait time
+      if (task.retryInfo?.nextRetryTime) {
+        const waitMs = new Date(task.retryInfo.nextRetryTime).getTime() - Date.now();
+        if (waitMs > 0) {
+          const waitMin = Math.ceil(waitMs / 60000);
+          parts.push(`retrying in ~${waitMin}min`);
+        }
       }
       
       return parts.join(' | ');
@@ -275,10 +284,13 @@ function getLastUpdatedAt(task: TaskState): string {
  * Includes enhanced status message with SDK metrics.
  */
 export function buildMCPTask(task: TaskState): MCPTask {
+  const baseStatus = mapInternalStatusToMCP(task.status);
+  // Override to input_required when task has a pending question
+  const status = task.pendingQuestion ? 'input_required' : baseStatus;
   return {
     taskId: task.id,
-    status: mapInternalStatusToMCP(task.status),
-    ttl: TASK_TTL_MS,
+    status,
+    ttl: TASK_TTL_MS > 0 ? TASK_TTL_MS : null,
     createdAt: task.startTime,
     lastUpdatedAt: getLastUpdatedAt(task),
     pollInterval: computePollInterval(task),

@@ -23,6 +23,7 @@ import { accountManager } from './account-manager.js';
 import { questionRegistry } from './question-registry.js';
 import { createSessionHooks } from './session-hooks.js';
 import { taskManager, TERMINAL_STATUSES } from './task-manager.js';
+import { TaskStatus } from '../types.js';
 
 const DEFAULT_COPILOT_PATH = 'copilot';
 const COPILOT_PATH = resolveCopilotPath();
@@ -36,6 +37,7 @@ const CLIENT_HEALTH_CHECK_TIMEOUT_MS = 5_000;
 const RECYCLE_STOP_TIMEOUT_MS = 10_000;
 const SHUTDOWN_STOP_TIMEOUT_MS = 15_000;
 const STALE_SESSION_CLEANUP_INTERVAL_MS = 60_000;
+const PENDING_CLIENT_TIMEOUT_MS = 60_000;
 
 function resolveCopilotPath(): string {
   if (process.env.COPILOT_PATH?.trim()) {
@@ -238,8 +240,9 @@ class SDKClientManager {
       return pending;
     }
 
-    // Create with dedup — store the promise so concurrent callers reuse it
-    const promise = this.createClient(cwd, currentToken).then(client => {
+    // Create with dedup — store the promise so concurrent callers reuse it.
+    // Wrap with timeout to prevent hanging promises from leaking in the Map.
+    const creationPromise = this.createClient(cwd, currentToken).then(client => {
       // Guard: if reset/shutdown invalidated this creation, stop the orphaned client
       if (this.isShuttingDown || this.pendingClients.get(clientKey) !== promise) {
         client.stop?.().catch(() => {});
@@ -256,7 +259,9 @@ class SDKClientManager {
       this.pendingClients.delete(clientKey);
       console.error(`[sdk-client-manager] Created client for cwd=${cwd} with token #${tokenIndex + 1}/${accountManager.getTokenCount()}`);
       return client;
-    }).catch(err => {
+    });
+
+    const promise = withTimeout(creationPromise, PENDING_CLIENT_TIMEOUT_MS, `getClient(${clientKey})`).catch(err => {
       this.pendingClients.delete(clientKey);
       throw err;
     });
@@ -391,6 +396,8 @@ class SDKClientManager {
       if (session) {
         // Delete from tracking first to prevent double-destroy race with sweeper
         entry.sessions.delete(sessionId);
+        // Clear any pending question to avoid leaked Promise/timeout (sessionId === taskId)
+        questionRegistry.clearQuestion(sessionId, 'session destroyed');
         try {
           await destroySessionWithRetry(session, sessionId, DESTROY_SESSION_TIMEOUT_MS);
         } catch (err) {
@@ -424,9 +431,10 @@ class SDKClientManager {
    * 
    * @param cwd - Workspace directory
    * @param reason - Reason for rotation (e.g., 'rate_limit_429', 'server_error_500')
+   * @param fromTokenIndex - Index of the token that actually failed (avoids thundering-herd misattribution)
    */
-  async rotateOnError(cwd: string, reason: string): Promise<{ success: boolean; client?: CopilotClient; error?: string; allExhausted?: boolean }> {
-    const result = accountManager.rotateToNext(reason);
+  async rotateOnError(cwd: string, reason: string, fromTokenIndex?: number): Promise<{ success: boolean; client?: CopilotClient; error?: string; allExhausted?: boolean }> {
+    const result = accountManager.rotateToNext(reason, fromTokenIndex);
 
     if (!result.success) {
       if (result.allExhausted) {
@@ -445,6 +453,7 @@ class SDKClientManager {
       console.error(`[sdk-client-manager] Rotated to token #${result.tokenIndex! + 1} due to: ${reason}`);
 
       // RC-7: Clean up stale clients from previous tokens
+      // Also destroys old sessions using exhausted tokens to prevent leaked processes
       this.cleanupStaleClients();
 
       return { success: true, client };
@@ -520,8 +529,14 @@ class SDKClientManager {
     for (const entry of this.clients.values()) {
       for (const [sessionId, session] of entry.sessions) {
         const task = taskManager.getTask(sessionId);
+        // Preserve RATE_LIMITED sessions for retry/resume
+        if (task?.status === TaskStatus.RATE_LIMITED) {
+          continue;
+        }
         if (!task || TERMINAL_STATUSES.has(task.status as any)) {
           entry.sessions.delete(sessionId);
+          // Clear any pending question to avoid leaked Promise/timeout (sessionId === taskId)
+          questionRegistry.clearQuestion(sessionId, 'stale session swept');
           try {
             await withTimeout(
               entry.client.deleteSession(sessionId),
@@ -534,6 +549,7 @@ class SDKClientManager {
               await destroySessionWithRetry(session, sessionId, DESTROY_SESSION_TIMEOUT_MS);
             } catch (err) {
               console.error(`[sdk-client-manager] Sweeper: destroy failed for ${sessionId}: ${err}`);
+              console.error(`[sdk-client-manager] WARNING: Session ${sessionId} may have leaked - both deleteSession and destroySessionWithRetry failed`);
             }
           }
           destroyed++;
@@ -542,6 +558,56 @@ class SDKClientManager {
     }
     if (destroyed > 0) {
       console.error(`[sdk-client-manager] Sweeper: destroyed ${destroyed} stale session(s)`);
+    }
+
+    // Detect zombie sessions: task is RUNNING but session hasn't produced output
+    // for longer than the stall warning threshold. These are sessions where the
+    // SDK process is alive but the session is stuck (infinite loop, hung tool, etc.)
+    const ZOMBIE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes with no output = zombie
+    for (const entry of this.clients.values()) {
+      for (const [sessionId] of entry.sessions) {
+        const task = taskManager.getTask(sessionId);
+        if (!task || task.status !== TaskStatus.RUNNING) continue;
+
+        const now = Date.now();
+        const lastOutput = task.lastOutputAt ? new Date(task.lastOutputAt).getTime() : 0;
+        const lastHeartbeat = task.lastHeartbeatAt ? new Date(task.lastHeartbeatAt).getTime() : 0;
+        const lastActivity = Math.max(lastOutput, lastHeartbeat);
+        const inactiveMs = lastActivity > 0 ? now - lastActivity : 0;
+
+        if (inactiveMs > ZOMBIE_THRESHOLD_MS) {
+          console.error(`[sdk-client-manager] Zombie session detected: ${sessionId} (${Math.round(inactiveMs / 60000)}min inactive)`);
+          taskManager.appendOutput(sessionId, `[system] Session appears stalled (${Math.round(inactiveMs / 60000)}min without output). Destroying zombie session.`);
+          
+          // Destroy the zombie session
+          entry.sessions.delete(sessionId);
+          try {
+            await withTimeout(
+              entry.client.deleteSession(sessionId),
+              DESTROY_SESSION_TIMEOUT_MS,
+              `delete zombie session ${sessionId}`,
+            );
+          } catch {
+            // Best effort
+          }
+          
+          // Mark the task as failed so it can be retried
+          taskManager.updateTask(sessionId, {
+            status: TaskStatus.FAILED,
+            error: `Session became unresponsive (${Math.round(inactiveMs / 60000)}min without output)`,
+            endTime: new Date().toISOString(),
+            timeoutReason: 'zombie_session',
+            timeoutContext: {
+              lastOutputAt: task.lastOutputAt,
+              lastHeartbeatAt: task.lastHeartbeatAt,
+              inactiveMs,
+              detectedBy: 'zombie_sweep',
+            },
+            session: undefined,
+          });
+          destroyed++;
+        }
+      }
     }
 
     // Every 5th sweep cycle, detect and clean up orphaned server-side sessions
@@ -598,12 +664,16 @@ class SDKClientManager {
 
       let ptmxCount = 0;
       try {
-        const { stdout } = await execAsync(`lsof -p ${pid} 2>/dev/null | grep -c ptmx`, {
-          timeout: 5_000,
-        });
+        // Cross-platform PTY FD detection:
+        // - macOS: PTY master devices appear as /dev/ptmx
+        // - Linux: PTY slave devices appear as /dev/pts/N
+        const { stdout } = await execAsync(
+          `lsof -p ${pid} 2>/dev/null | grep -cE 'ptmx|/dev/pts/'`,
+          { timeout: 5_000 }
+        );
         ptmxCount = parseInt(stdout.trim(), 10) || 0;
       } catch {
-        // grep returns exit code 1 when no matches → ptmxCount stays 0
+        // grep -c returns exit code 1 when count is 0 → ptmxCount stays 0
         continue;
       }
 

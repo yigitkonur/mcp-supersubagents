@@ -11,6 +11,7 @@
 
 const MAX_ACCOUNTS = 100;
 const FAILED_TOKEN_COOLDOWN_MS = 60 * 1000; // 1 minute cooldown for failed tokens
+const STALE_FAILURE_THRESHOLD_MS = 300_000; // 5 minutes - auto-heal after this
 
 interface TokenState {
   token: string;
@@ -89,8 +90,15 @@ class AccountManager {
    * Set tokens directly (useful for testing or programmatic configuration).
    */
   setTokens(tokens: string[]): void {
-    // Limit to MAX_ACCOUNTS
-    const limitedTokens = tokens.slice(0, MAX_ACCOUNTS);
+    // Deduplicate tokens before applying limit
+    const uniqueTokens = [...new Set(tokens)];
+    if (uniqueTokens.length < tokens.length) {
+      console.error(`[account-manager] Removed ${tokens.length - uniqueTokens.length} duplicate token(s)`);
+    }
+    const limitedTokens = uniqueTokens.slice(0, MAX_ACCOUNTS);
+    if (uniqueTokens.length > MAX_ACCOUNTS) {
+      console.error(`[account-manager] WARNING: ${uniqueTokens.length} tokens configured but max is ${MAX_ACCOUNTS}. ${uniqueTokens.length - MAX_ACCOUNTS} token(s) will be ignored.`);
+    }
     
     this.tokens = limitedTokens.map((token, index) => ({
       token,
@@ -111,7 +119,25 @@ class AccountManager {
     if (this.tokens.length === 0) {
       return undefined;
     }
-    return this.tokens[this.currentIndex]?.token;
+    const current = this.tokens[this.currentIndex];
+    if (!current) return undefined;
+    // If current token is in active cooldown, scan for a non-cooldown token
+    if (current.failedAt) {
+      const age = Date.now() - current.failedAt;
+      if (age < FAILED_TOKEN_COOLDOWN_MS) {
+        // Current token in cooldown — try to find any available token
+        const now = Date.now();
+        for (let i = 0; i < this.tokens.length; i++) {
+          const state = this.tokens[i];
+          if (!state.failedAt || (now - state.failedAt) >= FAILED_TOKEN_COOLDOWN_MS) {
+            this.currentIndex = i;
+            return state.token;
+          }
+        }
+        return undefined; // All tokens in cooldown
+      }
+    }
+    return current.token;
   }
 
   /**
@@ -139,18 +165,27 @@ class AccountManager {
    * Reset to the first token (called on MCP reconnect).
    */
   reset(): void {
-    this.currentIndex = 0;
     this.rotationCount = 0;
     this.lastRotationTime = undefined;
     
-    // Clear failure states
-    for (const state of this.tokens) {
+    // Only clear expired cooldowns — preserve active ones to prevent immediate re-rate-limit
+    const now = Date.now();
+    let firstAvailable = -1;
+    for (let i = 0; i < this.tokens.length; i++) {
+      const state = this.tokens[i];
+      if (state.failedAt && (now - state.failedAt) < FAILED_TOKEN_COOLDOWN_MS) {
+        // Active cooldown — keep it
+        continue;
+      }
+      // Cooldown expired or no failure — clear state
       state.failedAt = undefined;
       state.failureReason = undefined;
       state.failureCount = 0;
+      if (firstAvailable < 0) firstAvailable = i;
     }
+    this.currentIndex = firstAvailable >= 0 ? firstAvailable : 0;
 
-    console.error(`[account-manager] Reset to first account (${this.tokens.length} total)`);
+    console.error(`[account-manager] Reset (${this.tokens.length} total, index=${this.currentIndex})`);
   }
 
   /**
@@ -158,25 +193,33 @@ class AccountManager {
    * Called when current token encounters rate limit or error.
    * 
    * @param reason - Reason for rotation (e.g., 'rate_limit', 'server_error')
+   * @param fromTokenIndex - Index of the token that actually failed (avoids thundering-herd misattribution)
    * @returns Result with new token or exhausted status
    */
-  rotateToNext(reason: string = 'unknown'): AccountRotationResult {
+  rotateToNext(reason: string = 'unknown', fromTokenIndex?: number): AccountRotationResult {
     if (this.tokens.length === 0) {
       return { success: false, error: 'No tokens configured' };
     }
 
     if (this.tokens.length === 1) {
-      // Single token mode - can't rotate
-      return { success: false, error: 'Single token mode - cannot rotate' };
+      // Single token mode - mark current token as failed
+      const singleState = this.tokens[0];
+      if (singleState) {
+        singleState.failedAt = Date.now();
+        singleState.failureReason = reason;
+        singleState.failureCount++;
+      }
+      return { success: false, allExhausted: true, error: 'Single token mode - cannot rotate, token exhausted' };
     }
 
-    // Mark current token as failed
-    const currentState = this.tokens[this.currentIndex];
-    if (currentState) {
-      currentState.failedAt = Date.now();
-      currentState.failureReason = reason;
-      currentState.failureCount++;
-      console.error(`[account-manager] Token #${this.currentIndex + 1} failed: ${reason} (count: ${currentState.failureCount})`);
+    // Mark the token that actually failed (not necessarily currentIndex)
+    const failIndex = fromTokenIndex ?? this.currentIndex;
+    const failedState = this.tokens[failIndex];
+    if (failedState) {
+      failedState.failedAt = Date.now();
+      failedState.failureReason = reason;
+      failedState.failureCount++;
+      console.error(`[account-manager] Token #${failIndex + 1} failed: ${reason} (count: ${failedState.failureCount})`);
     }
 
     // Find next available token
@@ -193,14 +236,23 @@ class AccountManager {
       
       // Check if this token is in cooldown
       if (nextState.failedAt) {
-        const cooldownRemaining = FAILED_TOKEN_COOLDOWN_MS - (now - nextState.failedAt);
-        if (cooldownRemaining > 0) {
-          // Still in cooldown, try next
-          continue;
+        const failedAge = now - nextState.failedAt;
+        // Auto-reset stale failures older than 5 minutes
+        if (failedAge > STALE_FAILURE_THRESHOLD_MS) {
+          nextState.failedAt = undefined;
+          nextState.failureReason = undefined;
+          nextState.failureCount = 0;
+        } else {
+          const cooldownRemaining = FAILED_TOKEN_COOLDOWN_MS - failedAge;
+          if (cooldownRemaining > 0) {
+            // Still in cooldown, try next
+            continue;
+          }
+          // Cooldown expired, clear failure state
+          nextState.failedAt = undefined;
+          nextState.failureReason = undefined;
+          nextState.failureCount = 0;
         }
-        // Cooldown expired, clear failure state
-        nextState.failedAt = undefined;
-        nextState.failureReason = undefined;
       }
 
       // Found an available token
@@ -297,6 +349,92 @@ class AccountManager {
     if (token.length <= 8) return '****';
     return `${token.slice(0, 4)}...${token.slice(-4)}`;
   }
+
+  /**
+   * Mark a token as successfully used, resetting its failure count.
+   * Call after a session completes successfully.
+   */
+  markSuccess(tokenIndex: number): void {
+    const state = this.tokens[tokenIndex];
+    if (state) {
+      state.failedAt = undefined;
+      state.failureReason = undefined;
+      state.failureCount = 0;
+    }
+  }
+
+  /**
+   * Reset stale cooldowns for tokens whose failedAt is older than maxAgeMs.
+   * Auto-heals tokens that were temporarily rate-limited but have since recovered.
+   */
+  resetStaleCooldowns(maxAgeMs: number = 300_000): void {
+    const now = Date.now();
+    for (const state of this.tokens) {
+      if (state.failedAt && (now - state.failedAt) > maxAgeMs) {
+        state.failedAt = undefined;
+        state.failureReason = undefined;
+        state.failureCount = 0;
+      }
+    }
+  }
+
+  /**
+   * Export cooldown state for persistence (does NOT include tokens themselves).
+   * Only exports tokens with active cooldowns to minimize disk writes.
+   */
+  exportCooldownState(): Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }> {
+    const now = Date.now();
+    return this.tokens
+      .filter(t => t.failedAt && (now - t.failedAt) < STALE_FAILURE_THRESHOLD_MS)
+      .map(t => ({
+        index: t.index,
+        failedAt: t.failedAt!,
+        failureReason: t.failureReason,
+        failureCount: t.failureCount,
+      }));
+  }
+
+  /**
+   * Import cooldown state from persistence (e.g., after server restart).
+   * Only applies cooldowns that are still within the cooldown window.
+   */
+  importCooldownState(cooldowns: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>): void {
+    const now = Date.now();
+    let applied = 0;
+    for (const cd of cooldowns) {
+      if (cd.index < 0 || cd.index >= this.tokens.length) continue;
+      // Only restore cooldowns that haven't expired yet
+      if (now - cd.failedAt >= STALE_FAILURE_THRESHOLD_MS) continue;
+      const state = this.tokens[cd.index];
+      if (state) {
+        state.failedAt = cd.failedAt;
+        state.failureReason = cd.failureReason;
+        state.failureCount = cd.failureCount;
+        applied++;
+      }
+    }
+    if (applied > 0) {
+      console.error(`[account-manager] Restored ${applied} cooldown(s) from persistence`);
+      // Advance currentIndex past any tokens in active cooldown
+      const available = this.tokens.findIndex(t => !t.failedAt || (now - t.failedAt) >= FAILED_TOKEN_COOLDOWN_MS);
+      if (available >= 0) {
+        this.currentIndex = available;
+      }
+    }
+  }
+
+  /**
+   * Clear all sensitive token data from memory.
+   * Call during server shutdown to prevent token leaks.
+   */
+  cleanup(): void {
+    this.tokens = [];
+    this.currentIndex = 0;
+    this.rotationCount = 0;
+    this.initialized = false;
+  }
 }
 
 export const accountManager = new AccountManager();
+export const resetStaleCooldowns = (maxAgeMs?: number) => accountManager.resetStaleCooldowns(maxAgeMs);
+export const cleanup = () => accountManager.cleanup();

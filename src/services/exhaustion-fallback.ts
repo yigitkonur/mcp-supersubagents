@@ -11,8 +11,6 @@
  * - Network errors
  */
 
-const FALLBACK_ENABLED = process.env.DISABLE_CLAUDE_CODE_FALLBACK !== 'true';
-
 export interface RotationResult {
   success: boolean;
   allExhausted?: boolean;
@@ -24,7 +22,7 @@ export interface RotationResult {
  * Only returns true when ALL Copilot accounts are exhausted.
  */
 export function shouldFallbackToClaudeCode(rotationResult: RotationResult): boolean {
-  if (!FALLBACK_ENABLED) {
+  if (!isFallbackEnabled()) {
     return false;
   }
   return rotationResult.allExhausted === true;
@@ -34,5 +32,5 @@ export function shouldFallbackToClaudeCode(rotationResult: RotationResult): bool
  * Check if fallback is enabled via environment variable.
  */
 export function isFallbackEnabled(): boolean {
-  return FALLBACK_ENABLED;
+  return process.env.DISABLE_CLAUDE_CODE_FALLBACK !== 'true';
 }

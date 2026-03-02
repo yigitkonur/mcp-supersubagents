@@ -11,9 +11,11 @@
 
 import type { UserInputResponse } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
+import { TaskStatus } from '../types.js';
 import type { PendingQuestion } from '../types.js';
 
 const QUESTION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_PENDING_QUESTIONS = 50;
 
 interface QuestionBinding {
   taskId: string;
@@ -25,6 +27,7 @@ interface QuestionBinding {
   timeoutId: NodeJS.Timeout;
   resolve: (response: UserInputResponse) => void;
   reject: (error: Error) => void;
+  settled: boolean;
 }
 
 // MCP notification callback type
@@ -55,6 +58,12 @@ class QuestionRegistry {
     choices?: string[],
     allowFreeform: boolean = true
   ): Promise<UserInputResponse> {
+    // Enforce max concurrent pending questions to prevent unbounded memory growth
+    if (this.bindings.size >= MAX_PENDING_QUESTIONS && !this.bindings.has(taskId.toLowerCase())) {
+      console.error(`[question-registry] Capacity exceeded: ${this.bindings.size}/${MAX_PENDING_QUESTIONS} pending questions. Rejecting question for task ${taskId}.`);
+      return Promise.reject(new Error(`Question registry at capacity (${MAX_PENDING_QUESTIONS}). Cannot accept new questions until existing ones are answered or expire.`));
+    }
+
     // Clean up any existing question for this task
     this.clearQuestion(taskId, 'new question asked');
 
@@ -76,6 +85,7 @@ class QuestionRegistry {
         timeoutId,
         resolve,
         reject,
+        settled: false,
       };
 
       this.bindings.set(taskId.toLowerCase(), binding);
@@ -127,6 +137,11 @@ class QuestionRegistry {
       return { success: false, error: 'No pending question for this task' };
     }
 
+    if (binding.settled) {
+      return { success: false, error: 'Question already resolved (likely timed out)' };
+    }
+    binding.settled = true;
+
     // Parse and validate the answer
     const parseResult = this.parseAnswer(answer, binding.choices, binding.allowFreeform);
     
@@ -175,10 +190,13 @@ class QuestionRegistry {
       if (!allowFreeform) {
         return { valid: false, error: 'Custom answers not allowed. Please select from the choices.' };
       }
-      const customText = trimmedAnswer.slice(7).trim();
+      let customText = trimmedAnswer.slice(7).trim();
       if (!customText) {
         return { valid: false, error: 'Custom answer cannot be empty.' };
       }
+      // Strip control characters from custom answer text
+      // eslint-disable-next-line no-control-regex
+      customText = customText.replace(/[\x00\x01-\x08\x0b\x0c\x0e-\x1f\x80-\x9f]/g, '');
       return { valid: true, answer: customText, wasFreeform: true };
     }
 
@@ -228,14 +246,25 @@ class QuestionRegistry {
     const binding = this.bindings.get(normalizedId);
 
     if (binding) {
-      binding.reject(new Error('Question timed out after 30 minutes'));
+      if (binding.settled) {
+        this.bindings.delete(normalizedId);
+        return;
+      }
+      binding.settled = true;
+
+      binding.reject(new Error('Question timed out after 30 minutes — task will be terminated'));
       
-      taskManager.updateTask(taskId, { pendingQuestion: undefined });
-      taskManager.appendOutput(taskId, `[question] Question timed out after 30 minutes. Task may fail.`);
+      taskManager.updateTask(taskId, {
+        pendingQuestion: undefined,
+        status: TaskStatus.FAILED,
+        error: 'Task failed: user question timed out after 30 minutes',
+        endTime: new Date().toISOString(),
+      });
+      taskManager.appendOutput(taskId, `[question] Question timed out after 30 minutes. Task failed.`);
 
       this.bindings.delete(normalizedId);
 
-      console.error(`[question-registry] Question timed out for task ${taskId}`);
+      console.error(`[question-registry] Question timed out for task ${taskId} — task marked FAILED`);
     }
   }
 
@@ -247,6 +276,12 @@ class QuestionRegistry {
     const binding = this.bindings.get(normalizedId);
 
     if (binding) {
+      if (binding.settled) {
+        this.bindings.delete(normalizedId);
+        return;
+      }
+      binding.settled = true;
+
       clearTimeout(binding.timeoutId);
       binding.reject(new Error(`Question cleared: ${reason}`));
       

@@ -37,11 +37,8 @@ Use MCP Resources to check task status: read \`task:///all\` or \`task:///{id}\`
     type: 'object' as const,
     properties: {
       task_id: {
-        oneOf: [
-          { type: 'string', description: 'Single task ID or "all"' },
-          { type: 'array', items: { type: 'string' }, description: 'Array of task IDs to cancel' },
-        ],
-        description: 'Task ID(s) to cancel, or "all" to clear workspace.',
+        type: 'string',
+        description: 'Task ID to cancel, or "all" to clear workspace.',
       },
       clear: {
         type: 'boolean',
@@ -54,6 +51,13 @@ Use MCP Resources to check task status: read \`task:///all\` or \`task:///{id}\`
     },
     required: ['task_id'],
   },
+  annotations: {
+    title: 'Cancel Task',
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
 };
 
 interface CancelResult {
@@ -61,6 +65,7 @@ interface CancelResult {
   success: boolean;
   previous_status?: string;
   error?: string;
+  outputFilePath?: string;
 }
 
 export async function handleCancelTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
@@ -98,34 +103,33 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       : [parsed.task_id.toLowerCase().trim()];
     
     // Process each task
-    const results: CancelResult[] = [];
-    
-    for (const taskId of taskIds) {
+    const results: CancelResult[] = await Promise.all(taskIds.map(async (taskId) => {
       const task = taskManager.getTask(taskId);
       
       if (!task) {
-        results.push({ task_id: taskId, success: false, error: 'Not found' });
-        continue;
+        return { task_id: taskId, success: false, error: 'Not found' };
       }
       
       const previousStatus = task.status;
-      const cancelResult = taskManager.cancelTask(taskId);
+      const outputFilePath = task.outputFilePath;
+      const cancelResult = await taskManager.cancelTask(taskId);
       
       if (cancelResult.success) {
-        results.push({ 
+        return { 
           task_id: taskId, 
           success: true, 
           previous_status: previousStatus,
-        });
+          outputFilePath,
+        };
       } else {
-        results.push({ 
+        return { 
           task_id: taskId, 
           success: false, 
           previous_status: previousStatus,
           error: cancelResult.error || 'Cannot cancel',
-        });
+        };
       }
-    }
+    }));
     
     // Format response
     const succeeded = results.filter(r => r.success);
@@ -134,15 +138,14 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     // Single task response
     if (taskIds.length === 1) {
       const result = results[0];
-      const task = taskManager.getTask(result.task_id);
       if (result.success) {
         const parts: (string | null)[] = [
           `✅ **Task cancelled**`,
           `task_id: \`${result.task_id}\``,
           `previous_status: ${displayStatus(result.previous_status!)}`,
-          task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+          result.outputFilePath ? `output_file: \`${result.outputFilePath}\`` : null,
           '',
-          task?.outputFilePath ? `Review output: \`cat ${task.outputFilePath}\`` : null,
+          result.outputFilePath ? `Review output: \`cat ${result.outputFilePath}\`` : null,
         ];
         return mcpText(parts.filter(Boolean).join('\n'));
       } else {
