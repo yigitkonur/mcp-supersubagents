@@ -168,3 +168,42 @@ if (isStillAlive(pid)) process.kill(pid, 'SIGKILL');
 // Skips graceful shutdown — process can't clean up
 process.kill(pid, 'SIGKILL');
 ```
+
+## Timer References Must Unref
+
+Node.js timers keep the event loop alive. In an MCP server, forgetting `.unref()` means the process hangs after the client disconnects.
+
+### Good
+```typescript
+const interval = setInterval(() => {
+  checkStaleTasks();
+}, 60_000).unref();  // Won't prevent process exit
+
+const timeout = setTimeout(() => {
+  cleanupExpiredSessions();
+}, 30_000).unref();
+```
+
+### Bad
+```typescript
+// Process will hang during shutdown — timer keeps event loop alive
+const interval = setInterval(() => {
+  checkStaleTasks();
+}, 60_000);
+```
+
+## Fire-and-Forget Session Send
+
+The SDK session adapter subscribes to `session.idle` for completion detection. Using `sendAndWait()` creates a second completion handler that races with the adapter.
+
+### Good
+```typescript
+// Adapter's session.idle handler is the single completion detector
+session.send(finalPrompt);
+```
+
+### Bad
+```typescript
+// Double-completion race: sendAndWait's idle + adapter's idle
+await session.sendAndWait(finalPrompt);
+```

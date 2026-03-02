@@ -31,6 +31,11 @@
     {
       "path": "README.md",
       "description": "User-facing tool reference, resource URI specs, agent template descriptions, workflows, and troubleshooting. Useful for verifying that code changes align with documented behavior."
+    },
+    {
+      "path": "REVIEW.md",
+      "description": "Code review guidelines: critical areas (STDIO integrity, state machine, token handling, process lifecycle, session binding), security checklist, conventions, performance patterns, and anti-patterns with good/bad code examples.",
+      "scope": ["src/**/*.ts"]
     }
   ]
 }

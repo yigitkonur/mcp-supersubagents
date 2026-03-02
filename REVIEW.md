@@ -7,6 +7,7 @@
 - **Token and credential handling** (`src/services/account-manager.ts`) — PAT tokens must never appear in log output, error messages, or MCP responses. Only the masked form (`getMaskedCurrentToken()`) is safe to log. Review any change touching `exportCooldownState()` or token iteration to ensure raw tokens are not leaked.
 - **Process lifecycle** (`src/services/process-registry.ts`) — Kill escalation follows a strict sequence: `session.abort()` → `abortController.abort()` → `SIGTERM` → wait 3s → `SIGKILL`. Any change to this sequence must preserve the escalation order and handle entries without PIDs (Claude fallback sessions have only an AbortController).
 - **Session binding** (`src/services/sdk-session-adapter.ts`) — After token rotation, the session ID changes but the task ID does not. Any code assuming `sessionId === taskId` will silently break after rotation. Always resolve via `sdkClientManager.sessionOwners` map.
+- **Claude fallback permission mode** (`src/services/claude-code-runner.ts`) — `DEFAULT_PERMISSION_MODE` MUST remain `'plan'`, not `'bypassPermissions'`. The `bypassPermissions` value (FB-001, Critical) grants the Claude fallback full OS access without any approval gate — equivalent to running arbitrary shell commands without a sandbox. Any PR touching permission mode defaults MUST include explicit justification for the security trade-off.
 
 ## Security
 
@@ -17,6 +18,7 @@
 - Error responses returned to MCP clients (via `mcpError()`, `mcpValidationError()`) must never include stack traces, internal file paths, or raw error objects. Only sanitized messages are safe.
 - The `claude-code-runner.ts` filters dangerous bash commands (`rm -rf /`, `mkfs`, `dd`, `shutdown`, `reboot`, `chown`). Changes to the tool policy filter must not weaken this list.
 - Control characters are stripped from user answers in `question-registry.ts` (`\x00-\x1f`, `\x80-\x9f`). Any new user input path must apply equivalent sanitization.
+- Template replacement in `src/templates/index.ts` MUST use a function replacer: `.replace('{{user_prompt}}', () => userPrompt)`. Using a string literal as the second argument (`.replace(pattern, userPrompt)`) causes JavaScript to interpret `$` sequences — `$$`, `$&`, `$\``, `$'`, `$n` — as special substitution patterns, enabling prompt injection via user-controlled content containing `$` characters (VE-003, High). Never pass untrusted content as a string replacer argument.
 
 ## Conventions
 

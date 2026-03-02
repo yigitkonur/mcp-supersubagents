@@ -2,7 +2,7 @@
   "strictness": 2,
   "commentTypes": ["logic", "syntax"],
   "triggerOnUpdates": false,
-  "ignorePatterns": "build/**\nnode_modules/**\npnpm-lock.yaml\n*.d.ts\n*.tsbuildinfo\n.super-agents/**\n.claude/**\n.agents/**\n.windsurf/**\n.git/**\nscripts/**\njean.json\nmcp_servers.json\nworktree-init.sh\nskills-lock.json\n*.log\ncoverage/**\ntest-results/**",
+  "ignorePatterns": "build/**\nnode_modules/**\npnpm-lock.yaml\n*.d.ts\n*.tsbuildinfo\n.super-agents/**\n.claude/**\n.agents/**\n.windsurf/**\n.git/**\nscripts/**\njean.json\nmcp_servers.json\nworktree-init.sh\nskills-lock.json\n*.log\ncoverage/**\ntest-results/**\nstability-audit/**\ndeep-dive-audit/**\nCLAUDE.md.bak.old\narabic-answer-invocation.txt\n*.tgz\nmcp-config.json",
   "excludeAuthors": ["dependabot[bot]", "renovate[bot]", "github-actions[bot]"],
   "includeBranches": ["main"],
   "fileChangeLimit": 50,
@@ -138,6 +138,36 @@
       "rule": "The Claude fallback orchestrator must prevent multiple fallback attempts for the same task. Check task.fallbackAttempted before initiating fallback — if already attempted, return false immediately. Double fallbacks waste resources and can cause duplicate output.",
       "scope": ["src/services/fallback-orchestrator.ts", "src/services/exhaustion-fallback.ts"],
       "severity": "medium"
+    },
+    {
+      "id": "timer-must-unref",
+      "rule": "Every setInterval() and setTimeout() call must chain .unref() to prevent the timer from keeping the Node.js event loop alive during shutdown. Without .unref(), the MCP server process hangs indefinitely after the client disconnects because the timer reference keeps the loop open.",
+      "scope": ["src/**/*.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "fire-and-forget-send",
+      "rule": "Use session.send(prompt) not session.sendAndWait(prompt) for Copilot SDK sessions. sendAndWait() registers its own idle handler that races with the sdk-session-adapter's session.idle handler, causing a double-completion race where the task is marked COMPLETED twice. The fire-and-forget pattern lets the adapter be the single source of completion detection.",
+      "scope": ["src/services/sdk-spawner.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "terminal-state-recheck-after-await",
+      "rule": "After any await in task-processing code, re-fetch the task from the Map and check if it has moved to a terminal state (COMPLETED, FAILED, CANCELLED, TIMED_OUT). Another async path (cancellation, timeout, error handler) may have transitioned the task during the await. Proceeding without re-checking causes operations on already-finished tasks.",
+      "scope": ["src/services/task-manager.ts", "src/services/sdk-spawner.ts", "src/services/sdk-session-adapter.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "resource-remove-before-destroy",
+      "rule": "When cleaning up resources (sessions, file handles, clients), remove the resource from its tracking collection (Map, Set) before calling the async destroy/close operation. This prevents a concurrent cleanup from racing on the same resource. Pattern: delete from map → then destroy. Not: destroy → then delete.",
+      "scope": ["src/services/sdk-client-manager.ts", "src/services/output-file.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "claude-fallback-command-filter",
+      "rule": "The Claude Code fallback runner filters dangerous bash commands (rm -rf /, mkfs, dd, shutdown, reboot, chown) via the tool policy. Any change to this filter list must not weaken it — only additions are safe. The filter is a security boundary preventing a rogue agent from destroying the host system.",
+      "scope": ["src/services/claude-code-runner.ts"],
+      "severity": "high"
     }
   ],
   "statusCheck": true,
