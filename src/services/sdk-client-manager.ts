@@ -279,7 +279,7 @@ class SDKClientManager {
     // Wrap with timeout to prevent hanging promises from leaking in the Map.
     const creationPromise = this.createClient(cwd, currentToken).then(async client => {
       // Guard: if reset/shutdown invalidated this creation, stop the orphaned client
-      if (this.isShuttingDown || this.pendingClients.get(clientKey) !== promise) {
+      if (this.isShuttingDown || this.pendingClients.get(clientKey) !== creationPromise) {
         try {
           await withTimeout(client.stop(), RECYCLE_STOP_TIMEOUT_MS, `stop invalidated client ${clientKey}`);
         } catch {
@@ -300,12 +300,13 @@ class SDKClientManager {
       return client;
     });
 
+    this.pendingClients.set(clientKey, creationPromise);
+
     const promise = withTimeout(creationPromise, PENDING_CLIENT_TIMEOUT_MS, `getClient(${clientKey})`).catch(err => {
       this.pendingClients.delete(clientKey);
       throw err;
     });
 
-    this.pendingClients.set(clientKey, promise);
     return promise;
   }
 
