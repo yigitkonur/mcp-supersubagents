@@ -14,7 +14,7 @@
  * - Forwards questions to QuestionRegistry for MCP client handling
  */
 
-import { CopilotClient, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse, type PermissionHandler, type PermissionRequest, type PermissionRequestResult } from '@github/copilot-sdk';
+import { CopilotClient, approveAll, type CopilotClientOptions, type CopilotSession, type SessionConfig, type UserInputRequest, type UserInputResponse, type PermissionHandler, type PermissionRequest, type PermissionRequestResult } from '@github/copilot-sdk';
 import { execSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -77,8 +77,14 @@ function extractShellCommand(request: PermissionRequest): string {
 }
 
 function createPermissionHandler(taskId?: string): PermissionHandler {
+  // Use SDK-native approveAll for the default allow_all mode
+  if (!STRICT_PERMISSION_MODE) {
+    return approveAll;
+  }
+
+  // Safe mode: block known-dangerous shell commands
   return async (request: PermissionRequest): Promise<PermissionRequestResult> => {
-    if (STRICT_PERMISSION_MODE && request.kind === 'shell') {
+    if (request.kind === 'shell') {
       const cmd = extractShellCommand(request).toLowerCase();
       const dangerousPatterns = [
         /\brm\s+-rf\s+\//,
@@ -333,19 +339,18 @@ class SDKClientManager {
   async createSession(
     cwd: string,
     sessionId: string,
-    config: Omit<SessionConfig, 'sessionId'>,
+    config: Omit<SessionConfig, 'sessionId' | 'onPermissionRequest'> & { onPermissionRequest?: SessionConfig['onPermissionRequest'] },
     taskId?: string
   ): Promise<CopilotSession> {
     const client = await this.getClient(cwd);
 
-    // Build session config with user input handler and hooks if taskId provided
+    // Build session config with user input handler and hooks if taskId provided.
+    // Always attach explicit permission policy to avoid SDK default-deny.
     const sessionConfig: SessionConfig = {
       sessionId,
       ...config,
+      onPermissionRequest: config.onPermissionRequest ?? createPermissionHandler(taskId),
     };
-
-    // Always attach explicit permission policy to avoid SDK default-deny.
-    sessionConfig.onPermissionRequest = config.onPermissionRequest ?? createPermissionHandler(taskId);
 
     // Add user input handler and session hooks when taskId is provided
     if (taskId) {
@@ -390,7 +395,7 @@ class SDKClientManager {
       resumeConfig.hooks = createSessionHooks(taskId);
     }
 
-    const session = await client.resumeSession(sessionId, resumeConfig);
+    const session = await client.resumeSession(sessionId, resumeConfig as import('@github/copilot-sdk').ResumeSessionConfig);
 
     // Track the resumed session in the client entry used to resume it.
     const entry = this.findEntryByClient(client);

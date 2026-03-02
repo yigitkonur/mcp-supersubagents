@@ -101,16 +101,30 @@ MCP client calls spawn_agent
     5. spawnCopilotTask() — creates TaskState, resolves deps
   → sdk-spawner.ts:
     1. taskManager.createTask() — PENDING or WAITING if has depends_on
-    2. setImmediate → runSDKSession() (returns task ID immediately)
-    3. sdkClientManager.createSession() → session
-    4. sdkSessionAdapter.bind(taskId, session) — subscribe to events
-    5. session.send(prompt) — fire-and-forget (NOT sendAndWait)
+    2. resolveMode() — explicit mode > enableFleet legacy > default ('fleet')
+    3. setImmediate → runSDKSession() (returns task ID immediately)
+    4. sdkClientManager.createSession() → session
+    5. sdkSessionAdapter.bind(taskId, session) — subscribe to events
+    6. session.rpc.mode.set({ mode: 'autopilot' }) — all modes auto-run
+    7. if mode=fleet: session.rpc.fleet.start() — parallel sub-agents
+    8. Append mode suffix prompt (fleet/plan behavioral instructions)
+    9. session.send(finalPrompt) — fire-and-forget (NOT sendAndWait)
   → sdk-session-adapter.ts:
     - Streams SessionEvent → taskManager.appendOutput/updateTask
     - On session.idle → COMPLETED
     - On session.error (429/5xx) → attempt rotation via callback
     - On all rotations exhausted → triggerClaudeFallback()
 ```
+
+### Mode Mapping (`mode` param, default: `fleet`)
+
+| `mode` | Copilot SDK | Claude Code Fallback |
+|---|---|---|
+| `autopilot` | `rpc.mode.set('autopilot')` | `bypassPermissions` (no suffix prompt) |
+| `plan` | `rpc.mode.set('autopilot')` + plan suffix prompt | `bypassPermissions` + plan suffix prompt |
+| `fleet` | `rpc.mode.set('autopilot')` + `rpc.fleet.start()` + fleet suffix prompt | `bypassPermissions` + fleet suffix prompt |
+
+Suffix prompts are defined in `src/config/mode-prompts.ts`. Resolution logic in `resolveMode()` (`src/services/sdk-spawner.ts`): explicit `mode` > `enableFleet` legacy > default `fleet`.
 
 ### Task State Machine
 
@@ -295,6 +309,11 @@ File limits: max 20 files, 200KB each, 500KB total. Files must be absolute paths
 - **Circular deps use lazy imports** — New inter-service imports must check for cycles and use `await import()` inside methods if needed.
 - **PAT tokens must never appear in logs** — Only the masked form (`getMaskedCurrentToken()`) is safe. Review any code touching `exportCooldownState()` or token iteration.
 - **Specialization parameter lacks path validation** — It is used in `join(__dirname, 'overlays', ...)` for template loading. Any modification must prevent path traversal (`..`, `/`, `\`).
+- **`mode` controls both providers** — The `mode` enum (`fleet` | `plan` | `autopilot`, default: `fleet`) maps to both Copilot SDK and Claude Code fallback. On Copilot: always `rpc.mode.set('autopilot')` + optional `rpc.fleet.start()` for fleet mode. On Claude: always `bypassPermissions` + mode-specific suffix prompt. Both always auto-run — `plan` mode doesn't block for approval. See mode mapping table below.
+- **Autopilot RPC for all modes** — Copilot's native `plan` mode blocks for human approval via `ask_user`, which deadlocks headless execution. The spawner always sets `rpc.mode.set('autopilot')` and uses suffix prompts for behavioral differentiation. The systemMessage fallback is kept for older CLI versions. After token rotation, autopilot and fleet (if applicable) are re-applied on the new session.
+- **`approveAll` from SDK** — The permission handler uses the SDK-exported `approveAll` helper for the default `allow_all` mode. Only the `safe` mode (`COPILOT_PERMISSION_MODE=safe`) uses a custom handler.
+- **Claude fallback uses `bypassPermissions`** — Changed from `plan` for parity with Copilot's `approveAll` handler. Override with `CLAUDE_FALLBACK_PERMISSION_MODE=plan` if needed. Mode suffix prompts are appended to the fallback prompt for fleet/plan behavioral differentiation.
+- **`autonomous` and `enable_fleet` are legacy** — Both remain in schemas for backward compatibility. `resolveMode()` in `sdk-spawner.ts` resolves: explicit `mode` > `enableFleet` legacy flag > default `fleet`. Setting `autonomous: false` has no effect on mode — all modes auto-run.
 
 ---
 

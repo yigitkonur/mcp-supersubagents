@@ -5,7 +5,7 @@
  * from the barrel index.d.ts. This augmentation exposes them so our source
  * code can import them from '@github/copilot-sdk' directly.
  *
- * Sourced from @github/copilot-sdk@0.1.21 dist/types.d.ts
+ * Verified against @github/copilot-sdk@0.1.29 dist/types.d.ts
  */
 
 import type { ToolResultObject } from '@github/copilot-sdk';

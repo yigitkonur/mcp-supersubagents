@@ -391,6 +391,16 @@ class SDKSessionAdapter {
         taskManager.appendOutputFileOnly(taskId, `[user] ${event.data.content.length > 100 ? event.data.content.slice(0, 100) + '...' : event.data.content}`);
         break;
 
+      case 'session.mode_changed':
+        taskManager.appendOutputFileOnly(taskId,
+          `[session] Mode changed to: ${(event as any).data?.agentMode ?? 'unknown'}`);
+        break;
+
+      case 'session.model_change':
+        taskManager.appendOutputFileOnly(taskId,
+          `[session] Model changed: ${(event as any).data?.previousModel ?? '?'} -> ${(event as any).data?.newModel ?? '?'}`);
+        break;
+
       default:
         // Log other events in debug mode
         if (process.env.DEBUG_SDK_EVENTS === 'true') {

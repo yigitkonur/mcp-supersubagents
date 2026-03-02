@@ -16,10 +16,11 @@ import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { sdkSessionAdapter } from './sdk-session-adapter.js';
-import { TaskStatus, type SpawnOptions, type TaskState, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
+import { TaskStatus, type SpawnOptions, type TaskState, type AgentMode, DEFAULT_AGENT_MODE, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
 import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { getModeSuffixPrompt } from '../config/mode-prompts.js';
 import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
 import { abortClaudeCodeSession } from './claude-code-runner.js';
 import { triggerClaudeFallback } from './fallback-orchestrator.js';
@@ -134,6 +135,18 @@ function ensureRotationCallbackRegistered(): void {
         console.error(`[sdk-spawner] Task ${taskId} became ${taskAfterResume?.status ?? 'deleted'} after resume`);
         return { rotated: false };
       }
+      // Re-apply autopilot mode on the new session after rotation
+      const taskMode = taskAfterResume.mode ?? DEFAULT_AGENT_MODE;
+      try {
+        await newSession.rpc.mode.set({ mode: 'autopilot' });
+      } catch { /* swallow — systemMessage fallback still active from original config */ }
+
+      // Re-apply fleet mode if the task was using it
+      if (taskMode === 'fleet') {
+        try {
+          await newSession.rpc.fleet.start({});
+        } catch { /* swallow — fleet may not be available on new account */ }
+      }
       console.error(`[sdk-spawner] Successfully rotated and resumed session ${sessionId}`);
       return { rotated: true, newSession };
     } catch (err) {
@@ -145,6 +158,16 @@ function ensureRotationCallbackRegistered(): void {
 
   rotationCallbackRegistered = true;
   console.error('[sdk-spawner] Rotation callback registered');
+}
+
+/**
+ * Resolve effective agent mode from options.
+ * Priority: explicit mode > enable_fleet legacy flag > default (fleet).
+ */
+function resolveMode(options: Pick<SpawnOptions, 'mode' | 'enableFleet'>): AgentMode {
+  if (options.mode) return options.mode;
+  if (options.enableFleet) return 'fleet';
+  return DEFAULT_AGENT_MODE; // 'fleet'
 }
 
 /**
@@ -187,6 +210,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     fallbackAttempted: options.fallbackAttempted,
     switchAttempted: options.switchAttempted,
     timeout: options.timeout,
+    mode: resolveMode(options),
   });
 
   // If task is waiting for dependencies, don't start execution yet
@@ -295,6 +319,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
     fallbackAttempted: task.fallbackAttempted,
     switchAttempted: task.switchAttempted,
     retryInfo: task.retryInfo,
+    mode: task.mode,
   };
 
   setImmediate(() => {
@@ -364,8 +389,8 @@ async function runSDKSession(
   let session: CopilotSession | undefined;
 
   try {
-    // Build session config using SDK types
-    const sessionConfig: Omit<SessionConfig, 'sessionId'> = {
+    // Build session config — onPermissionRequest is added by sdkClientManager.createSession()
+    const sessionConfig: Omit<SessionConfig, 'sessionId' | 'onPermissionRequest'> = {
       model,
       streaming: true,
       workingDirectory: cwd,
@@ -376,13 +401,18 @@ async function runSDKSession(
       },
     };
 
-    // Add system message for autonomous mode
-    if (options.autonomous !== false) {
-      sessionConfig.systemMessage = {
-        mode: 'append',
-        content: 'Work autonomously without asking for user confirmation. Complete tasks fully.',
-      };
+    // Pass reasoning effort if specified
+    if (options.reasoningEffort) {
+      sessionConfig.reasoningEffort = options.reasoningEffort;
     }
+
+    const effectiveMode = resolveMode(options);
+
+    // System message for autonomous operation (all modes auto-run)
+    sessionConfig.systemMessage = {
+      mode: 'append',
+      content: 'Work autonomously without asking for user confirmation. Complete tasks fully.',
+    };
 
     if (options.resumeSessionId) {
       // Resume existing session - pass taskId for question handling
@@ -412,14 +442,44 @@ async function runSDKSession(
     // Pass the prompt so adapter can use it for resume after rotation
     sdkSessionAdapter.bind(taskId, session, prompt);
 
+    // Activate autopilot RPC for all modes (we always auto-run). This is the
+    // SDK-native way to run autonomously — the systemMessage above is a fallback
+    // for older CLI versions that don't support the mode.set RPC method.
+    try {
+      await session.rpc.mode.set({ mode: 'autopilot' });
+      taskManager.appendOutputFileOnly(taskId, `[session] Autopilot mode activated via SDK RPC (mode=${effectiveMode})`);
+    } catch (err) {
+      // Expected on older Copilot CLI versions — systemMessage fallback still active
+      taskManager.appendOutputFileOnly(taskId,
+        `[session] RPC mode.set(autopilot) not supported (${err instanceof Error ? err.message : err}), using systemMessage fallback`);
+    }
+
+    // Fleet mode: also start fleet for parallel execution
+    if (effectiveMode === 'fleet') {
+      try {
+        const fleetResult = await session.rpc.fleet.start({});
+        if (fleetResult.started) {
+          taskManager.updateTask(taskId, { fleetMode: true });
+          taskManager.appendOutputFileOnly(taskId, '[session] Fleet mode started via SDK RPC');
+        }
+      } catch (err) {
+        taskManager.appendOutputFileOnly(taskId,
+          `[session] Fleet mode not available (${err instanceof Error ? err.message : err}), using suffix prompt fallback`);
+      }
+    }
+
+    // Append mode suffix prompt for behavioral guidance (plan/fleet)
+    const modeSuffix = getModeSuffixPrompt(effectiveMode);
+    const finalPrompt = modeSuffix ? prompt + modeSuffix : prompt;
+
     // Send the prompt — completion is handled by the session adapter via
     // session.idle event (handleSessionIdle). Using send() instead of
     // sendAndWait() avoids a double-completion race where both sendAndWait's
     // internal handler and the adapter compete to mark COMPLETED and destroy
     // the session.
-    console.error(`[sdk-spawner] Sending prompt for task ${taskId}: "${prompt.slice(0, 50)}..."`);
-    
-    await session.send({ prompt });
+    console.error(`[sdk-spawner] Sending prompt for task ${taskId} (mode=${effectiveMode}): "${prompt.slice(0, 50)}..."`);
+
+    await session.send({ prompt: finalPrompt });
 
     console.error(`[sdk-spawner] Prompt sent for task ${taskId}, adapter will handle completion`);
 

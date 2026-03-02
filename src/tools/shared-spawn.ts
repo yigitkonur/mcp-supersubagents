@@ -2,7 +2,7 @@ import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, type ToolContext } from '../types.js';
+import { TaskStatus, type ToolContext, type AgentMode } from '../types.js';
 import { mcpText, mcpValidationError } from '../utils/format.js';
 import {
   validateBrief,
@@ -20,6 +20,9 @@ export interface SharedSpawnParams {
   autonomous?: boolean;
   depends_on?: string[];
   labels?: string[];
+  enable_fleet?: boolean;
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  mode?: AgentMode;
 }
 
 export interface SpawnToolConfig {
@@ -73,6 +76,9 @@ export function createSpawnHandler<T extends SharedSpawnParams>(
         autonomous: parsed.autonomous,
         depends_on: parsed.depends_on,
         labels: parsed.labels,
+        enable_fleet: parsed.enable_fleet,
+        reasoning_effort: parsed.reasoning_effort,
+        mode: parsed.mode,
       },
       {
         toolName: config.toolName,
@@ -131,6 +137,9 @@ export async function handleSharedSpawn(
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
       taskType: config.taskType || 'super-coder',
+      enableFleet: params.enable_fleet,
+      reasoningEffort: params.reasoning_effort,
+      mode: params.mode,
     });
 
     const task = taskManager.getTask(taskId);

@@ -41,6 +41,9 @@ const SpawnAgentSchema = z.object({
   autonomous: z.boolean().default(true).optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1).max(50)).max(10).optional(),
+  enable_fleet: z.boolean().optional(),
+  reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+  mode: z.enum(['fleet', 'plan', 'autopilot']).default('fleet').optional(),
 });
 
 // --- Tool definition ---
@@ -104,6 +107,18 @@ export const spawnAgentTool = {
         items: { type: 'string' },
         description: 'Labels for grouping/filtering (max 10, 50 chars each).',
       },
+      enable_fleet: { type: 'boolean', description: 'Enable fleet mode for parallel agent execution (legacy — use mode instead).' },
+      reasoning_effort: {
+        type: 'string',
+        enum: ['low', 'medium', 'high', 'xhigh'],
+        description: 'Reasoning effort level. Higher = more thorough but slower/costlier.',
+      },
+      mode: {
+        type: 'string',
+        enum: ['fleet', 'plan', 'autopilot'],
+        description: 'Execution mode. fleet=parallel sub-agents (default), plan=plan-then-execute, autopilot=direct autonomous execution.',
+        default: 'fleet',
+      },
     },
     required: ['role', 'prompt'],
   },
@@ -148,6 +163,9 @@ export async function handleSpawnAgent(
     autonomous: parsed.autonomous,
     depends_on: parsed.depends_on,
     labels: parsed.labels,
+    enable_fleet: parsed.enable_fleet,
+    reasoning_effort: parsed.reasoning_effort,
+    mode: parsed.mode,
   };
 
   const config: SpawnToolConfig = {

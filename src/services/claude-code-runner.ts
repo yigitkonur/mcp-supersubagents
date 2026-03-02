@@ -14,11 +14,12 @@ import type {
 } from '@ai-sdk/provider';
 import { taskManager } from './task-manager.js';
 import { processRegistry } from './process-registry.js';
-import { TaskStatus, ToolMetrics, isTerminalStatus, type FallbackReason } from '../types.js';
+import { TaskStatus, ToolMetrics, isTerminalStatus, DEFAULT_AGENT_MODE, type FallbackReason, type AgentMode } from '../types.js';
+import { getModeSuffixPrompt } from '../config/mode-prompts.js';
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MODEL = 'sonnet';
-const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'plan';
+const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'bypassPermissions';
 const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
 const DEBUG = process.env.DEBUG_CLAUDE_FALLBACK === 'true';
 const activeFallbackControllers = new Map<string, AbortController>();
@@ -71,6 +72,7 @@ export interface ClaudeCodeRunOptions {
   resumeSessionId?: string;
   fallbackReason?: FallbackReason;
   preferredModel?: string;
+  mode?: AgentMode;
 }
 
 function normalizeClaudeModel(model?: string): string {
@@ -310,8 +312,14 @@ export async function runClaudeCodeSession(
   try {
     const model = claudeCode(modelId as any, settings as any) as LanguageModelV3;
 
+    // Apply mode suffix prompt for behavioral differentiation
+    const effectiveMode = options.mode ?? DEFAULT_AGENT_MODE;
+    const modeSuffix = getModeSuffixPrompt(effectiveMode);
+    const effectivePrompt = modeSuffix ? prompt + modeSuffix : prompt;
+    taskManager.appendOutputFileOnly(taskId, `[system] Claude fallback mode: ${effectiveMode}`);
+
     const callOptions: LanguageModelV3CallOptions = {
-      prompt: createPrompt(prompt),
+      prompt: createPrompt(effectivePrompt),
       abortSignal: abortController.signal,
       providerOptions: {},
       responseFormat: { type: 'text' },

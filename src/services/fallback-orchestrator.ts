@@ -63,6 +63,7 @@ export async function triggerClaudeFallback(taskId: string, request: FallbackReq
   const run = runClaudeCodeSession(taskId, fallbackPrompt, cwd, timeoutRemaining, {
     fallbackReason: request.reason,
     preferredModel: freshTask.model,
+    mode: freshTask.mode,
   });
 
   if (request.awaitCompletion) {

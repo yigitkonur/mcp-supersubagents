@@ -2,6 +2,12 @@ import type { CopilotSession } from '@github/copilot-sdk';
 import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 
 export type Provider = 'copilot' | 'claude-cli';
+
+/** Execution mode controlling agent behavior on both providers */
+export type AgentMode = 'fleet' | 'plan' | 'autopilot';
+export const AGENT_MODES: readonly AgentMode[] = ['fleet', 'plan', 'autopilot'] as const;
+export const DEFAULT_AGENT_MODE: AgentMode = 'fleet';
+
 export type FallbackReason =
   | 'copilot_startup_no_accounts'
   | 'copilot_accounts_exhausted'
@@ -275,6 +281,10 @@ export interface TaskState {
   outputFilePath?: string;
   /** Incrementally updated message stats (avoids full output scan) */
   cachedStats?: { round: number; lastUserMessage?: string; totalMessages: number; };
+  /** Whether fleet mode was activated for this task */
+  fleetMode?: boolean;
+  /** Execution mode used for this task */
+  mode?: AgentMode;
 }
 
 export interface SpawnOptions {
@@ -291,6 +301,12 @@ export interface SpawnOptions {
   provider?: Provider;
   fallbackAttempted?: boolean;
   switchAttempted?: boolean;
+  /** Enable fleet mode for parallel agent execution (opt-in, legacy — use mode instead) */
+  enableFleet?: boolean;
+  /** Reasoning effort level for the session */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** Execution mode: fleet (parallel agents), plan (plan-then-execute), autopilot (direct execution) */
+  mode?: AgentMode;
 }
 
 export interface ToolContext {
