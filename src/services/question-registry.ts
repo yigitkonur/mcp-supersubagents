@@ -11,7 +11,7 @@
 
 import type { UserInputResponse } from '@github/copilot-sdk';
 import { taskManager } from './task-manager.js';
-import { TaskStatus } from '../types.js';
+import { TaskStatus, isTerminalStatus } from '../types.js';
 import type { PendingQuestion } from '../types.js';
 
 const QUESTION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -140,7 +140,6 @@ class QuestionRegistry {
     if (binding.settled) {
       return { success: false, error: 'Question already resolved (likely timed out)' };
     }
-    binding.settled = true;
 
     // Parse and validate the answer
     const parseResult = this.parseAnswer(answer, binding.choices, binding.allowFreeform);
@@ -148,6 +147,7 @@ class QuestionRegistry {
     if (!parseResult.valid) {
       return { success: false, error: parseResult.error };
     }
+    binding.settled = true;
 
     // Clear timeout
     clearTimeout(binding.timeoutId);
@@ -247,6 +247,13 @@ class QuestionRegistry {
 
     if (binding) {
       if (binding.settled) {
+        this.bindings.delete(normalizedId);
+        return;
+      }
+
+      const task = taskManager.getTask(taskId);
+      if (!task || isTerminalStatus(task.status)) {
+        taskManager.updateTask(taskId, { pendingQuestion: undefined });
         this.bindings.delete(normalizedId);
         return;
       }

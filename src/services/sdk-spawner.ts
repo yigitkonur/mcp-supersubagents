@@ -24,9 +24,61 @@ import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fall
 import { abortClaudeCodeSession } from './claude-code-runner.js';
 import { triggerClaudeFallback } from './fallback-orchestrator.js';
 import { accountManager } from './account-manager.js';
+import { processRegistry } from './process-registry.js';
 
 // Track if rotation callback is registered
 let rotationCallbackRegistered = false;
+
+function extractRateLimitMetadata(errorMessage?: string): { retryAfter?: string; rateLimitReset?: string } {
+  if (!errorMessage) {
+    return {};
+  }
+
+  const retryAfterMatch = errorMessage.match(
+    /retry-?after[^0-9A-Za-z]+(\d{1,8}|[A-Za-z]{3},\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT)/i
+  );
+  const rateLimitResetMatch = errorMessage.match(/x-?ratelimit-?reset[^0-9]+(\d{10,13})\b/i);
+
+  return {
+    retryAfter: retryAfterMatch?.[1],
+    rateLimitReset: rateLimitResetMatch?.[1],
+  };
+}
+
+function buildRotationReason(statusCode: number | undefined, baseReason: string, errorMessage?: string): string {
+  const reasonBase = statusCode !== undefined ? `status_${statusCode}` : baseReason;
+  const metadata = extractRateLimitMetadata(errorMessage);
+  const parts = [reasonBase];
+
+  if (metadata.retryAfter) {
+    parts.push(`retry-after=${metadata.retryAfter}`);
+  }
+  if (metadata.rateLimitReset) {
+    parts.push(`x-ratelimit-reset=${metadata.rateLimitReset}`);
+  }
+
+  return parts.join(' | ');
+}
+
+function buildAllAccountsExhaustedMessage(rotationError?: string): string {
+  const detail = rotationError ? ` Details: ${rotationError}` : '';
+  return `All Copilot accounts are temporarily rate limited.${detail} Claude fallback is disabled (DISABLE_CLAUDE_CODE_FALLBACK=true). Wait for cooldown and retry, or enable fallback.`;
+}
+
+function extractSessionPid(session: CopilotSession): number | undefined {
+  const candidate = session as unknown as {
+    cliProcess?: { pid?: unknown };
+    childProcess?: { pid?: unknown };
+    process?: { pid?: unknown };
+    pid?: unknown;
+  };
+  const rawPid =
+    candidate.cliProcess?.pid ??
+    candidate.childProcess?.pid ??
+    candidate.process?.pid ??
+    candidate.pid;
+  return typeof rawPid === 'number' && Number.isInteger(rawPid) && rawPid > 0 ? rawPid : undefined;
+}
 
 /**
  * Initialize the spawner - registers rotation callback with session adapter
@@ -44,20 +96,49 @@ function ensureRotationCallbackRegistered(): void {
     console.error(`[sdk-spawner] Rotation requested for task ${taskId} (session ${sessionId}): ${reason}`);
 
     // Try to rotate to next account
-    const rotationResult = await sdkClientManager.rotateOnError(task.cwd ?? process.cwd(), reason);
+    const rotationReason = buildRotationReason(statusCode, reason, task.failureContext?.message);
+    const failedTokenIndex = sdkClientManager.getSessionTokenIndex(sessionId);
+    const rotationResult = await sdkClientManager.rotateOnError(task.cwd ?? process.cwd(), rotationReason, failedTokenIndex);
     
     if (!rotationResult.success) {
+      if (rotationResult.allExhausted && !isFallbackEnabled()) {
+        const actionableMessage = buildAllAccountsExhaustedMessage(rotationResult.error);
+        taskManager.appendOutput(taskId, `[rate-limit] ${actionableMessage}`);
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.FAILED,
+          endTime: new Date().toISOString(),
+          error: actionableMessage,
+          exitCode: 1,
+          session: undefined,
+        });
+        sdkSessionAdapter.unbind(taskId);
+        console.error(`[sdk-spawner] Task ${taskId} failed fast during rotation callback: ${actionableMessage}`);
+      }
       console.error(`[sdk-spawner] Rotation failed: ${rotationResult.error}`);
+      return { rotated: false };
+    }
+
+    const taskAfterRotate = taskManager.getTask(taskId);
+    if (!taskAfterRotate || isTerminalStatus(taskAfterRotate.status)) {
+      await sdkClientManager.destroySession(sessionId).catch(() => {});
+      console.error(`[sdk-spawner] Task ${taskId} became ${taskAfterRotate?.status ?? 'deleted'} during rotation callback`);
       return { rotated: false };
     }
 
     // Try to resume session with new account
     try {
-      const newSession = await sdkClientManager.resumeSession(task.cwd ?? process.cwd(), sessionId);
+      const newSession = await sdkClientManager.resumeSession(task.cwd ?? process.cwd(), sessionId, undefined, taskId);
+      const taskAfterResume = taskManager.getTask(taskId);
+      if (!taskAfterResume || isTerminalStatus(taskAfterResume.status)) {
+        await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
+        console.error(`[sdk-spawner] Task ${taskId} became ${taskAfterResume?.status ?? 'deleted'} after resume`);
+        return { rotated: false };
+      }
       console.error(`[sdk-spawner] Successfully rotated and resumed session ${sessionId}`);
       return { rotated: true, newSession };
     } catch (err) {
       console.error(`[sdk-spawner] Failed to resume session after rotation:`, err);
+      await sdkClientManager.destroySession(sessionId).catch(() => {});
       return { rotated: false };
     }
   });
@@ -314,6 +395,14 @@ async function runSDKSession(
       session,
     });
 
+    processRegistry.register({
+      taskId,
+      pid: extractSessionPid(session),
+      session,
+      registeredAt: Date.now(),
+      label: 'copilot-session',
+    });
+
     // Bind the session to the task for event handling
     // Pass the prompt so adapter can use it for resume after rotation
     sdkSessionAdapter.bind(taskId, session, prompt);
@@ -453,6 +542,7 @@ async function handleRateLimit(
 ): Promise<void> {
   const currentTask = taskManager.getTask(taskId);
   if (!currentTask) return;
+  const currentSessionId = currentTask.sessionId;
 
   console.error(`[sdk-spawner] Task ${taskId} rate limited (status ${statusCode}): ${errorMessage}`);
 
@@ -460,17 +550,27 @@ async function handleRateLimit(
   if (sdkClientManager.shouldRotateOnError(statusCode, errorMessage)) {
     taskManager.appendOutput(taskId, `[rate-limit] Attempting account rotation (status: ${statusCode})...`);
     
-    const rotationResult = await sdkClientManager.rotateOnError(cwd, `status_${statusCode}`);
+    const rotationReason = buildRotationReason(statusCode, `status_${statusCode}`, errorMessage);
+    const failedTokenIndex = currentTask.sessionId ? sdkClientManager.getSessionTokenIndex(currentTask.sessionId) : undefined;
+    const rotationResult = await sdkClientManager.rotateOnError(cwd, rotationReason, failedTokenIndex);
     
     if (rotationResult.success) {
       taskManager.appendOutput(taskId, `[rate-limit] Rotated to next account, retrying...`);
+      const taskAfterRotate = taskManager.getTask(taskId);
+      if (!taskAfterRotate || isTerminalStatus(taskAfterRotate.status)) {
+        if (currentSessionId) {
+          await sdkClientManager.destroySession(currentSessionId).catch(() => {});
+        }
+        console.error(`[sdk-spawner] Task ${taskId} became ${taskAfterRotate?.status ?? 'deleted'} before retry`);
+        return;
+      }
       
       // Retry with the new account
       try {
         // Clean up old binding first
         sdkSessionAdapter.unbind(taskId);
         
-        await runSDKSession(taskId, currentTask.prompt, cwd, resolveModel(currentTask.model), {
+        await runSDKSession(taskId, taskAfterRotate.prompt, cwd, resolveModel(taskAfterRotate.model), {
           ...options,
           switchAttempted: true,
         });
@@ -479,6 +579,19 @@ async function handleRateLimit(
         console.error(`[sdk-spawner] Retry after rotation failed:`, retryError);
         // Fall through to exponential backoff
       }
+    } else if (rotationResult.allExhausted && !isFallbackEnabled()) {
+      const actionableMessage = buildAllAccountsExhaustedMessage(rotationResult.error);
+      taskManager.appendOutput(taskId, `[rate-limit] ${actionableMessage}`);
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.FAILED,
+        endTime: new Date().toISOString(),
+        error: actionableMessage,
+        exitCode: 1,
+        session: undefined,
+      });
+      sdkSessionAdapter.unbind(taskId);
+      console.error(`[sdk-spawner] Task ${taskId} failed fast: ${actionableMessage}`);
+      return;
     } else if (shouldFallbackToClaudeCode(rotationResult)) {
       // All accounts exhausted - fallback to Claude Agent SDK
       console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);

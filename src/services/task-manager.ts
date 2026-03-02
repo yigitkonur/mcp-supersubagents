@@ -11,8 +11,8 @@ const MAX_TASKS = 100;
 
 /** Legal state transitions - if a transition isn't in this map, it's rejected */
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
-  [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED]),
-  [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED]),
+  [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
+  [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED]),
   [TaskStatus.RATE_LIMITED]: new Set([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.RUNNING]),
   [TaskStatus.COMPLETED]: new Set([]), // terminal
@@ -22,35 +22,93 @@ const VALID_TRANSITIONS: Record<string, Set<string>> = {
 };
 
 /**
- * Check if adding dependencies would create a circular dependency
- * @param newTaskId - The ID of the task being created
- * @param dependsOn - Array of task IDs this task depends on
+ * Detect circular dependencies in active dependency chains.
+ * Completed/terminal tasks are treated as leaf nodes because they cannot block progress.
+ *
+ * @param startIds - Task IDs to start traversal from
  * @param tasks - Map of all existing tasks
- * @returns true if circular dependency would be created
+ * @param newTaskId - Optional synthetic task ID to include in graph traversal
+ * @param dependsOn - Synthetic dependencies for newTaskId
+ * @returns cycle path if found (e.g. a -> b -> a), otherwise null
  */
-function hasCircularDependency(newTaskId: string, dependsOn: string[], tasks: Map<string, TaskState>): boolean {
+function findCircularDependencyPath(
+  startIds: string[],
+  tasks: Map<string, TaskState>,
+  newTaskId?: string,
+  dependsOn: string[] = [],
+): string[] | null {
+  const visiting = new Set<string>();
   const visited = new Set<string>();
-  const toCheck = [...dependsOn];
-  
-  while (toCheck.length > 0) {
-    const depId = toCheck.pop()!;
-    const normalizedDepId = normalizeTaskId(depId);
-    
-    if (normalizedDepId === normalizeTaskId(newTaskId)) {
-      return true; // Circular dependency found
+  const stack: string[] = [];
+  const normalizedNewTaskId = newTaskId ? normalizeTaskId(newTaskId) : null;
+
+  const getDependencies = (taskId: string): string[] => {
+    if (normalizedNewTaskId && taskId === normalizedNewTaskId) {
+      return dependsOn;
     }
-    
-    if (visited.has(normalizedDepId)) {
-      continue;
+    const task = tasks.get(taskId);
+    if (!task || !task.dependsOn || task.dependsOn.length === 0) {
+      return [];
     }
-    visited.add(normalizedDepId);
-    
-    const depTask = tasks.get(normalizedDepId);
-    if (depTask?.dependsOn) {
-      toCheck.push(...depTask.dependsOn);
+    if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED || task.status === TaskStatus.TIMED_OUT) {
+      return [];
+    }
+    return task.dependsOn;
+  };
+
+  const dfs = (taskId: string): string[] | null => {
+    const normalizedTaskId = normalizeTaskId(taskId);
+
+    if (visiting.has(normalizedTaskId)) {
+      const cycleStart = stack.indexOf(normalizedTaskId);
+      return [...stack.slice(cycleStart), normalizedTaskId];
+    }
+    if (visited.has(normalizedTaskId)) {
+      return null;
+    }
+
+    visiting.add(normalizedTaskId);
+    stack.push(normalizedTaskId);
+
+    for (const depId of getDependencies(normalizedTaskId)) {
+      const cyclePath = dfs(depId);
+      if (cyclePath) {
+        return cyclePath;
+      }
+    }
+
+    stack.pop();
+    visiting.delete(normalizedTaskId);
+    visited.add(normalizedTaskId);
+    return null;
+  };
+
+  for (const startId of startIds) {
+    const cyclePath = dfs(startId);
+    if (cyclePath) {
+      return cyclePath;
     }
   }
-  return false;
+
+  return null;
+}
+
+function getTransitionRejectionReason(from: TaskStatus, to: TaskStatus): string | null {
+  if (from === to) {
+    return null;
+  }
+  const allowed = VALID_TRANSITIONS[from];
+  if (!allowed) {
+    return `Task has unknown current status '${from}'`;
+  }
+  if (TERMINAL_STATUSES.has(from)) {
+    return `Task is already terminal ('${from}') and cannot transition to '${to}'`;
+  }
+  if (!allowed.has(to)) {
+    const allowedTransitions = Array.from(allowed.values());
+    return `Illegal status transition '${from}' -> '${to}'. Allowed from '${from}': ${allowedTransitions.length > 0 ? allowedTransitions.join(', ') : 'none'}`;
+  }
+  return null;
 }
 
 /**
@@ -110,6 +168,9 @@ class TaskManager {
   private outputPersistDebounceMs = 1000;
   private lastPersistTrigger: 'state' | 'output' = 'state';
   private isClearing = false;
+  private isShuttingDown = false;
+  private isProcessingRateLimits = false;
+  private timingOutTasks: Set<string> = new Set();
   private retryCallback: ((task: TaskState) => Promise<string | undefined>) | null = null;
   private executeCallback: ((task: TaskState) => Promise<void>) | null = null;
   private statusChangeCallback: ((task: TaskState, previousStatus: TaskStatus) => void) | null = null;
@@ -177,6 +238,7 @@ class TaskManager {
    */
   onExecute(callback: (task: TaskState) => Promise<void>): () => void {
     this.executeCallback = callback;
+    queueMicrotask(() => this.processWaitingTasks());
     return () => {
       if (this.executeCallback === callback) this.executeCallback = null;
     };
@@ -222,6 +284,33 @@ class TaskManager {
     this.taskDeletedCallback = null;
   }
 
+  private async abortFallbackTask(taskId: string, reason: string): Promise<void> {
+    try {
+      const { abortClaudeCodeSession } = await import('./claude-code-runner.js');
+      abortClaudeCodeSession(taskId, reason);
+    } catch {
+      /* swallow */
+    }
+  }
+
+  private async abortAllFallbackTasks(reason: string): Promise<void> {
+    try {
+      const { abortAllFallbackSessions } = await import('./claude-code-runner.js');
+      abortAllFallbackSessions(reason);
+    } catch {
+      /* swallow */
+    }
+  }
+
+  private async cleanupSdkBindings(): Promise<void> {
+    try {
+      const { sdkSessionAdapter } = await import('./sdk-session-adapter.js');
+      sdkSessionAdapter.cleanup();
+    } catch {
+      /* swallow */
+    }
+  }
+
   /**
    * Process waiting tasks and start those with satisfied dependencies
    */
@@ -235,6 +324,16 @@ class TaskManager {
 
     for (const task of waitingTasks) {
       if (task.status !== TaskStatus.WAITING) continue; // Skip cancelled/terminal tasks
+
+      const circularPath = findCircularDependencyPath([task.id], this.tasks, task.id, task.dependsOn || []);
+      if (circularPath) {
+        this.updateTask(task.id, {
+          status: TaskStatus.FAILED,
+          error: `Circular dependency deadlock detected: ${circularPath.join(' -> ')}. Remove one dependency in this cycle or force-start one task.`,
+          endTime: new Date().toISOString(),
+        });
+        continue;
+      }
 
       const result = areDependenciesSatisfied(task, this.tasks);
       
@@ -261,6 +360,17 @@ class TaskManager {
         });
         continue;
       }
+
+      // Dependencies are unresolved because required tasks do not exist
+      if (!result.satisfied && result.pending.length === 0 && result.failed.length === 0 && result.missing.length > 0) {
+        const missingDepIds = result.missing.join(', ');
+        this.updateTask(task.id, {
+          status: TaskStatus.FAILED,
+          error: `Dependencies missing: ${missingDepIds}`,
+          endTime: new Date().toISOString(),
+        });
+        continue;
+      }
     }
   }
 
@@ -273,17 +383,28 @@ class TaskManager {
       return null;
     }
 
+    const normalizedDependsOn = dependsOn.map(depId => normalizeTaskId(depId));
+    if (new Set(normalizedDependsOn).size !== normalizedDependsOn.length) {
+      return 'Duplicate dependency IDs are not allowed; remove duplicates from depends_on';
+    }
+
+    if (newTaskId && normalizedDependsOn.includes(normalizeTaskId(newTaskId))) {
+      return `Task '${newTaskId}' cannot depend on itself`;
+    }
+
     // Check if all dependencies exist
     for (const depId of dependsOn) {
       const normalizedDepId = normalizeTaskId(depId);
       if (!this.tasks.has(normalizedDepId)) {
-        return `Dependency task '${depId}' not found`;
+        return `Dependency task '${depId}' not found. Use task:///all to list valid task IDs.`;
       }
     }
 
-    // Check for circular dependencies (only if newTaskId provided)
-    if (newTaskId && hasCircularDependency(newTaskId, dependsOn, this.tasks)) {
-      return 'Circular dependency detected';
+    const cyclePath = newTaskId
+      ? findCircularDependencyPath([newTaskId], this.tasks, newTaskId, dependsOn)
+      : findCircularDependencyPath(dependsOn, this.tasks);
+    if (cyclePath) {
+      return `Circular dependency detected: ${cyclePath.join(' -> ')}. Remove one dependency edge in this cycle.`;
     }
 
     return null;
@@ -340,61 +461,94 @@ class TaskManager {
    * Process rate-limited tasks and trigger retries for those ready
    */
   private async processRateLimitedTasks(): Promise<void> {
-    const rateLimitedTasks = Array.from(this.tasks.values())
-      .filter(t => t.status === TaskStatus.RATE_LIMITED);
-    
-    if (rateLimitedTasks.length === 0) {
+    if (this.isProcessingRateLimits) {
       return;
     }
+    this.isProcessingRateLimits = true;
 
-    console.error(`[task-manager] Found ${rateLimitedTasks.length} rate-limited task(s)`);
-
-    for (const task of rateLimitedTasks) {
-      // Check if max retries exceeded
-      if (hasExceededMaxRetries(task)) {
-        console.error(`[task-manager] Task ${task.id} exceeded max retries, marking as failed`);
-        this.updateTask(task.id, {
-          status: TaskStatus.FAILED,
-          error: `Max retries (${task.retryInfo?.maxRetries}) exceeded for rate limit`,
-          endTime: new Date().toISOString(),
-          exitCode: 1,
-        });
-        continue;
+    try {
+      const rateLimitedTasks = Array.from(this.tasks.values())
+        .filter(t => t.status === TaskStatus.RATE_LIMITED);
+      
+      if (rateLimitedTasks.length === 0) {
+        return;
       }
 
-      // Check if ready for retry
-      if (shouldRetryNow(task)) {
-        console.error(`[task-manager] Auto-retrying task ${task.id} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1})`);
-        
-        if (this.retryCallback) {
-          // Kill old session before spawning retry
-          processRegistry.killTask(task.id).catch(() => {});
-          try {
-            // Spawn replacement task FIRST — only mark original FAILED on success
-            const newTaskId = await this.retryCallback(task);
-            this.updateTask(task.id, {
-              status: TaskStatus.FAILED,
-              error: `Auto-retried as new task${newTaskId ? ` ${newTaskId}` : ''} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
-              endTime: new Date().toISOString(),
-              exitCode: 1,
-            });
-          } catch (err) {
-            console.error(`[task-manager] Auto-retry failed for task ${task.id}, keeping RATE_LIMITED:`, err);
-            // Don't mark FAILED — task stays RATE_LIMITED for next retry cycle
+      console.error(`[task-manager] Found ${rateLimitedTasks.length} rate-limited task(s)`);
+
+      for (const task of rateLimitedTasks) {
+        // Check if max retries exceeded
+        if (hasExceededMaxRetries(task)) {
+          console.error(`[task-manager] Task ${task.id} exceeded max retries, marking as failed`);
+          this.updateTask(task.id, {
+            status: TaskStatus.FAILED,
+            error: `Max retries (${task.retryInfo?.maxRetries}) exceeded for rate limit`,
+            endTime: new Date().toISOString(),
+            exitCode: 1,
+          });
+          continue;
+        }
+
+        // Check if ready for retry
+        if (shouldRetryNow(task)) {
+          console.error(`[task-manager] Auto-retrying task ${task.id} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1})`);
+          
+          if (this.retryCallback) {
+            // Kill old session before spawning retry
+            try {
+              await processRegistry.killTask(task.id);
+            } catch {
+              /* best effort */
+            }
+            await this.bestEffortUnbind(task.id);
+            try {
+              // Spawn replacement task FIRST — only mark original FAILED on success
+              const newTaskId = await this.retryCallback(task);
+
+              // Guard: task may have been cancelled/finished while retry callback awaited
+              const latestTask = this.getTask(task.id);
+              if (!latestTask || isTerminalStatus(latestTask.status)) {
+                // If user cancelled during retry spawn, best-effort cancel the replacement task too
+                if (latestTask?.status === TaskStatus.CANCELLED && newTaskId) {
+                  await this.cancelTask(newTaskId).catch(() => {});
+                }
+                continue;
+              }
+
+              this.updateTask(task.id, {
+                status: TaskStatus.FAILED,
+                error: `Auto-retried as new task${newTaskId ? ` ${newTaskId}` : ''} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
+                endTime: new Date().toISOString(),
+                exitCode: 1,
+              });
+            } catch (err) {
+              const retryInfo = task.retryInfo;
+              this.updateTask(task.id, {
+                retryInfo: {
+                  reason: retryInfo?.reason ?? 'Auto-retry callback failed',
+                  retryCount: retryInfo?.retryCount ?? 0,
+                  maxRetries: retryInfo?.maxRetries ?? 6,
+                  nextRetryTime: new Date(Date.now() + 60_000).toISOString(),
+                },
+              });
+              console.error(`[task-manager] Auto-retry failed for ${task.id}; backing off 60s: ${err instanceof Error ? err.message : String(err)}`);
+              // Don't mark FAILED — task stays RATE_LIMITED for next retry cycle
+            }
+          } else {
+            console.error(`[task-manager] No retry callback registered, task ${task.id} will wait`);
           }
         } else {
-          console.error(`[task-manager] No retry callback registered, task ${task.id} will wait`);
+          const nextRetry = task.retryInfo?.nextRetryTime;
+          const waitMs = nextRetry ? new Date(nextRetry).getTime() - Date.now() : 0;
+          const waitMin = Math.ceil(waitMs / 60000);
+          console.error(`[task-manager] Task ${task.id} not ready for retry, waiting ${waitMin} more minutes`);
         }
-      } else {
-        const nextRetry = task.retryInfo?.nextRetryTime;
-        const waitMs = nextRetry ? new Date(nextRetry).getTime() - Date.now() : 0;
-        const waitMin = Math.ceil(waitMs / 60000);
-        console.error(`[task-manager] Task ${task.id} not ready for retry, waiting ${waitMin} more minutes`);
       }
-    }
 
-    // Schedule next check based on soonest retry time
-    this.scheduleRateLimitCheck();
+    } finally {
+      this.isProcessingRateLimits = false;
+      this.scheduleRateLimitCheck();
+    }
   }
 
   /**
@@ -410,10 +564,23 @@ class TaskManager {
       return;
     }
 
-    const nextTimes = Array.from(this.tasks.values())
-      .filter(t => t.status === TaskStatus.RATE_LIMITED && t.retryInfo?.nextRetryTime)
+    const rateLimitedTasks = Array.from(this.tasks.values())
+      .filter(t => t.status === TaskStatus.RATE_LIMITED);
+
+    const hasImmediateRetryTasks = rateLimitedTasks.some(t => !t.retryInfo?.nextRetryTime);
+
+    const nextTimes = rateLimitedTasks
+      .filter(t => t.retryInfo?.nextRetryTime)
       .map(t => new Date(t.retryInfo!.nextRetryTime).getTime())
       .filter(t => Number.isFinite(t));
+
+    if (hasImmediateRetryTasks) {
+      this.rateLimitTimer = setTimeout(() => {
+        this.rateLimitTimer = null;
+        this.processRateLimitedTasks();
+      }, 0);
+      return;
+    }
 
     if (nextTimes.length === 0) {
       return;
@@ -474,20 +641,40 @@ class TaskManager {
    */
   async clearAllTasks(): Promise<number> {
     this.isClearing = true;
-    const count = this.tasks.size;
-    await processRegistry.killAll();
-    if (this.taskDeletedCallback) {
-      for (const id of this.tasks.keys()) {
-        try { this.taskDeletedCallback(id); } catch {}
+    try {
+      const count = this.tasks.size;
+      const clearReason = 'Tasks cleared by user';
+
+      await this.abortAllFallbackTasks(clearReason);
+      await this.cleanupSdkBindings();
+
+      for (const task of this.tasks.values()) {
+        if (!task.session) continue;
+        try {
+          await Promise.race([
+            task.session.abort(),
+            new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
+          ]);
+        } catch {
+          /* swallow */
+        }
       }
+
+      await processRegistry.killAll();
+      if (this.taskDeletedCallback) {
+        for (const id of this.tasks.keys()) {
+          try { this.taskDeletedCallback(id); } catch {}
+        }
+      }
+      for (const task of this.tasks.values()) {
+        this.deleteOutputFile(task);
+      }
+      this.tasks.clear();
+      this.scheduleRateLimitCheck();
+      return count;
+    } finally {
+      this.isClearing = false;
     }
-    for (const task of this.tasks.values()) {
-      this.deleteOutputFile(task);
-    }
-    this.tasks.clear();
-    this.scheduleRateLimitCheck();
-    this.isClearing = false;
-    return count;
   }
 
   /**
@@ -511,8 +698,18 @@ class TaskManager {
     }
     
     try {
-      // Spawn replacement task FIRST — only mark original FAILED on success  
+      // Spawn replacement task FIRST — only mark original FAILED on success
       const newTaskId = await this.retryCallback(task);
+
+      // Guard: task may have been cancelled/finished while retry callback awaited
+      const latestTask = this.getTask(task.id);
+      if (!latestTask || isTerminalStatus(latestTask.status)) {
+        if (latestTask?.status === TaskStatus.CANCELLED && newTaskId) {
+          await this.cancelTask(newTaskId).catch(() => {});
+        }
+        return { success: false, error: `Task became ${latestTask?.status ?? 'deleted'} during retry` };
+      }
+
       this.updateTask(task.id, {
         status: TaskStatus.FAILED,
         error: `Manually retried as ${newTaskId || 'new task'} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
@@ -612,30 +809,59 @@ class TaskManager {
         if (task.timeoutAt) {
           const timeoutAt = new Date(task.timeoutAt).getTime();
           if (now >= timeoutAt) {
+            if (this.timingOutTasks.has(task.id)) {
+              continue;
+            }
+
             const elapsedMs = task.startTime ? now - new Date(task.startTime).getTime() : 0;
-            console.error(`[task-manager] Health check: hard timeout reached for task ${task.id} after ${elapsedMs}ms`);
-            // Kill process first, THEN update status
-            processRegistry.killTask(task.id).then(() => {
-              if (task.session) {
-                return Promise.race([
-                  task.session.abort(),
-                  new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
-                ]).catch(() => { /* swallow */ });
+            const taskId = task.id;
+            const timeoutMs = task.timeout;
+            const session = task.session;
+            this.timingOutTasks.add(taskId);
+            console.error(`[task-manager] Health check: hard timeout reached for task ${taskId} after ${elapsedMs}ms`);
+
+            void (async () => {
+              try {
+                let killed = false;
+                try {
+                  killed = await processRegistry.killTask(taskId);
+                } catch {
+                  /* swallow */
+                }
+
+                if (!killed && session) {
+                  try {
+                    await Promise.race([
+                      session.abort(),
+                      new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
+                    ]);
+                  } catch {
+                    /* swallow */
+                  }
+                }
+
+                await this.abortFallbackTask(taskId, `Task timed out after ${timeoutMs ?? elapsedMs}ms`);
+
+                const latestTask = this.getTask(taskId);
+                if (this.isClearing || this.isShuttingDown || !latestTask || isTerminalStatus(latestTask.status)) {
+                  return;
+                }
+                this.updateTask(taskId, {
+                  status: TaskStatus.TIMED_OUT,
+                  endTime: new Date().toISOString(),
+                  error: `Task timed out after ${timeoutMs ?? elapsedMs}ms`,
+                  timeoutReason: 'hard_timeout',
+                  timeoutContext: {
+                    timeoutMs,
+                    elapsedMs,
+                    detectedBy: 'health_check',
+                  },
+                  session: undefined,
+                });
+              } finally {
+                this.timingOutTasks.delete(taskId);
               }
-            }).catch(() => { /* swallow */ }).finally(() => {
-              this.updateTask(task.id, {
-                status: TaskStatus.TIMED_OUT,
-                endTime: new Date(now).toISOString(),
-                error: `Task timed out after ${task.timeout ?? elapsedMs}ms`,
-                timeoutReason: 'hard_timeout',
-                timeoutContext: {
-                  timeoutMs: task.timeout,
-                  elapsedMs,
-                  detectedBy: 'health_check',
-                },
-                session: undefined,
-              });
-            });
+            })();
             continue;
           }
         }
@@ -670,6 +896,7 @@ class TaskManager {
           endTime: new Date().toISOString(),
           timeoutReason: 'hard_timeout',
         });
+        void this.abortFallbackTask(task.id, 'Task timed out while waiting for dependencies');
       }
     }
   }
@@ -684,6 +911,15 @@ class TaskManager {
       unlink(outputPath).catch(() => {
         // Ignore - file may not exist or already deleted
       });
+    }
+  }
+
+  private async bestEffortUnbind(taskId: string): Promise<void> {
+    try {
+      const { sdkSessionAdapter } = await import('./sdk-session-adapter.js');
+      sdkSessionAdapter.unbind(taskId);
+    } catch {
+      // Best-effort cleanup only.
     }
   }
 
@@ -743,6 +979,12 @@ class TaskManager {
     if (this.isClearing) {
       throw new Error('Cannot create tasks while clearing workspace');
     }
+    if (this.tasks.size >= MAX_TASKS) {
+      this.cleanup();
+      if (this.tasks.size >= MAX_TASKS) {
+        throw new Error(`Task capacity reached (${MAX_TASKS}); no evictable terminal tasks available`);
+      }
+    }
     const id = generateTaskId();
     const normalizedId = normalizeTaskId(id);
     
@@ -750,6 +992,11 @@ class TaskManager {
     let initialStatus = TaskStatus.PENDING;
     const dependsOn = options?.dependsOn?.filter(d => d.trim()) || [];
     const labels = options?.labels?.filter(l => l.trim()) || [];
+
+    const depError = this.validateDependencies(dependsOn, id);
+    if (depError) {
+      throw new Error(`Cannot create task '${id}': ${depError}`);
+    }
     
     if (dependsOn.length > 0) {
       // Check if all dependencies are already completed
@@ -796,7 +1043,7 @@ class TaskManager {
     return this.tasks.get(normalizedId) || null;
   }
 
-  updateTask(id: string, updates: Partial<TaskState>): TaskState | null {
+  updateTask(id: string, updates: Partial<TaskState>, options?: { persist?: boolean }): TaskState | null {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (!task) {
@@ -807,19 +1054,19 @@ class TaskManager {
 
     // Validate state transition before applying
     if (updates.status && updates.status !== task.status) {
-      const allowed = VALID_TRANSITIONS[task.status];
-      if (allowed && !allowed.has(updates.status)) {
-        console.error(`[task-manager] Rejected illegal transition ${task.status} → ${updates.status} for task ${id}`);
+      const transitionError = getTransitionRejectionReason(task.status, updates.status);
+      if (transitionError) {
+        console.error(`[task-manager] ${transitionError} for task '${task.id}'. Update ignored; refresh task state before retrying.`);
         return task; // Return current state, don't apply illegal transition
       }
     }
 
-    // Guard: reject state transitions on already-terminal tasks
-    if (updates.status !== undefined && TERMINAL_STATUSES.has(task.status)) {
-      // Task is already terminal — don't allow further state changes
-      // (e.g., health check timeout arriving after completion)
-      console.error(`[task-manager] Rejecting ${task.status}→${updates.status} transition for ${task.id} (already terminal)`);
-      return task;
+    if (updates.dependsOn && updates.dependsOn.length > 0) {
+      const dependencyError = this.validateDependencies(updates.dependsOn, task.id);
+      if (dependencyError) {
+        console.error(`[task-manager] Invalid dependency update for task '${task.id}': ${dependencyError}. Update ignored.`);
+        return task;
+      }
     }
 
     // Mutate in-place to prevent reference drift with appendOutput.
@@ -845,11 +1092,14 @@ class TaskManager {
       task.session = undefined;
     }
     // No need to re-set in Map — object reference is unchanged
-    // Flush immediately for terminal transitions to minimize crash window
-    if (updates.status && isTerminalStatus(updates.status)) {
-      this.persistNow().catch(() => {});
-    } else {
-      this.schedulePersist('state');
+    const shouldPersist = options?.persist !== false || updates.status !== undefined;
+    if (shouldPersist) {
+      // Flush immediately for terminal transitions to minimize crash window
+      if (updates.status && isTerminalStatus(updates.status)) {
+        this.persistNow().catch(() => {});
+      } else {
+        this.schedulePersist('state');
+      }
     }
 
     // Fire status change callback
@@ -909,7 +1159,7 @@ class TaskManager {
       }
       
       if (task.output.length > MAX_OUTPUT_LINES) {
-        task.output = task.output.slice(-MAX_OUTPUT_LINES);
+        task.output.splice(0, task.output.length - MAX_OUTPUT_LINES);
       }
       
       if (!task.sessionId) {
@@ -940,6 +1190,20 @@ class TaskManager {
       return { success: false, error: 'Task not found' };
     }
 
+    const getCancellationResult = (): { success: boolean; alreadyDead?: boolean; error?: string } => {
+      const latestTask = this.tasks.get(normalizedId);
+      if (!latestTask) {
+        return { success: false, error: 'Task not found' };
+      }
+      if (latestTask.status === TaskStatus.CANCELLED) {
+        return { success: true };
+      }
+      if (isTerminalStatus(latestTask.status)) {
+        return { success: true, alreadyDead: true };
+      }
+      return { success: false, error: `Task cancellation did not complete (status: ${latestTask.status})` };
+    };
+
     // Idempotency guard: terminal statuses are no-ops
     if (task.status === TaskStatus.CANCELLED || task.status === TaskStatus.COMPLETED ||
         task.status === TaskStatus.FAILED || task.status === TaskStatus.TIMED_OUT) {
@@ -948,6 +1212,19 @@ class TaskManager {
 
     if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.PENDING && task.status !== TaskStatus.WAITING && task.status !== TaskStatus.RATE_LIMITED) {
       return { success: false, error: `Task is not cancellable (status: ${task.status})` };
+    }
+
+    // For non-running tasks, flip to CANCELLED first to block async starters (setImmediate/retry timers)
+    if (task.status !== TaskStatus.RUNNING) {
+      this.updateTask(task.id, {
+        status: TaskStatus.CANCELLED,
+        endTime: new Date().toISOString(),
+        session: undefined,
+      });
+      // Best-effort cleanup in case any process/session is still registered
+      processRegistry.killTask(task.id).catch(() => {});
+      await this.abortFallbackTask(task.id, 'Task cancelled by user');
+      return getCancellationResult();
     }
 
     let alreadyDead = false;
@@ -967,17 +1244,34 @@ class TaskManager {
       // Running but no session and not in registry - already dead
       alreadyDead = true;
     }
+    await this.abortFallbackTask(task.id, 'Task cancelled by user');
+    await this.bestEffortUnbind(task.id);
 
-    this.updateTask(task.id, {
+    // Guard: task may have reached terminal state while cancellation awaited kill/abort
+    const latestTask = this.tasks.get(normalizedId);
+    if (!latestTask) {
+      return { success: false, error: 'Task not found' };
+    }
+    if (isTerminalStatus(latestTask.status)) {
+      return getCancellationResult();
+    }
+
+    this.updateTask(latestTask.id, {
       status: TaskStatus.CANCELLED,
       endTime: new Date().toISOString(),
       error: alreadyDead ? 'Session had already ended before cancellation' : undefined,
       session: undefined,
     });
-    return { success: true, alreadyDead };
+    const result = getCancellationResult();
+    if (result.success && result.alreadyDead === undefined && alreadyDead) {
+      return { success: true, alreadyDead: true };
+    }
+    return result;
   }
 
   async shutdown(): Promise<void> {
+    this.isShuttingDown = true;
+
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -1000,6 +1294,9 @@ class TaskManager {
 
     // Remove all listener callbacks
     this.removeAllListeners();
+
+    await this.abortAllFallbackTasks('Server shutdown');
+    await this.cleanupSdkBindings();
 
     // Kill all tracked processes with SIGTERM→SIGKILL escalation
     await processRegistry.killAll();

@@ -24,6 +24,9 @@ const handleOpenTimes = new Map<string, number>();
 // Prevent concurrent opens from racing on the same key
 const pendingOpens = new Map<string, Promise<FileHandle>>();
 
+// Serialize writes/finalization per task key to avoid interleaving races
+const writeQueues = new Map<string, Promise<void>>();
+
 /**
  * Strip path separators and null bytes to prevent path traversal
  */
@@ -52,6 +55,18 @@ async function getOrOpenHandle(key: string, filePath: string): Promise<FileHandl
   });
   pendingOpens.set(key, pending);
   return pending;
+}
+
+function enqueueWrite<T>(key: string, writeOp: () => Promise<T>): Promise<T> {
+  const tail = writeQueues.get(key) ?? Promise.resolve();
+  const run = tail.then(writeOp, writeOp);
+  const nextTail = run.then(() => undefined, () => undefined);
+  writeQueues.set(key, nextTail);
+  return run.finally(() => {
+    if (writeQueues.get(key) === nextTail) {
+      writeQueues.delete(key);
+    }
+  });
 }
 
 /**
@@ -107,11 +122,13 @@ export async function createOutputFile(cwd: string, taskId: string): Promise<str
 
   try {
     const header = `# Task: ${taskId}\n# Started: ${new Date().toISOString()}\n# Working directory: ${cwd}\n${'─'.repeat(60)}\n\n`;
-    // Write header and close immediately — appendToOutputFile will open
-    // its own persistent handle on first call. This avoids a race where
-    // both createOutputFile and appendToOutputFile store handles, orphaning one.
-    const handle = await open(outputPath, 'w', 0o600);
-    await handle.write(header);
+    // Use a+ and only write header when file is empty to avoid truncating
+    // lines that may have been appended concurrently by appendToOutputFile.
+    const handle = await open(outputPath, 'a+', 0o600);
+    const fileStat = await handle.stat();
+    if (fileStat.size === 0) {
+      await handle.write(header);
+    }
     await handle.close();
     return outputPath;
   } catch (error) {
@@ -130,16 +147,24 @@ export async function appendToOutputFile(cwd: string, taskId: string, line: stri
   if (finalizedKeys.has(key)) return false;
 
   try {
-    await ensureOutputDir(cwd);
-    const handle = await getOrOpenHandle(key, getOutputPath(cwd, taskId));
-
-    // Re-check finalized after async open (finalize may have raced)
-    if (finalizedKeys.has(key)) {
+    if (!(await ensureOutputDir(cwd))) {
       return false;
     }
+    return await enqueueWrite(key, async () => {
+      // Re-check inside queue (finalize may have raced after initial check)
+      if (finalizedKeys.has(key)) {
+        return false;
+      }
+      const handle = await getOrOpenHandle(key, getOutputPath(cwd, taskId));
 
-    await handle.write(line + '\n');
-    return true;
+      // Re-check finalized after async open (finalize may have raced)
+      if (finalizedKeys.has(key)) {
+        return false;
+      }
+
+      await handle.write(line + '\n');
+      return true;
+    });
   } catch {
     // Don't break task execution for file I/O issues
     // Remove broken handle so next call re-opens
@@ -169,17 +194,20 @@ export async function finalizeOutputFile(cwd: string, taskId: string, status: st
       error ? `# Error: ${error}` : null,
     ].filter(Boolean).join('\n') + '\n';
 
-    const handle = await getOrOpenHandle(key, getOutputPath(cwd, taskId));
-    await handle.write(footer);
-    await handle.close();
-    openHandles.delete(key);
-    handleOpenTimes.delete(key);
-    pendingOpens.delete(key);
-    return true;
+    return await enqueueWrite(key, async () => {
+      const handle = await getOrOpenHandle(key, getOutputPath(cwd, taskId));
+      await handle.write(footer);
+      await handle.close();
+      openHandles.delete(key);
+      handleOpenTimes.delete(key);
+      pendingOpens.delete(key);
+      return true;
+    });
   } catch {
     openHandles.delete(key);
     handleOpenTimes.delete(key);
     pendingOpens.delete(key);
+    writeQueues.delete(key);
     return false;
   }
 }
@@ -201,7 +229,12 @@ export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
       }
       openHandles.delete(key);
       handleOpenTimes.delete(key);
+      finalizedKeys.delete(key);
     }
+  }
+  // Cap finalizedKeys to prevent unbounded growth from tasks without handles
+  if (finalizedKeys.size > 1000) {
+    finalizedKeys.clear();
   }
 }
 
@@ -217,8 +250,11 @@ export async function closeAllOutputHandles(): Promise<void> {
     }
     openHandles.delete(key);
   }
+  handleOpenTimes.clear();
+  warnedTasks.clear();
   finalizedKeys.clear();
   pendingOpens.clear();
+  writeQueues.clear();
 }
 
 // Periodic stale handle cleanup — runs every 60s, closes handles open > 5min
@@ -228,3 +264,8 @@ const staleHandleTimer = setInterval(() => {
   closeStaleHandles(STALE_HANDLE_MAX_AGE).catch(() => {});
 }, STALE_HANDLE_CHECK_INTERVAL);
 staleHandleTimer.unref(); // Don't prevent Node.js from exiting
+
+export async function shutdownOutputFileCleanup(): Promise<void> {
+  clearInterval(staleHandleTimer);
+  await closeAllOutputHandles();
+}

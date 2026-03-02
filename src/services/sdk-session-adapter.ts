@@ -30,6 +30,7 @@ import {
 } from '../types.js';
 import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
 import { triggerClaudeFallback } from './fallback-orchestrator.js';
+import { processRegistry } from './process-registry.js';
 
 // Extract specific event types from the union for type-safe handling
 type SessionErrorEvent = Extract<SessionEvent, { type: 'session.error' }>;
@@ -57,6 +58,7 @@ const MAX_REASONING_BUFFER = 200;
 const MAX_COMPLETED_SUBAGENTS = 200;
 const MAX_TOOL_METRICS = 500;
 const MAX_TOOL_ID_MAP = 1000;
+const SESSION_METRICS_UPDATE_INTERVAL_MS = 1000;
 
 // Callback type for rotation requests
 type RotationRequestCallback = (
@@ -121,6 +123,7 @@ interface SessionBinding {
   activeSubagents: Map<string, SubagentInfo>;
   completedSubagents: SubagentInfo[];
   quotas: Map<string, QuotaInfo>;
+  lastMetricsUpdateAt: number;
   isUnbound: boolean; // Guard against double-unbind/double-destroy races
 }
 
@@ -209,6 +212,7 @@ class SDKSessionAdapter {
       activeSubagents: new Map(),
       completedSubagents: [],
       quotas: new Map(),
+      lastMetricsUpdateAt: 0,
     };
 
     // Subscribe to all session events using SDK's typed event system
@@ -417,7 +421,7 @@ class SDKSessionAdapter {
       binding.isCompleted = true;
       
       // Finalize session metrics
-      this.updateSessionMetrics(taskId, binding);
+      this.updateSessionMetrics(taskId, binding, true);
 
       // Emit compact summary line (replaces verbose per-turn [usage]/[quota])
       const totalTokens = binding.totalTokens.input + binding.totalTokens.output;
@@ -599,7 +603,8 @@ class SDKSessionAdapter {
     const taskCwd = task.cwd || process.cwd();
     // RC-5: Heartbeat before long-running rotateOnError
     taskManager.appendOutput(taskId, `[rotation] Rotating to next account...`);
-    const rotationResult = await sdkClientManager.rotateOnError(taskCwd, `status_${statusCode}`);
+    const failedTokenIndex = sdkClientManager.getSessionTokenIndex(binding.sessionId);
+    const rotationResult = await sdkClientManager.rotateOnError(taskCwd, `status_${statusCode}`, failedTokenIndex);
 
     // RC-2: Check terminal state after rotateOnError await
     const taskAfterRotate = taskManager.getTask(taskId);
@@ -695,6 +700,7 @@ class SDKSessionAdapter {
     newSession: CopilotSession
   ): Promise<void> {
     // Unsubscribe from old session and destroy it to release PTY FDs (RC-3 fix)
+    oldBinding.isUnbound = true;
     oldBinding.unsubscribe();
     sdkClientManager.destroySession(oldBinding.sessionId).catch((err) => {
       console.error(`[sdk-session-adapter] Failed to destroy old session ${oldBinding.sessionId} during rebind:`, err);
@@ -734,6 +740,7 @@ class SDKSessionAdapter {
       activeSubagents: oldBinding.activeSubagents,
       completedSubagents: oldBinding.completedSubagents,
       quotas: oldBinding.quotas,
+      lastMetricsUpdateAt: oldBinding.lastMetricsUpdateAt,
     };
 
     // Subscribe to new session events
@@ -794,7 +801,7 @@ class SDKSessionAdapter {
       originalTaskId: taskId,
     };
 
-    this.updateSessionMetrics(taskId, binding);
+    this.updateSessionMetrics(taskId, binding, true);
 
     taskManager.updateTask(taskId, {
       status: TaskStatus.RATE_LIMITED,
@@ -819,7 +826,7 @@ class SDKSessionAdapter {
       binding.isCompleted = true;
       binding.error = message;
 
-      this.updateSessionMetrics(taskId, binding);
+      this.updateSessionMetrics(taskId, binding, true);
 
       taskManager.updateTask(taskId, {
         status: TaskStatus.FAILED,
@@ -1252,7 +1259,7 @@ class SDKSessionAdapter {
     }
 
     // Update session metrics and completion metrics
-    this.updateSessionMetrics(taskId, binding);
+    this.updateSessionMetrics(taskId, binding, true);
     taskManager.updateTask(taskId, { completionMetrics });
     
     if (event.data.shutdownType === 'error' && !binding.isCompleted) {
@@ -1295,10 +1302,11 @@ class SDKSessionAdapter {
     
     if (!binding.isCompleted) {
       binding.isCompleted = true;
-      this.updateSessionMetrics(taskId, binding);
+      this.updateSessionMetrics(taskId, binding, true);
       taskManager.updateTask(taskId, {
         status: TaskStatus.CANCELLED,
         endTime: new Date().toISOString(),
+        exitCode: 0,
         session: undefined,
       });
 
@@ -1311,7 +1319,13 @@ class SDKSessionAdapter {
    * Update session metrics in task state
    * Uses SDK's UsageMetricsTracker for token/request metrics, combined with our custom tracking
    */
-  private updateSessionMetrics(taskId: string, binding: SessionBinding): void {
+  private updateSessionMetrics(taskId: string, binding: SessionBinding, force = false): void {
+    const now = Date.now();
+    if (!force && now - binding.lastMetricsUpdateAt < SESSION_METRICS_UPDATE_INTERVAL_MS) {
+      return;
+    }
+    binding.lastMetricsUpdateAt = now;
+
     const toolMetricsObj: Record<string, ToolMetrics> = {};
     for (const [name, metrics] of binding.toolMetrics) {
       toolMetricsObj[name] = metrics;
@@ -1345,11 +1359,13 @@ class SDKSessionAdapter {
   unbind(taskId: string): void {
     const binding = this.bindings.get(taskId);
     if (!binding) {
+      processRegistry.unregister(taskId);
       return; // No binding exists — nothing to unbind
     }
     // RC-15: Idempotent unbind — first call does the work, subsequent calls are no-ops
     if (binding.isUnbound) {
       console.error(`[sdk-session-adapter] Skipping unbind for ${taskId}: already unbound`);
+      processRegistry.unregister(taskId);
       return;
     }
     // Set flag first to prevent concurrent unbinds from double-destroying
@@ -1373,6 +1389,7 @@ class SDKSessionAdapter {
       console.error(`[sdk-session-adapter] Failed to destroy session ${sessionId} during unbind:`, err);
     });
     this.bindings.delete(taskId);
+    processRegistry.unregister(taskId);
     console.error(`[sdk-session-adapter] Unbound and destroyed session ${sessionId} for task ${taskId}`);
   }
 
@@ -1412,7 +1429,7 @@ class SDKSessionAdapter {
     if (binding && !binding.isCompleted) {
       binding.isCompleted = true;
 
-      this.updateSessionMetrics(taskId, binding);
+      this.updateSessionMetrics(taskId, binding, true);
 
       taskManager.updateTask(taskId, {
         status: TaskStatus.TIMED_OUT,
@@ -1447,15 +1464,9 @@ class SDKSessionAdapter {
    * Destroys all sessions to release PTY file descriptors.
    */
   cleanup(): void {
-    for (const [taskId, binding] of this.bindings) {
-      binding.isUnbound = true;
-      binding.unsubscribe();
-      // Destroy session to release PTY FDs (RC-6 fix)
-      sdkClientManager.destroySession(binding.sessionId).catch((err: unknown) => {
-        console.error(`[sdk-session-adapter] cleanup: failed to destroy session ${binding.sessionId}:`, err);
-      });
+    for (const taskId of Array.from(this.bindings.keys())) {
+      this.unbind(taskId);
     }
-    this.bindings.clear();
   }
 
   /**

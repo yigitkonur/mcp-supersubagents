@@ -13,6 +13,7 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import { taskManager } from './task-manager.js';
+import { processRegistry } from './process-registry.js';
 import { TaskStatus, ToolMetrics, isTerminalStatus, type FallbackReason } from '../types.js';
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
@@ -207,6 +208,7 @@ export async function runClaudeCodeSession(
     console.error(`[claude-code-runner] Task ${taskId} has existing fallback run, aborting it before retry`);
     try { existingController.abort(new Error('Superseded by retry')); } catch { /* ignore */ }
     activeFallbackControllers.delete(taskId);
+    processRegistry.unregister(taskId);
   }
 
   // Wait for available slot (limits concurrent Claude processes)
@@ -242,6 +244,12 @@ export async function runClaudeCodeSession(
 
   const abortController = new AbortController();
   activeFallbackControllers.set(taskId, abortController);
+  processRegistry.register({
+    taskId,
+    abortController,
+    registeredAt: Date.now(),
+    label: 'claude-fallback',
+  });
   const timeoutHandle = setTimeout(() => {
     abortController.abort(new Error(`Claude fallback timed out after ${effectiveTimeout}ms`));
   }, effectiveTimeout);
@@ -297,7 +305,7 @@ export async function runClaudeCodeSession(
           break;
 
         case 'text-delta':
-          taskManager.appendOutput(taskId, part.delta);
+          taskManager.appendOutput(taskId, String((part as any).delta));
           break;
 
         case 'text-end':
@@ -349,7 +357,7 @@ export async function runClaudeCodeSession(
           break;
 
         case 'tool-call': {
-          const toolName = part.toolName || 'unknown';
+          const toolName = (part as any).toolName || 'unknown';
           // Only create metrics if tool-input-start didn't already (backward compat)
           if (!toolMetrics[toolName]) {
             toolMetrics[toolName] = {
@@ -361,19 +369,19 @@ export async function runClaudeCodeSession(
             };
           }
           // Only increment if tool-input-start didn't already track this call
-          if (!toolStartTimes.has(part.toolCallId)) {
+          if (!toolStartTimes.has((part as any).toolCallId)) {
             toolMetrics[toolName].executionCount += 1;
-            toolStartTimes.set(part.toolCallId, Date.now());
+            toolStartTimes.set((part as any).toolCallId, Date.now());
             taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}`);
           }
           break;
         }
 
         case 'tool-result': {
-          const toolName = part.toolName || 'unknown';
-          const start = toolStartTimes.get(part.toolCallId);
+          const toolName = (part as any).toolName || 'unknown';
+          const start = toolStartTimes.get((part as any).toolCallId);
           const duration = start ? Date.now() - start : 0;
-          toolStartTimes.delete(part.toolCallId);
+          toolStartTimes.delete((part as any).toolCallId);
 
           const metrics = toolMetrics[toolName] || {
             toolName,
@@ -385,7 +393,7 @@ export async function runClaudeCodeSession(
 
           metrics.totalDurationMs += duration;
           metrics.lastExecutedAt = nowIso();
-          if (part.isError) {
+          if ((part as any).isError) {
             metrics.failureCount += 1;
             taskManager.appendOutput(taskId, `[tool] Failed: ${toolName}`);
           } else {
@@ -397,10 +405,10 @@ export async function runClaudeCodeSession(
         }
 
         case 'finish': {
-          totalInputTokens = part.usage?.inputTokens?.total ?? totalInputTokens;
-          totalOutputTokens = part.usage?.outputTokens?.total ?? totalOutputTokens;
+          totalInputTokens = (part as any).usage?.inputTokens?.total ?? totalInputTokens;
+          totalOutputTokens = (part as any).usage?.outputTokens?.total ?? totalOutputTokens;
 
-          const ccMeta = part.providerMetadata?.['claude-code'] as Record<string, unknown> | undefined;
+          const ccMeta = (part as any).providerMetadata?.['claude-code'] as Record<string, unknown> | undefined;
           if (ccMeta) {
             const maybeSession = ccMeta['sessionId'];
             const maybeCost = ccMeta['costUsd'];
@@ -410,20 +418,20 @@ export async function runClaudeCodeSession(
             if (typeof maybeDuration === 'number') providerDurationMs = maybeDuration;
           }
 
-          if (part.finishReason.unified === 'error') {
-            resultError = `Claude stream ended with error (${part.finishReason.raw ?? 'unknown'})`;
+          if ((part as any).finishReason?.unified === 'error') {
+            resultError = `Claude stream ended with error (${(part as any).finishReason?.raw ?? 'unknown'})`;
           }
           break;
         }
 
         case 'error':
-          resultError = String(part.error ?? 'unknown stream error');
+          resultError = String((part as any).error ?? 'unknown stream error');
           taskManager.appendOutput(taskId, `[error] ${resultError}`);
           break;
 
         case 'stream-start':
-          if (part.warnings.length > 0) {
-            taskManager.appendOutput(taskId, `[system] Claude warnings: ${part.warnings.map((w) => w.type).join(', ')}`);
+          if ((part as any).warnings?.length > 0) {
+            taskManager.appendOutput(taskId, `[system] Claude warnings: ${((part as any).warnings || []).map((w: { type: string }) => w.type).join(', ')}`);
           }
           break;
 
@@ -586,6 +594,7 @@ export async function runClaudeCodeSession(
     if (ctrl === abortController) {
       activeFallbackControllers.delete(taskId);
     }
+    processRegistry.unregister(taskId);
     releaseFallbackSlot();
     // Ensure abort signal is sent even if we got here via unexpected path
     if (!abortController.signal.aborted) {
@@ -601,10 +610,18 @@ export async function runClaudeCodeSession(
  * Abort all active Claude CLI fallback sessions.
  * Called during server shutdown.
  */
-export function abortAllFallbackSessions(): void {
+export function abortAllFallbackSessions(reason: string = 'Server shutdown'): number {
+  let aborted = 0;
   for (const [taskId, controller] of activeFallbackControllers) {
     console.error(`[claude-code-runner] Shutdown: aborting fallback for task ${taskId}`);
-    try { controller.abort(new Error('Server shutdown')); } catch { /* ignore */ }
+    try {
+      controller.abort(new Error(reason));
+      aborted += 1;
+    } catch (error) {
+      console.error(`[claude-code-runner] Failed to abort fallback for task ${taskId}:`, error);
+    }
+    processRegistry.unregister(taskId);
   }
   activeFallbackControllers.clear();
+  return aborted;
 }

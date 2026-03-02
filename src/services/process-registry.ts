@@ -9,7 +9,7 @@
 
 export interface TrackedProcess {
   taskId: string;
-  pid: number;
+  pid?: number;
   /** Process group ID if available (for killing entire tree) */
   pgid?: number;
   /** AbortController if this is an SDK session */
@@ -32,7 +32,7 @@ export class ProcessRegistry {
   /** Register a child process. Key is taskId. */
   register(entry: TrackedProcess): void {
     this.processes.set(entry.taskId, entry);
-    log(`registered pid=${entry.pid} task=${entry.taskId} label="${entry.label}"`);
+    log(`registered pid=${entry.pid ?? 'n/a'} task=${entry.taskId} label="${entry.label}"`);
   }
 
   /** Unregister (process exited normally) */
@@ -40,7 +40,7 @@ export class ProcessRegistry {
     const entry = this.processes.get(taskId);
     if (entry) {
       this.processes.delete(taskId);
-      log(`unregistered pid=${entry.pid} task=${taskId}`);
+      log(`unregistered pid=${entry.pid ?? 'n/a'} task=${taskId}`);
     }
   }
 
@@ -70,19 +70,22 @@ export class ProcessRegistry {
     }
 
     const { pid, pgid, session, abortController } = entry;
+    const hasPid = this.hasValidPid(pid);
+    let handledWithoutSignal = false;
 
     // Step 1: try session.abort() with 5s timeout
     if (session) {
       try {
-        log(`killTask: aborting session for task=${taskId} pid=${pid}`);
+        log(`killTask: aborting session for task=${taskId} pid=${pid ?? 'n/a'}`);
         await Promise.race([
           session.abort(),
           new Promise<void>((_, reject) =>
             setTimeout(() => reject(new Error('abort timeout')), 5000)
           ),
         ]);
+        handledWithoutSignal = true;
         // Check if abort was sufficient
-        if (!this.isAlive(pid)) {
+        if (!hasPid || !this.isAlive(pid, pgid)) {
           this.processes.delete(taskId);
           log(`killTask: session.abort() succeeded for task=${taskId}`);
           return true;
@@ -96,11 +99,22 @@ export class ProcessRegistry {
     if (abortController) {
       try {
         abortController.abort();
+        handledWithoutSignal = true;
       } catch {}
     }
 
+    if (!hasPid) {
+      this.processes.delete(taskId);
+      if (handledWithoutSignal) {
+        log(`killTask: handled via session/abortController for task=${taskId} (no pid)`);
+        return true;
+      }
+      log(`killTask: no valid pid/session/abortController for task=${taskId}`);
+      return false;
+    }
+
     // Step 2: SIGTERM
-    if (!this.isAlive(pid)) {
+    if (!this.isAlive(pid, pgid)) {
       this.processes.delete(taskId);
       log(`killTask: pid=${pid} already dead before SIGTERM`);
       return true;
@@ -113,7 +127,7 @@ export class ProcessRegistry {
     await new Promise<void>((resolve) => setTimeout(resolve, 3000));
 
     // Step 4: SIGKILL if still alive
-    if (this.isAlive(pid)) {
+    if (this.isAlive(pid, pgid)) {
       this.sendSignal(pid, pgid, 'SIGKILL');
       log(`killTask: sent SIGKILL to pid=${pid} task=${taskId}`);
     } else {
@@ -139,7 +153,10 @@ export class ProcessRegistry {
 
     // SIGTERM all
     for (const entry of entries) {
-      if (this.isAlive(entry.pid)) {
+      if (entry.session) {
+        entry.session.abort().catch(() => {});
+      }
+      if (this.isAlive(entry.pid, entry.pgid)) {
         this.sendSignal(entry.pid, entry.pgid, 'SIGTERM');
         log(`killAll: sent SIGTERM to pid=${entry.pid} task=${entry.taskId}`);
       }
@@ -153,7 +170,7 @@ export class ProcessRegistry {
 
     // SIGKILL stragglers
     for (const entry of entries) {
-      if (this.isAlive(entry.pid)) {
+      if (this.isAlive(entry.pid, entry.pgid)) {
         this.sendSignal(entry.pid, entry.pgid, 'SIGKILL');
         log(`killAll: sent SIGKILL to straggler pid=${entry.pid} task=${entry.taskId}`);
       }
@@ -166,9 +183,16 @@ export class ProcessRegistry {
   /**
    * Check if a PID is still alive
    */
-  isAlive(pid: number): boolean {
+  isAlive(pid?: number, pgid?: number): boolean {
+    if (!this.hasValidPid(pid) && !this.hasValidPid(pgid)) return false;
     try {
-      process.kill(pid, 0);
+      if (this.hasValidPid(pgid)) {
+        process.kill(-pgid, 0);
+      } else if (this.hasValidPid(pid)) {
+        process.kill(pid, 0);
+      } else {
+        return false;
+      }
       return true;
     } catch (err: any) {
       if (err.code === 'ESRCH') return false;
@@ -194,8 +218,14 @@ export class ProcessRegistry {
     log(`killAllSync: force-killing ${entries.length} tracked processes`);
 
     for (const entry of entries) {
+      if (entry.abortController) {
+        try { entry.abortController.abort(); } catch {}
+      }
+      if (!this.hasValidPid(entry.pid)) {
+        continue;
+      }
       try {
-        if (entry.pgid) {
+        if (this.hasValidPid(entry.pgid)) {
           process.kill(-entry.pgid, 'SIGKILL');
         } else {
           process.kill(entry.pid, 'SIGKILL');
@@ -210,12 +240,15 @@ export class ProcessRegistry {
 
   /** Send a signal to pid or process group */
   private sendSignal(
-    pid: number,
+    pid: number | undefined,
     pgid: number | undefined,
     signal: NodeJS.Signals
   ): void {
+    if (!this.hasValidPid(pid)) {
+      return;
+    }
     try {
-      if (pgid) {
+      if (this.hasValidPid(pgid)) {
         process.kill(-pgid, signal);
       } else {
         process.kill(pid, signal);
@@ -225,6 +258,10 @@ export class ProcessRegistry {
         log(`sendSignal: error sending ${signal} to pid=${pid}: ${err.message}`);
       }
     }
+  }
+
+  private hasValidPid(pid: number | undefined): pid is number {
+    return typeof pid === 'number' && Number.isInteger(pid) && pid > 0;
   }
 }
 

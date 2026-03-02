@@ -1,5 +1,5 @@
 import type { Task as MCPTask } from '@modelcontextprotocol/sdk/types.js';
-import { TaskState, TaskStatus } from '../types.js';
+import { TaskState, TaskStatus, isTerminalStatus } from '../types.js';
 import { TASK_TTL_MS } from '../config/timeouts.js';
 
 type MCPStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
@@ -286,7 +286,7 @@ function getLastUpdatedAt(task: TaskState): string {
 export function buildMCPTask(task: TaskState): MCPTask {
   const baseStatus = mapInternalStatusToMCP(task.status);
   // Override to input_required when task has a pending question
-  const status = task.pendingQuestion ? 'input_required' : baseStatus;
+  const status = task.pendingQuestion && !isTerminalStatus(task.status) ? 'input_required' : baseStatus;
   return {
     taskId: task.id,
     status,

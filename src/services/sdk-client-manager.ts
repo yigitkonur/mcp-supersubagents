@@ -175,9 +175,35 @@ function createUserInputHandler(taskId: string): (request: UserInputRequest, inv
 class SDKClientManager {
   private clients: Map<string, ClientEntry> = new Map();
   private pendingClients: Map<string, Promise<CopilotClient>> = new Map(); // RC-3: Dedup concurrent getClient calls
+  private sessionOwners: Map<string, string> = new Map(); // sessionId -> taskId
   private isShuttingDown = false;
   private staleSessionTimer: ReturnType<typeof setInterval> | null = null;
   private sweepCycle = 0;
+
+  private findEntryByClient(client: CopilotClient): ClientEntry | undefined {
+    for (const entry of this.clients.values()) {
+      if (entry.client === client) {
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
+  private trackSessionOwner(sessionId: string, taskId?: string): void {
+    if (taskId) {
+      this.sessionOwners.set(sessionId, taskId);
+    }
+  }
+
+  private resolveTaskId(sessionId: string): string {
+    return this.sessionOwners.get(sessionId) ?? sessionId;
+  }
+
+  private untrackSessionOwner(sessionId: string): string {
+    const taskId = this.resolveTaskId(sessionId);
+    this.sessionOwners.delete(sessionId);
+    return taskId;
+  }
 
   /**
    * Initialize the client manager (call on MCP connect).
@@ -195,6 +221,7 @@ class SDKClientManager {
    */
   async reset(): Promise<void> {
     this.pendingClients.clear();
+    this.sessionOwners.clear();
 
     // Clear our tracking first — let SDK stop() handle session cleanup
     for (const entry of this.clients.values()) {
@@ -242,10 +269,14 @@ class SDKClientManager {
 
     // Create with dedup — store the promise so concurrent callers reuse it.
     // Wrap with timeout to prevent hanging promises from leaking in the Map.
-    const creationPromise = this.createClient(cwd, currentToken).then(client => {
+    const creationPromise = this.createClient(cwd, currentToken).then(async client => {
       // Guard: if reset/shutdown invalidated this creation, stop the orphaned client
       if (this.isShuttingDown || this.pendingClients.get(clientKey) !== promise) {
-        client.stop?.().catch(() => {});
+        try {
+          await withTimeout(client.stop(), RECYCLE_STOP_TIMEOUT_MS, `stop invalidated client ${clientKey}`);
+        } catch {
+          try { await client.forceStop(); } catch { /* ignore */ }
+        }
         throw new Error('Client creation invalidated by reset/shutdown');
       }
       this.clients.set(clientKey, {
@@ -304,8 +335,6 @@ class SDKClientManager {
     taskId?: string
   ): Promise<CopilotSession> {
     const client = await this.getClient(cwd);
-    const tokenIndex = accountManager.getCurrentIndex();
-    const clientKey = `${cwd}:${tokenIndex}`;
 
     // Build session config with user input handler and hooks if taskId provided
     const sessionConfig: SessionConfig = {
@@ -325,11 +354,12 @@ class SDKClientManager {
 
     const session = await client.createSession(sessionConfig);
 
-    // Track the session in the client entry
-    const entry = this.clients.get(clientKey);
+    // Track the session in the client entry used to create it.
+    const entry = this.findEntryByClient(client);
     if (entry) {
       entry.sessions.set(sessionId, session);
     }
+    this.trackSessionOwner(session.sessionId, taskId);
 
     return session;
   }
@@ -346,11 +376,6 @@ class SDKClientManager {
   ): Promise<CopilotSession> {
     const client = await this.getClient(cwd);
 
-    // Capture token index BEFORE the async resumeSession call to prevent
-    // tracking drift if token rotation happens during the await
-    const tokenIndex = accountManager.getCurrentIndex();
-    const clientKey = `${cwd}:${tokenIndex}`;
-
     // Build resume config with user input handler and hooks if taskId provided
     const resumeConfig: Partial<SessionConfig> = { ...config };
 
@@ -365,13 +390,26 @@ class SDKClientManager {
 
     const session = await client.resumeSession(sessionId, resumeConfig);
 
-    // Track the resumed session in the client entry
-    const entry = this.clients.get(clientKey);
+    // Track the resumed session in the client entry used to resume it.
+    const entry = this.findEntryByClient(client);
     if (entry) {
       entry.sessions.set(sessionId, session);
     }
+    this.trackSessionOwner(session.sessionId, taskId);
 
     return session;
+  }
+
+  /**
+   * Get the token index associated with a tracked session.
+   */
+  getSessionTokenIndex(sessionId: string): number | undefined {
+    for (const entry of this.clients.values()) {
+      if (entry.sessions.has(sessionId)) {
+        return entry.tokenIndex;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -396,8 +434,9 @@ class SDKClientManager {
       if (session) {
         // Delete from tracking first to prevent double-destroy race with sweeper
         entry.sessions.delete(sessionId);
-        // Clear any pending question to avoid leaked Promise/timeout (sessionId === taskId)
-        questionRegistry.clearQuestion(sessionId, 'session destroyed');
+        const ownerTaskId = this.untrackSessionOwner(sessionId);
+        // Clear any pending question to avoid leaked Promise/timeout
+        questionRegistry.clearQuestion(ownerTaskId, 'session destroyed');
         try {
           await destroySessionWithRetry(session, sessionId, DESTROY_SESSION_TIMEOUT_MS);
         } catch (err) {
@@ -406,6 +445,7 @@ class SDKClientManager {
         return true;
       }
     }
+    this.sessionOwners.delete(sessionId);
     return false;
   }
 
@@ -454,7 +494,7 @@ class SDKClientManager {
 
       // RC-7: Clean up stale clients from previous tokens
       // Also destroys old sessions using exhausted tokens to prevent leaked processes
-      this.cleanupStaleClients();
+      await this.cleanupStaleClients();
 
       return { success: true, client };
     } catch (err) {
@@ -469,11 +509,15 @@ class SDKClientManager {
    * RC-7: Remove client entries with no active sessions that belong to non-current tokens.
    * Prevents gradual resource leak from accumulated stale clients after rotation.
    */
-  private cleanupStaleClients(): void {
+  private async cleanupStaleClients(): Promise<void> {
     const currentIndex = accountManager.getCurrentIndex();
     for (const [key, entry] of this.clients.entries()) {
       if (entry.tokenIndex !== currentIndex && entry.sessions.size === 0) {
-        entry.client.stop?.().catch(() => {});
+        try {
+          await withTimeout(entry.client.stop(), RECYCLE_STOP_TIMEOUT_MS, `stop stale client ${key}`);
+        } catch {
+          try { await entry.client.forceStop(); } catch { /* ignore */ }
+        }
         this.clients.delete(key);
         console.error(`[sdk-client-manager] Cleaned up stale client: ${key}`);
       }
@@ -509,6 +553,9 @@ class SDKClientManager {
         );
       } catch {
         console.error(`[sdk-client-manager] Health check failed for client ${key}, removing dead client`);
+        for (const sessionId of entry.sessions.keys()) {
+          this.untrackSessionOwner(sessionId);
+        }
         entry.sessions.clear();
         this.clients.delete(key);
         try { await entry.client.forceStop(); } catch { /* already dead */ }
@@ -528,15 +575,17 @@ class SDKClientManager {
     let destroyed = 0;
     for (const entry of this.clients.values()) {
       for (const [sessionId, session] of entry.sessions) {
-        const task = taskManager.getTask(sessionId);
+        const ownerTaskId = this.resolveTaskId(sessionId);
+        const task = taskManager.getTask(ownerTaskId);
         // Preserve RATE_LIMITED sessions for retry/resume
         if (task?.status === TaskStatus.RATE_LIMITED) {
           continue;
         }
         if (!task || TERMINAL_STATUSES.has(task.status as any)) {
           entry.sessions.delete(sessionId);
-          // Clear any pending question to avoid leaked Promise/timeout (sessionId === taskId)
-          questionRegistry.clearQuestion(sessionId, 'stale session swept');
+          this.sessionOwners.delete(sessionId);
+          // Clear any pending question to avoid leaked Promise/timeout
+          questionRegistry.clearQuestion(ownerTaskId, 'stale session swept');
           try {
             await withTimeout(
               entry.client.deleteSession(sessionId),
@@ -566,7 +615,8 @@ class SDKClientManager {
     const ZOMBIE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes with no output = zombie
     for (const entry of this.clients.values()) {
       for (const [sessionId] of entry.sessions) {
-        const task = taskManager.getTask(sessionId);
+        const ownerTaskId = this.resolveTaskId(sessionId);
+        const task = taskManager.getTask(ownerTaskId);
         if (!task || task.status !== TaskStatus.RUNNING) continue;
 
         const now = Date.now();
@@ -577,10 +627,12 @@ class SDKClientManager {
 
         if (inactiveMs > ZOMBIE_THRESHOLD_MS) {
           console.error(`[sdk-client-manager] Zombie session detected: ${sessionId} (${Math.round(inactiveMs / 60000)}min inactive)`);
-          taskManager.appendOutput(sessionId, `[system] Session appears stalled (${Math.round(inactiveMs / 60000)}min without output). Destroying zombie session.`);
+          taskManager.appendOutput(ownerTaskId, `[system] Session appears stalled (${Math.round(inactiveMs / 60000)}min without output). Destroying zombie session.`);
           
           // Destroy the zombie session
           entry.sessions.delete(sessionId);
+          this.sessionOwners.delete(sessionId);
+          questionRegistry.clearQuestion(ownerTaskId, 'zombie session swept');
           try {
             await withTimeout(
               entry.client.deleteSession(sessionId),
@@ -592,7 +644,7 @@ class SDKClientManager {
           }
           
           // Mark the task as failed so it can be retried
-          taskManager.updateTask(sessionId, {
+          taskManager.updateTask(ownerTaskId, {
             status: TaskStatus.FAILED,
             error: `Session became unresponsive (${Math.round(inactiveMs / 60000)}min without output)`,
             endTime: new Date().toISOString(),
@@ -736,6 +788,7 @@ class SDKClientManager {
   async shutdown(): Promise<void> {
     this.isShuttingDown = true;
     this.pendingClients.clear();
+    this.sessionOwners.clear();
 
     if (this.staleSessionTimer) {
       clearInterval(this.staleSessionTimer);
