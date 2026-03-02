@@ -67,13 +67,6 @@ export const RESEARCH_TYPES = [
 ] as const;
 export type ResearchType = typeof RESEARCH_TYPES[number];
 
-// --- General types ---
-
-export const GENERAL_TYPES = [
-  'writing', 'analysis', 'documentation', 'organization', 'general-purpose',
-] as const;
-export type GeneralType = typeof GENERAL_TYPES[number];
-
 // --- Per-tool schemas ---
 
 export const SpawnCoderSchema = z.object({
@@ -128,16 +121,4 @@ export const SpawnResearcherSchema = z.object({
   mode: sharedModeSchema,
 });
 
-export const SpawnGeneralSchema = z.object({
-  prompt: z.string().min(1).max(100000),
-  context_files: z.array(contextFileSchema).max(20).optional(),
-  general_type: z.enum(GENERAL_TYPES).optional(),
-  model: sharedModelSchema,
-  cwd: z.string().optional(),
-  timeout: sharedTimeoutSchema,
-  depends_on: sharedDependsOnSchema,
-  labels: sharedLabelsSchema,
-  reasoning_effort: sharedReasoningEffortSchema,
-  mode: sharedModeSchema,
-});
 

@@ -43,7 +43,7 @@ export function resolveModel(requested?: string, taskType?: string): ModelId {
   if (requested === 'opus' || requested === 'claude-opus-4.6') return OPUS_MODEL;
 
   // 'sonnet' alias + backward compat for old name
-  if (requested === 'sonnet' || requested === 'claude-sonnet-4.6' || requested === 'claude-sonnet-4.5') return DEFAULT_MODEL;
+  if (requested === 'sonnet' || requested === 'claude-sonnet-4.5') return DEFAULT_MODEL;
 
   if ((Object.keys(MODELS) as ModelId[]).includes(requested as ModelId)) return requested as ModelId;
   return DEFAULT_MODEL;
