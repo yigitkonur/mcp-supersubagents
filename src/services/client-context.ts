@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 /**
  * Stores client context including workspace roots from MCP initialization.
  * The first root is used as default CWD for spawned processes.
@@ -11,9 +13,9 @@ class ClientContext {
    */
   setRoots(roots: Array<{ uri: string; name?: string }>): void {
     this._roots = roots.map(r => {
-      // Convert file:// URI to filesystem path
+      // Convert file:// URI to filesystem path using proper URL parsing
       if (r.uri.startsWith('file://')) {
-        return decodeURIComponent(r.uri.replace('file://', ''));
+        return fileURLToPath(r.uri);
       }
       return r.uri;
     });

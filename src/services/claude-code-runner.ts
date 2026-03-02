@@ -27,6 +27,27 @@ const MAX_CONCURRENT_FALLBACKS = parseInt(process.env.MAX_CONCURRENT_CLAUDE_FALL
 let activeFallbackCount = 0;
 const fallbackQueue: Array<() => void> = [];
 
+// FB-014: Pre-flight check for Claude provider availability
+let claudeAvailabilityChecked = false;
+let claudeAvailable = true;
+
+async function checkClaudeAvailability(): Promise<boolean> {
+  if (claudeAvailabilityChecked) return claudeAvailable;
+  try {
+    if (typeof claudeCode !== 'function') {
+      throw new Error('claudeCode provider is not a function');
+    }
+    claudeAvailabilityChecked = true;
+    claudeAvailable = true;
+    return true;
+  } catch {
+    claudeAvailabilityChecked = true;
+    claudeAvailable = false;
+    console.error('[claude-code-runner] Claude Agent SDK provider not available — fallback will be disabled');
+    return false;
+  }
+}
+
 function acquireFallbackSlot(): Promise<void> {
   if (activeFallbackCount < MAX_CONCURRENT_FALLBACKS) {
     activeFallbackCount++;
@@ -200,6 +221,23 @@ export async function runClaudeCodeSession(
 
   if (isTerminalStatus(task.status)) {
     console.error(`[claude-code-runner] Task ${taskId} already terminal (${task.status}), skipping`);
+    return;
+  }
+
+  // FB-014: Pre-flight check — fail fast if provider is unavailable
+  if (!(await checkClaudeAvailability())) {
+    taskManager.updateTask(taskId, {
+      status: TaskStatus.FAILED,
+      endTime: nowIso(),
+      error: 'Claude Agent SDK provider is not available',
+      exitCode: 1,
+      failureContext: {
+        errorType: 'claude_unavailable',
+        message: 'Claude Agent SDK provider (ai-sdk-provider-claude-code) could not be loaded',
+        recoverable: false,
+      },
+      session: undefined,
+    });
     return;
   }
 
@@ -628,5 +666,12 @@ export function abortAllFallbackSessions(reason: string = 'Server shutdown'): nu
     processRegistry.unregister(taskId);
   }
   activeFallbackControllers.clear();
+
+  // FB-013: Drain pending queue to release slots — they'll hit terminal check in runClaudeCodeSession
+  while (fallbackQueue.length > 0) {
+    const resolver = fallbackQueue.shift();
+    if (resolver) resolver();
+  }
+
   return aborted;
 }

@@ -464,8 +464,9 @@ async function handleSessionError(
     return;
   }
 
-  // Check for timeout
-  if (errorMessage.includes('Timeout') || errorMessage.includes('timeout')) {
+  // Check for timeout (FB-017: case-insensitive regex for broader matching)
+  const isTimeout = /\btimed?\s*out\b/i.test(errorMessage) || /\btimeout\b/i.test(errorMessage);
+  if (isTimeout) {
     const now = Date.now();
     const elapsedMs = currentTask.startTime ? now - new Date(currentTask.startTime).getTime() : undefined;
     
@@ -628,8 +629,8 @@ async function handleRateLimit(
       });
       if (started) {
         sdkSessionAdapter.unbind(taskId);
-        return;
       }
+      return; // FB-010: prevent fall-through to generic fallback regardless of started
     }
   }
 

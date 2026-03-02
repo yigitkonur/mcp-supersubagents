@@ -117,6 +117,7 @@ interface SessionBinding {
   rotationAttempts: number;
   maxRotationAttempts: number;
   rotationInProgress: boolean;
+  proactiveRotationAttempted?: boolean; // FB-012: Prevent repeated proactive rotations without consuming rotationAttempts
   rateLimitInfo?: {
     statusCode: number;
     resetDate?: string;
@@ -575,7 +576,14 @@ class SDKSessionAdapter {
   }
 
   /**
-   * Attempt to rotate to a new account and resume the session
+   * Attempt to rotate to a new account and resume the session.
+   *
+   * CC-016: Concurrent rotation safety
+   * The `binding.rotationInProgress` flag is set by the *caller* before entering
+   * this method and cleared in a `finally` block after it returns. Combined with
+   * the `isUnbound` check at RC-13 below, this guarantees that at most one
+   * rotation attempt is active per binding at any time — even when multiple
+   * session.error events or string-based rate-limit detections fire concurrently.
    */
   private async attemptRotationAndResume(
     taskId: string,
@@ -692,12 +700,14 @@ class SDKSessionAdapter {
       // Cross-token resume is architecturally impossible — the new token's client
       // has no knowledge of the old session. Create a fresh session with a new ID
       // and send a handoff prompt that includes context from the old session.
+      // CC-004: Hoist newSession so catch block can destroy it on failure
+      let newSession: CopilotSession | undefined;
       try {
         taskManager.appendOutput(taskId, `[rotation] Health check passed, creating new session with rotated account...`);
 
       // Generate a unique session ID for the retry to avoid collision with the old session
       const retrySessionId = `${taskId}-r${binding.rotationAttempts}`;
-      const newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, {}, taskId);
+      newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, {}, taskId);
 
       // CC-002 + RC-2: Check isUnbound and terminal state after createSession await
       if (binding.isUnbound) {
@@ -719,6 +729,10 @@ class SDKSessionAdapter {
       return true;
     } catch (createErr) {
       console.error(`[sdk-session-adapter] Failed to create new session after rotation:`, createErr);
+      // CC-004: Destroy leaked session if it was created before the error
+      if (newSession) {
+        await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
+      }
       return false;
     }
     } // end while
@@ -766,6 +780,7 @@ class SDKSessionAdapter {
       maxRotationAttempts: oldBinding.maxRotationAttempts,
       rotationInProgress: false,
       isUnbound: false,
+      proactiveRotationAttempted: oldBinding.proactiveRotationAttempted,
       pendingPrompt: oldBinding.pendingPrompt,
       // Preserve metrics
       turnCount: oldBinding.turnCount,
@@ -840,7 +855,7 @@ class SDKSessionAdapter {
 
     const retryInfo: RetryInfo = {
       reason: message,
-      retryCount: 0,
+      retryCount: (taskManager.getTask(taskId)?.retryInfo?.retryCount ?? 0),
       nextRetryTime,
       maxRetries: 6,
       originalTaskId: taskId,
@@ -1044,12 +1059,15 @@ class SDKSessionAdapter {
 
           // Proactively rotate if quota is critically low (< 1%)
           // Guard: Only rotate if not already rotating (prevents race condition)
+          // FB-012: Use proactiveRotationAttempted flag to prevent repeated proactive
+          // rotations without consuming rotationAttempts (which are reserved for error-driven rotation)
           if (snapshot.remainingPercentage < 1 &&
+              !binding.proactiveRotationAttempted &&
               binding.rotationAttempts < binding.maxRotationAttempts &&
               !binding.rotationInProgress) {
+            binding.proactiveRotationAttempted = true;
             binding.rotationInProgress = true;
             binding.isPaused = true;
-            binding.rotationAttempts++;  // Count proactive rotation toward the limit
             taskManager.appendOutput(taskId, `[quota] Quota critically low, proactively rotating (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
             this.attemptRotationAndResume(taskId, binding, 429, 'Quota critically low')
               .then((success) => {
@@ -1460,6 +1478,16 @@ class SDKSessionAdapter {
    */
   getSession(taskId: string): CopilotSession | undefined {
     return this.bindings.get(taskId)?.session;
+  }
+
+  /**
+   * CC-010: Check if a task's session is paused (rotation in progress or explicitly paused).
+   * Callers (e.g. send-message.ts) should check this before sending messages to avoid
+   * writing to a session that is mid-rotation.
+   */
+  isTaskPaused(taskId: string): boolean {
+    const binding = this.bindings.get(taskId);
+    return binding?.isPaused || binding?.rotationInProgress || false;
   }
 
   /**

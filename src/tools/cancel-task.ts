@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
+import { questionRegistry } from '../services/question-registry.js';
 import { clientContext } from '../services/client-context.js';
 import { deleteStorage } from '../services/task-persistence.js';
 import { mcpText, mcpError, displayStatus, formatTable } from '../utils/format.js';
@@ -118,6 +119,10 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       
       const previousStatus = task.status;
       const outputFilePath = task.outputFilePath;
+      
+      // CC-011: Clear pending question directly on cancel
+      questionRegistry.clearQuestion(taskId, 'task cancelled');
+      
       const cancelResult = await taskManager.cancelTask(taskId);
       
       if (cancelResult.success) {

@@ -180,6 +180,7 @@ class SDKClientManager {
   private staleSessionTimer: ReturnType<typeof setInterval> | null = null;
   private sweepCycle = 0;
   private ptyCheckFailures: Map<string, number> = new Map(); // consecutive lsof failure count per client key
+  private zombieSessions = new Set<string>(); // RM-002: track sessions that survive both destroy attempts
 
   private findEntryByClient(client: CopilotClient): ClientEntry | undefined {
     for (const entry of this.clients.values()) {
@@ -278,7 +279,7 @@ class SDKClientManager {
         } catch {
           try { await client.forceStop(); } catch { /* ignore */ }
         }
-        throw new Error('Client creation invalidated by reset/shutdown');
+        throw new Error(`Client creation for ${clientKey} invalidated by concurrent reset/shutdown — task will be retried`);
       }
       this.clients.set(clientKey, {
         client,
@@ -575,7 +576,7 @@ class SDKClientManager {
 
     let destroyed = 0;
     for (const entry of this.clients.values()) {
-      for (const [sessionId, session] of entry.sessions) {
+      for (const [sessionId, session] of Array.from(entry.sessions)) {
         const ownerTaskId = this.resolveTaskId(sessionId);
         const task = taskManager.getTask(ownerTaskId);
         // Preserve RATE_LIMITED sessions for retry/resume
@@ -600,6 +601,11 @@ class SDKClientManager {
             } catch (err) {
               console.error(`[sdk-client-manager] Sweeper: destroy failed for ${sessionId}: ${err}`);
               console.error(`[sdk-client-manager] WARNING: Session ${sessionId} may have leaked - both deleteSession and destroySessionWithRetry failed`);
+              // RM-002: Track zombie sessions that survive both destroy attempts
+              this.zombieSessions.add(sessionId);
+              if (this.zombieSessions.size > 5) {
+                console.error(`[sdk-client-manager] ${this.zombieSessions.size} zombie sessions — scheduling client recycle`);
+              }
             }
           }
           destroyed++;
@@ -754,7 +760,25 @@ class SDKClientManager {
         }
       }
 
-      if (ptmxCount > PTY_RECYCLE_THRESHOLD && entry.sessions.size === 0) {
+      if (ptmxCount > PTY_RECYCLE_THRESHOLD) {
+        // RM-001: Handle clients with active sessions by forcing session migration
+        if (entry.sessions.size > 0) {
+          console.error(`[sdk-client-manager] Client ${key} exceeds PTY threshold with ${entry.sessions.size} active sessions — forcing recycle`);
+          for (const [sid, session] of Array.from(entry.sessions)) {
+            const ownerTaskId = this.sessionOwners.get(sid);
+            entry.sessions.delete(sid);
+            this.sessionOwners.delete(sid);
+            try { await entry.client.deleteSession(sid); } catch {}
+            if (ownerTaskId) {
+              taskManager.updateTask(ownerTaskId, { 
+                status: TaskStatus.RATE_LIMITED, 
+                error: 'Session recycled due to PTY FD pressure' 
+              });
+            }
+          }
+          // Now proceed with recycle since sessions are cleared
+        }
+
         console.error(`[sdk-client-manager] Sweeper: recycling client ${key} (${countCheckFailed ? 'estimated' : ptmxCount} ptmx FDs, 0 active sessions)`);
         this.ptyCheckFailures.delete(key);
         // Escalating shutdown: graceful → force
@@ -844,6 +868,17 @@ class SDKClientManager {
     this.clients.clear();
     if (errors.length > 0) {
       console.error('[sdk-client-manager] Shutdown errors:', errors);
+    }
+  }
+
+  /**
+   * RM-009: Clean up orphaned session owner entries for an evicted task.
+   */
+  cleanupSessionOwner(taskId: string): void {
+    for (const [sid, owner] of this.sessionOwners) {
+      if (owner === taskId) {
+        this.sessionOwners.delete(sid);
+      }
     }
   }
 

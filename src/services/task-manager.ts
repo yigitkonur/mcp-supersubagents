@@ -3,7 +3,7 @@ import { TaskState, TaskStatus, TERMINAL_STATUSES, isTerminalStatus } from '../t
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
 import { TASK_STALL_WARN_MS, TASK_TTL_MS } from '../config/timeouts.js';
-import { createOutputFile, appendToOutputFile, finalizeOutputFile, getOutputPath, closeAllOutputHandles } from './output-file.js';
+import { createOutputFile, appendToOutputFile, finalizeOutputFile, getOutputPath, shutdownOutputFileCleanup } from './output-file.js';
 import { processRegistry } from './process-registry.js';
 import { unlink } from 'fs/promises';
 
@@ -358,7 +358,8 @@ class TaskManager {
           continue;
         }
         this.executeCallback(updated).catch(err => {
-          console.error(`[task-manager] Failed to execute task ${task.id}:`, err);
+          console.error(`[task-manager] Failed to execute waiting task ${task.id}:`, err);
+          this.updateTask(task.id, { status: TaskStatus.FAILED, error: `Execution failed: ${err instanceof Error ? err.message : String(err)}` });
         });
         continue;
       }
@@ -490,12 +491,16 @@ class TaskManager {
       console.error(`[task-manager] Found ${rateLimitedTasks.length} rate-limited task(s)`);
 
       for (const task of rateLimitedTasks) {
+        // Re-fetch to avoid stale snapshot (CC-013)
+        const freshTask = this.getTask(task.id);
+        if (!freshTask || freshTask.status !== TaskStatus.RATE_LIMITED) continue;
+
         // Check if max retries exceeded
-        if (hasExceededMaxRetries(task)) {
-          console.error(`[task-manager] Task ${task.id} exceeded max retries, marking as failed`);
-          this.updateTask(task.id, {
+        if (hasExceededMaxRetries(freshTask)) {
+          console.error(`[task-manager] Task ${freshTask.id} exceeded max retries, marking as failed`);
+          this.updateTask(freshTask.id, {
             status: TaskStatus.FAILED,
-            error: `Max retries (${task.retryInfo?.maxRetries}) exceeded for rate limit`,
+            error: `Max retries (${freshTask.retryInfo?.maxRetries}) exceeded for rate limit`,
             endTime: new Date().toISOString(),
             exitCode: 1,
           });
@@ -503,25 +508,25 @@ class TaskManager {
         }
 
         // Check if ready for retry
-        if (shouldRetryNow(task)) {
-          console.error(`[task-manager] Auto-retrying task ${task.id} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1})`);
+        if (shouldRetryNow(freshTask)) {
+          console.error(`[task-manager] Auto-retrying task ${freshTask.id} (attempt ${(freshTask.retryInfo?.retryCount ?? 0) + 1})`);
           
           if (this.retryCallback) {
-            if (retryInFlight.has(task.id)) continue;
-            retryInFlight.add(task.id);
+            if (retryInFlight.has(freshTask.id)) continue;
+            retryInFlight.add(freshTask.id);
             // Kill old session before spawning retry
             try {
-              await processRegistry.killTask(task.id);
+              await processRegistry.killTask(freshTask.id);
             } catch {
               /* best effort */
             }
-            await this.bestEffortUnbind(task.id);
+            await this.bestEffortUnbind(freshTask.id);
             try {
               // Spawn replacement task FIRST — only mark original FAILED on success
-              const newTaskId = await this.retryCallback(task);
+              const newTaskId = await this.retryCallback(freshTask);
 
               // Guard: task may have been cancelled/finished while retry callback awaited
-              const latestTask = this.getTask(task.id);
+              const latestTask = this.getTask(freshTask.id);
               if (!latestTask || isTerminalStatus(latestTask.status)) {
                 // If user cancelled during retry spawn, best-effort cancel the replacement task too
                 if (latestTask?.status === TaskStatus.CANCELLED && newTaskId) {
@@ -530,15 +535,15 @@ class TaskManager {
                 continue;
               }
 
-              this.updateTask(task.id, {
+              this.updateTask(freshTask.id, {
                 status: TaskStatus.FAILED,
-                error: `Auto-retried as new task${newTaskId ? ` ${newTaskId}` : ''} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1}/${task.retryInfo?.maxRetries ?? 6})`,
+                error: `Auto-retried as new task${newTaskId ? ` ${newTaskId}` : ''} (attempt ${(freshTask.retryInfo?.retryCount ?? 0) + 1}/${freshTask.retryInfo?.maxRetries ?? 6})`,
                 endTime: new Date().toISOString(),
                 exitCode: 1,
               });
             } catch (err) {
-              const retryInfo = task.retryInfo;
-              this.updateTask(task.id, {
+              const retryInfo = freshTask.retryInfo;
+              this.updateTask(freshTask.id, {
                 retryInfo: {
                   reason: retryInfo?.reason ?? 'Auto-retry callback failed',
                   retryCount: retryInfo?.retryCount ?? 0,
@@ -546,19 +551,19 @@ class TaskManager {
                   nextRetryTime: new Date(Date.now() + 60_000).toISOString(),
                 },
               });
-              console.error(`[task-manager] Auto-retry failed for ${task.id}; backing off 60s: ${err instanceof Error ? err.message : String(err)}`);
+              console.error(`[task-manager] Auto-retry failed for ${freshTask.id}; backing off 60s: ${err instanceof Error ? err.message : String(err)}`);
               // Don't mark FAILED — task stays RATE_LIMITED for next retry cycle
             } finally {
-              retryInFlight.delete(task.id);
+              retryInFlight.delete(freshTask.id);
             }
           } else {
-            console.error(`[task-manager] No retry callback registered, task ${task.id} will wait`);
+            console.error(`[task-manager] No retry callback registered, task ${freshTask.id} will wait`);
           }
         } else {
-          const nextRetry = task.retryInfo?.nextRetryTime;
+          const nextRetry = freshTask.retryInfo?.nextRetryTime;
           const waitMs = nextRetry ? new Date(nextRetry).getTime() - Date.now() : 0;
           const waitMin = Math.ceil(waitMs / 60000);
-          console.error(`[task-manager] Task ${task.id} not ready for retry, waiting ${waitMin} more minutes`);
+          console.error(`[task-manager] Task ${freshTask.id} not ready for retry, waiting ${waitMin} more minutes`);
         }
       }
 
@@ -596,6 +601,7 @@ class TaskManager {
         this.rateLimitTimer = null;
         this.processRateLimitedTasks();
       }, 0);
+      this.rateLimitTimer.unref();
       return;
     }
 
@@ -610,6 +616,7 @@ class TaskManager {
       this.rateLimitTimer = null;
       this.processRateLimitedTasks();
     }, delayMs);
+    this.rateLimitTimer.unref();
   }
 
   /**
@@ -781,6 +788,7 @@ class TaskManager {
       this.persistTimeout = null;
       this.persistNow().catch(() => {});
     }, debounceMs);
+    this.persistTimeout.unref();
   }
 
   /**
@@ -870,6 +878,9 @@ class TaskManager {
 
                 await this.abortFallbackTask(taskId, `Task timed out after ${timeoutMs ?? elapsedMs}ms`);
 
+                // CC-006: The adapter may have already transitioned the task to a terminal
+                // status via its own error/shutdown handler. Re-check before applying TIMED_OUT
+                // to avoid a rejected transition. Double-signaling is expected and harmless.
                 const latestTask = this.getTask(taskId);
                 if (this.isClearing || this.isShuttingDown || !latestTask || isTerminalStatus(latestTask.status)) {
                   return;
@@ -978,11 +989,22 @@ class TaskManager {
     const toDelete: string[] = [];
     let removed = false;
 
+    // Build set of task IDs referenced as deps by non-terminal tasks (SM-009)
+    const referencedDeps = new Set<string>();
+    for (const t of this.tasks.values()) {
+      if (t.dependsOn && !isTerminalStatus(t.status)) {
+        for (const depId of t.dependsOn) {
+          referencedDeps.add(normalizeTaskId(depId));
+        }
+      }
+    }
+
     for (const [id, task] of this.tasks) {
       if (task.status === TaskStatus.COMPLETED ||
           task.status === TaskStatus.FAILED ||
           task.status === TaskStatus.CANCELLED ||
           task.status === TaskStatus.TIMED_OUT) {
+        if (referencedDeps.has(id)) continue; // Don't evict tasks referenced as deps
         const endTime = task.endTime ? new Date(task.endTime).getTime() : 0;
         if (now - endTime > TASK_TTL_MS) {
           toDelete.push(id);
@@ -1006,7 +1028,7 @@ class TaskManager {
         TaskStatus.TIMED_OUT,
       ]);
       const sorted = Array.from(this.tasks.entries())
-        .filter(([_, t]) => evictableStatuses.has(t.status))
+        .filter(([_, t]) => evictableStatuses.has(t.status) && !referencedDeps.has(_))
         .sort((a, b) => new Date(a[1].startTime).getTime() - new Date(b[1].startTime).getTime());
 
       const toRemove = sorted.slice(0, this.tasks.size - MAX_TASKS);
@@ -1119,6 +1141,15 @@ class TaskManager {
       }
     }
 
+    if (isTerminalStatus(task.status) && !updates.status) {
+      const allowedPostTerminal = ['completionMetrics', 'sessionMetrics'];
+      const updateKeys = Object.keys(updates);
+      const disallowed = updateKeys.filter(k => !allowedPostTerminal.includes(k));
+      if (disallowed.length > 0) {
+        return task; // silently reject non-whitelisted mutations on terminal tasks
+      }
+    }
+
     // Mutate in-place to prevent reference drift with appendOutput.
     // Both appendOutput and updateTask operate on the same Map entry;
     // replacing the object (spread) would cause appendOutput to push
@@ -1201,10 +1232,10 @@ class TaskManager {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (task) {
-      // Block late output on terminal tasks after a brief grace period for final metrics
       if (isTerminalStatus(task.status)) {
-        const terminalTs = task.endTime ? new Date(task.endTime).getTime() : 0;
-        if (Date.now() - terminalTs > 5000) return;
+        // Still write to disk for forensics, but don't mutate in-memory state
+        if (task.cwd) appendToOutputFile(task.cwd, task.id, line).catch(() => {});
+        return;
       }
       const now = new Date().toISOString();
       task.lastOutputAt = now;
@@ -1385,10 +1416,15 @@ class TaskManager {
     await processRegistry.killAll();
 
     // Close all output file handles
-    await closeAllOutputHandles();
+    await shutdownOutputFileCleanup();
 
-    // Final persist before shutdown
-    await this.persistNow();
+    // Final persist before shutdown (with single retry)
+    try {
+      await this.persistNow();
+    } catch (err) {
+      console.error('[task-manager] Persist failed during shutdown, retrying...', err);
+      try { await this.persistNow(); } catch { console.error('[task-manager] Final persist also failed — state may be stale'); }
+    }
   }
 }
 

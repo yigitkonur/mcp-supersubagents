@@ -1,261 +1,327 @@
-# MCP-SuperSubagents — Realtime-Agent Audit Report
+# MCP-SuperSubAgents — Comprehensive Resilience Audit
 
-**Repository:** `/Users/yigitkonur/dev-test/mcp-supersubagents`  
-**Audit wave:** Wave-1 findings synthesis + line-by-line verification  
-**Primary files verified:** `sdk-session-adapter.ts`, `output-file.ts`, `task-manager.ts`, `claude-code-runner.ts`, `index.ts`, `session-snapshot.ts`, `task-persistence.ts`
-
----
-
-## How It Works
-
-### a) Copilot SDK Event → SessionEvent Handler → TaskState → MCP Resource
-
-The SDK emits `SessionEvent` objects on a session-level subscription. The full pipeline:
-
-```
-SDK emits SessionEvent
-  ↓
-sdkSessionAdapter.bind() registers:  newSession.on((event) => handleEvent(taskId, event, binding))
-  ↓
-handleEvent() [sdk-session-adapter.ts:250]
-  → Guard 1: binding.isUnbound → return immediately (prevents stale events after rotation)
-  → Guard 2: binding.isPaused && event.type !== 'session.error' → return (during rotation)
-  → switch(event.type) dispatch [line 267]
-  ↓
-Specific handler (e.g. handleTurnStart, handleMessageDelta, handleAssistantMessage, handleToolComplete)
-  ↓
-taskManager.appendOutput(taskId, line)    — both in-memory AND .output file
-taskManager.appendOutputFileOnly(taskId, line)  — .output file ONLY
-  ↓
-MCP resource read (task:///{id}): returns task.output[].slice(-50) after filterOutputForResource()
-```
-
-**Fields read per key event:**
-
-| SDK Event | Field(s) Read | Destination |
-|---|---|---|
-| `session.start` | `event.data.sessionId` | `binding.sessionId` |
-| `assistant.message_delta` | `event.data.deltaContent` | pushed to `binding.outputBuffer[]` |
-| `assistant.turn_end` | (flushes buffer) | `outputBuffer.join('')` → `appendOutput` |
-| `assistant.message` | `event.data.content` or buffer fallback | `appendOutput` (in-memory + file) |
-| `assistant.reasoning_delta` | `event.data.deltaContent` | `binding.reasoningBuffer[]` → file-only |
-| `assistant.usage` | `event.data.inputTokens`, `outputTokens` | `binding.totalTokens` |
-| `tool.execution_start` | `event.data.toolName`, `toolCallId`, `mcpServerName` | file-only `[tool] Starting: …` |
-| `tool.execution_complete` | `event.data.success`, `error`, `toolCallId` | in-memory if >100ms; file-only if <100ms |
-| `session.shutdown` | `event.data.shutdownType`, `errorReason` | → FAILED or cleanup only |
-| `session.idle` | (no fields) | → COMPLETED (when `!binding.isCompleted`) |
-| `session.compaction_complete` | `event.data.tokensRemoved`, `success` | `appendOutput` |
-
-**Two-tier split summary:**
-- `appendOutput` → `task.output[]` **AND** `.super-agents/{taskId}.output` file  
-- `appendOutputFileOnly` → `.output` file **ONLY** (reasoning, tool-starts, fast completions, user message previews, turn-ended markers)
+**Repository:** `mcp-supersubagents`  
+**Date:** 2025-07-18  
+**Scope:** Full codebase resilience audit across 7 domains  
+**Audited Files:** 25+ source files across `src/`
 
 ---
 
-### b) Two-Tier Output: `.output` File vs `task.output[]` vs MCP Resources
+## Executive Summary
 
-A realistic 10-line `.output` file mid-run (with annotations):
+A comprehensive resilience audit was conducted across 7 domains of the MCP Super-SubAgents server. The audit identified **120 findings** across the entire codebase (plus 4 items verified as safe):
 
-```
-# Task: brave-fox-42
-# Started: 2024-01-15T10:30:00.000Z
-# Working directory: /Users/dev/project
-────────────────────────────────────────────────────────────
-[session] Session started                          ← appendOutput (in-memory + file)
-[user] Implement auth module with JWT...           ← appendOutputFileOnly (FILE ONLY)
-[tool] Starting: read_file (MCP: filesystem)       ← appendOutputFileOnly (FILE ONLY)
-[reasoning] I should read existing code first...   ← appendOutputFileOnly (FILE ONLY)
-[tool] Completed: read_file (237ms)                ← appendOutput (>100ms → in-memory + file)
-[tool] Starting: grep_files                        ← appendOutputFileOnly (FILE ONLY)
-[tool] Completed: grep_files (45ms)                ← appendOutputFileOnly (<100ms → FILE ONLY)
-I'll implement JWT using the patterns I found...   ← appendOutput (in-memory + file)
-[assistant] Turn ended: msg_abc123                 ← appendOutputFileOnly (FILE ONLY)
-[tool] Completed: write_file (156ms)               ← appendOutput (in-memory + file)
-```
+| Severity | Total | Fixed | Open |
+|----------|-------|-------|------|
+| **Critical** | 3 | 3 | 0 |
+| **High** | 16 | 15 | 1 |
+| **Medium** | 43 | 1 | 42 |
+| **Low** | 43 | 0 | 43 |
+| **Info** | 15 | 0 | 15 |
+| **Total** | **120** | **19** | **101** |
 
-**What `task:///id` returns** (after `filterOutputForResource` + last 50 lines):
-```
-[session] Session started
-[tool] Completed: read_file (237ms)
-I'll implement JWT using the patterns I found...
-[tool] Completed: write_file (156ms)
-```
+Additionally, 4 state machine scenarios were **verified safe** (SM-004, SM-006, SM-013, SM-016) and are documented in the domain report.
 
-The `grep_files` completion at 45ms is **invisible** in `task:///id`—it went to `appendOutputFileOnly`. This is finding **B6**.
+All Critical and High severity findings have been fixed except FB-006 (send_message session liveness validation). The 1 fixed Medium finding is MS-015 (processWaitingTasks running during shutdown). All remaining Medium/Low/Info findings are documented with recommended fixes for future hardening.
+
+### Key Risks Addressed
+
+1. **Security** — Claude fallback ran with `bypassPermissions` by default (FB-001, Critical). Path traversal possible via `specialization` parameter (VE-001) and context files (VE-002). Template injection via `$` replacement patterns (VE-003).
+2. **Data Integrity** — Double retry from timer + manual paths could spawn duplicate tasks (CC-001/SM-002). Missing persist on `clearAllTasks` caused zombie task resurrection (PR-002).
+3. **Reliability** — Recursive rotation could exhaust async stack (FB-004). Zombie sweep could destroy sessions of completing tasks (CC-009). No force-exit timeout on SIGINT/SIGTERM (MS-002).
 
 ---
 
-### c) Streaming Model: Token-by-Token or Summarized?
+## Findings by Domain
 
-**Copilot path — buffered, one element per turn:**  
-`assistant.message_delta` events accumulate individual delta tokens into `binding.outputBuffer[]`. The buffer is **not forwarded** to `task.output[]` until `assistant.turn_end` fires (or the buffer exceeds `MAX_OUTPUT_BUFFER`). At flush, `outputBuffer.join('')` produces a **single string** pushed as **one element** into `task.output[]`.
+### Domain 1: Fallback & Recovery Chain — 23 findings
+📄 Details: [`stability-audit/01-fallback-recovery.md`](stability-audit/01-fallback-recovery.md)
 
-Effect: `task.output[]` has one element per assistant turn, not one per token. The 2000-element cap fills from turn count × tool completions (>100ms), not individual tokens. A typical 30-turn task with 20 tool calls uses ~50 elements total.
+| Severity | Count |
+|----------|-------|
+| Critical | 2 |
+| High | 5 |
+| Medium | 8 |
+| Low | 5 |
+| Info | 3 |
 
-**Claude fallback path — per-delta forwarding:**  
-`text-delta` parts call `taskManager.appendOutput(taskId, String((part as any).delta))` directly (line 308). Each token chunk is its own `appendOutput` call → its own element in `task.output[]`. A single 2000-token response may produce hundreds of elements, hitting the 2000-element cap in ~5-10 assistant turns.
+### Domain 2: Concurrency & Async Correctness — 16 findings
+📄 Details: [`stability-audit/02-concurrency-async.md`](stability-audit/02-concurrency-async.md)
 
-**Context pressure:** Copilot tasks can sustain 40+ turns before cap eviction. Claude fallback tasks hit eviction after ~5 turns if responses are verbose. Once eviction starts, early turns vanish from `task:///id/session` permanently.
+| Severity | Count |
+|----------|-------|
+| Critical | 1 |
+| High | 3 |
+| Medium | 5 |
+| Low | 5 |
+| Info | 1 |
 
----
+### Domain 3: Resource Management & Leaks — 16 findings
+📄 Details: [`stability-audit/03-resource-management.md`](stability-audit/03-resource-management.md)
 
-### d) Claude Fallback Path
+| Severity | Count |
+|----------|-------|
+| Medium | 4 |
+| Low | 9 |
+| Info | 3 |
 
-**Stream part → output line mapping:**
+### Domain 4: State Machine Integrity — 16 findings
+📄 Details: [`stability-audit/04-state-machine.md`](stability-audit/04-state-machine.md)
 
-| Stream Part Type | Handler | Output Destination |
-|---|---|---|
-| `text-start` | emits `\n[Assistant Turn N]\n` | `appendOutput` (1 element) |
-| `text-delta` | emits each delta chunk | `appendOutput` (1 element per chunk) |
-| `text-end` | clears `inTextBlock` flag | (no output) |
-| `reasoning-delta` | `[reasoning] {part.delta}` | `appendOutputFileOnly` |
-| `tool-input-start` | `[tool] Starting: {toolName}` | `appendOutput` |
-| `tool-result` | `[tool] Completed/Failed: {name} ({ms}ms)` | `appendOutput` |
-| `finish` | updates token totals; sets resultError if `finishReason.unified==='error'` | (metadata only) |
-| `error` | `[error] {message}` | `appendOutput` |
-| `tool-approval-request` | **unhandled** — falls to `default` | (silently dropped — **C5**) |
+| Severity | Count |
+|----------|-------|
+| High | 2 |
+| Medium | 6 |
+| Low | 3 |
+| Verified Safe | 5 |
 
-**Structural differences from Copilot path:**
+### Domain 5: Persistence & Recovery — 16 findings
+📄 Details: [`stability-audit/05-persistence-recovery.md`](stability-audit/05-persistence-recovery.md)
 
-| Dimension | Copilot | Claude Fallback |
-|---|---|---|
-| Turn marker format | (varies by SDK version) | `\n[Assistant Turn N]\n` |
-| Output granularity | 1 element per turn (buffered) | 1 element per text-delta token |
-| Tool-start visibility | File-only | In-memory (`appendOutput`) |
-| Tool-result for fast tools | File-only if <100ms | Always in-memory |
-| Reasoning | File-only via reasoning buffer | File-only via `appendOutputFileOnly` |
+| Severity | Count |
+|----------|-------|
+| High | 2 |
+| Medium | 4 |
+| Low | 8 |
+| Info | 2 |
 
-**Context surviving snapshot handoff (`buildHandoffPrompt`):**  
-- ✅ Survives: `task.prompt` (original, may truncate at 20,000 chars — **C2**), recent `user.message`/`assistant.message` text pairs parsed from `.output` file  
-- ❌ Doesn't survive: `tool.call`, `tool.result` events (silently dropped in `pairsFromSessionEvents` — **C4**), intermediate reasoning, in-flight output buffer state, quota/rotation metadata
+### Domain 6: Input Validation & Edge Cases — 17 findings
+📄 Details: [`stability-audit/06-input-validation.md`](stability-audit/06-input-validation.md)
 
----
+| Severity | Count |
+|----------|-------|
+| High | 3 |
+| Medium | 7 |
+| Low | 4 |
+| Info | 3 |
 
-### e) File Write Mechanics
+### Domain 7: MCP Server, Tool Handlers & Shutdown — 21 findings
+📄 Details: [`stability-audit/07-mcp-server-tools.md`](stability-audit/07-mcp-server-tools.md)
 
-**One write per line, serialized per task:**  
-Every `appendToOutputFile(cwd, taskId, line)` call enqueues exactly one `handle.write(line + '\n')` via `enqueueWrite`. Writes are serialized per `key = "${cwd}:${taskId}"` through `writeQueues`—no batching across tasks, no batching within a task's concurrent calls.
-
-**Exact newline insertion points:**  
-- `output-file.ts:165`: `await handle.write(line + '\n')` — adds one trailing `\n`  
-- `claude-code-runner.ts:302`: the `line` argument is `\n[Assistant Turn N]\n` — contains prefix `\n` and internal `\n`  
-- Net result in file: prefix `\n` + content + internal `\n` + trailing `\n` = **3 newlines total** around the marker
-
-**Sample with double-newline bug (B3):**
-```
-[tool] Completed: read_file (234ms)
-                              ← blank line  (from the \n prefix in the string literal)
-[Assistant Turn 3]
-                              ← blank line  (from the \n suffix in string + write's own \n)
-I'll now write the authentication module...
-```
-
----
-
-### f) `task:///all` vs `system:///status` vs `.output` File
-
-| Resource | Contents | Freshness Trigger | Max Size | Key Limitation |
-|---|---|---|---|---|
-| `task:///all` | Task list: status, stats, pending questions | Every status change (un-debounced) | 100 tasks × stats | 200K line iteration per read (**D1**); pendingQuestion verbatim (**D9**) |
-| `task:///{id}` | Status + last 50 filtered output lines | Output: debounced 1s; Status: immediate | ~50 lines of task.output | Misses file-only events; loses early turns after 2000-line trim |
-| `task:///{id}/session` | Execution log parsed from task.output[] | Same as task:///{id} | 2000 lines | Depends on `[assistant] Turn ended` markers which filterOutputForResource strips (**D3**) |
-| `system:///status` | In-memory counters: token stats, task counts | Status changes | Small JSON | No live SDK probe; stalled sessions appear healthy (**D2**) |
-| `.super-agents/{id}.output` | Everything: reasoning, all tool events, user previews | Continuous async writes | Unbounded | Finalization barriers can be cleared by stale-handle cleanup (**B1/B2**) |
-
-**When they diverge:**
-- A fast grep tool (<100ms) appears in `.output` but not in `task:///id`  
-- After 2000-line eviction, early turns vanish from `task:///id/session` but remain in `.output`  
-- A stalled session appears `RUNNING` in `system:///status` with no warning signal  
-- During token rotation, status-change notifications fire immediately (triggering 200K-line task:///all scan) while output notifications wait 1s (**D4**)
+| Severity | Count |
+|----------|-------|
+| High | 1 |
+| Medium | 6 |
+| Low | 8 |
+| Info | 4 |
 
 ---
 
-### g) SDK Breadcrumb Safety Across Rotation and Copilot→Claude Switch
+## Complete Findings Table
 
-**Copilot→Copilot rotation (`rebindWithNewSession`, lines 718–744):**
-
-| Field | Preserved? | Notes |
-|---|---|---|
-| `turnCount` | ✅ | Accurate cumulative count |
-| `totalTokens` | ✅ | Accumulates across sessions |
-| `toolMetrics` | ✅ | Full Map preserved |
-| `toolStartTimes` | ✅ | In-flight tool tracked |
-| `toolCallIdToName` | ✅ | Accurate completion matching |
-| `outputBuffer` | ✅ (by reference — **A5**) | Late events from old session can corrupt |
-| `reasoningBuffer` | ✅ (by reference — **A5**) | Same race risk |
-| `rotationAttempts` | ✅ | Counts against limit |
-| `isPaused` | ❌ reset to `false` | Correct |
-| `isCompleted` | ❌ reset to `false` | Correct |
-| `sessionId` | ❌ new value | `sessionOwners` map updated |
-
-After rotation, the new session receives the **full original task prompt** as a handoff message (line 770), not just a "continue" — causing the agent to restart work from scratch regardless of what the old session completed.
-
-**Copilot→Claude switch (`buildHandoffPrompt`, session-snapshot.ts:159–204):**
-
-| State | Survives? | Notes |
-|---|---|---|
-| Original `task.prompt` | ✅ (with truncation risk at 20K chars — **C2**) | Hard mid-word slice |
-| Recent user/assistant message text | ✅ | Parsed from `.output` file |
-| Tool call events | ❌ | Silently dropped (**C4**) |
-| Tool result events | ❌ | Silently dropped (**C4**) |
-| Reasoning content | ❌ | Not in `.output` user/assistant pairs |
-| Token counts / quotas | ❌ | Not transmitted to Claude |
-| Rotation attempt count | ❌ | Claude starts fresh |
+| ID | Title | Severity | Domain | Status |
+|----|-------|----------|--------|--------|
+| **FB-001** | Claude fallback bypassPermissions default | Critical | Fallback | ✅ Fixed |
+| **FB-023** | Quota reset date not propagated to TokenState | Critical | Fallback | ✅ Fixed |
+| **CC-001** | Double retry: timer + manual path | Critical | Concurrency | ✅ Fixed |
+| **FB-002** | Rate limit string detection — single hardcoded string | High | Fallback | ✅ Fixed |
+| **FB-003** | extractStatusCode() false-positive on number literals | High | Fallback | ✅ Fixed |
+| **FB-004** | Recursive rotation stack overflow risk | High | Fallback | ✅ Fixed |
+| **FB-005** | fallbackAttempted one-shot — retried tasks can't fallback | High | Fallback | ✅ Fixed |
+| **CC-002** | Event handler operates on cleared binding after unbind | High | Concurrency | ✅ Fixed |
+| **CC-003** | Proactive rotation races with session completion | High | Concurrency | ✅ Fixed |
+| **CC-009** | Zombie sweep races with normal completion | High | Concurrency | ✅ Fixed |
+| **SM-002** | Concurrent manual+auto retry spawns duplicates | High | State Machine | ✅ Fixed |
+| **SM-011** | bind() forces RUNNING without status check | High | State Machine | ✅ Fixed |
+| **PR-001** | Debounced persistence data loss window | High | Persistence | ✅ Fixed |
+| **PR-002** | clearAllTasks doesn't persist empty state | High | Persistence | ✅ Fixed |
+| **VE-001** | Path traversal via specialization parameter | High | Validation | ✅ Fixed |
+| **VE-002** | Context file path traversal — no workspace boundary | High | Validation | ✅ Fixed |
+| **VE-003** | Template injection via `$` replacement patterns | High | Validation | ✅ Fixed |
+| **MS-002** | No force-exit timeout on SIGINT/SIGTERM | High | MCP Server | ✅ Fixed |
+| **MS-015** | processWaitingTasks runs during shutdown | Medium | MCP Server | ✅ Fixed |
+| **FB-006** | send_message creates new task, doesn't resume original | High | Fallback | ⚠️ Open |
+| **FB-007** | No concurrent retry guard in health check loop | Medium | Fallback | ⚠️ Open |
+| **FB-008** | markAsRateLimited resets retryCount to 0 | Medium | Fallback | ⚠️ Open |
+| **FB-009** | Session snapshot empty after rotation | Medium | Fallback | ⚠️ Open |
+| **FB-010** | Unbind-before-fallback ordering bug | Medium | Fallback | ⚠️ Open |
+| **FB-011** | getCurrentToken() silent token switching | Medium | Fallback | ⚠️ Open |
+| **FB-012** | Proactive rotation fire-and-forget | Medium | Fallback | ⚠️ Open |
+| **FB-013** | Claude fallback concurrency limiter deadlock | Medium | Fallback | ⚠️ Open |
+| **FB-014** | No Claude CLI/SDK pre-flight check | Medium | Fallback | ⚠️ Open |
+| **CC-004** | Session leak in rotation error path | Medium | Concurrency | ⚠️ Open |
+| **CC-005** | reset() stops freshly created clients | Medium | Concurrency | ⚠️ Open |
+| **CC-006** | Health check timeout races with session abort | Medium | Concurrency | ⚠️ Open |
+| **CC-010** | send_message during rotation loses message | Medium | Concurrency | ⚠️ Open |
+| **CC-013** | Stale snapshot in rate-limit processing loop | Medium | Concurrency | ⚠️ Open |
+| **CC-014** | Object.assign callback re-entrancy | Medium | Concurrency | ⚠️ Open |
+| **RM-001** | PTY recycler ignores clients with active sessions | Medium | Resources | ⚠️ Open |
+| **RM-002** | Stale session sweeper double-failure leaves ghost FDs | Medium | Resources | ⚠️ Open |
+| **RM-004** | File handle not closed on write error | Medium | Resources | ⚠️ Open |
+| **RM-006** | statusUpdateTimers not cleared during shutdown | Medium | Resources | ⚠️ Open |
+| **SM-001** | appendOutput mutates terminal tasks | Medium | State Machine | ⚠️ Open |
+| **SM-003** | Asymmetric dispatch for dependency cascades | Medium | State Machine | ⚠️ Open |
+| **SM-008** | Non-status mutations accepted on terminal tasks | Medium | State Machine | ⚠️ Open |
+| **SM-009** | cleanup() evicts tasks referenced by dependency chains | Medium | State Machine | ⚠️ Open |
+| **SM-012** | Stuck PENDING after failed executeCallback | Medium | State Machine | ⚠️ Open |
+| **SM-014** | appendOutput clears timeout data on terminal tasks | Medium | State Machine | ⚠️ Open |
+| **PR-003** | persistNow() failure during shutdown silent | Medium | Persistence | ⚠️ Open |
+| **PR-004** | TOCTOU race in symlink check for storage dir | Medium | Persistence | ⚠️ Open |
+| **PR-012** | Recovery marks WAITING tasks FAILED unnecessarily | Medium | Persistence | ⚠️ Open |
+| **PR-014** | Broken pipe during shutdown may skip final persist | Medium | Persistence | ⚠️ Open |
+| **VE-004** | TOCTOU race: file validated then read separately | Medium | Validation | ⚠️ Open |
+| **VE-005** | Task ID collision: silent overwrite | Medium | Validation | ⚠️ Open |
+| **VE-006** | depends_on array: no max length | Medium | Validation | ⚠️ Open |
+| **VE-007** | cwd parameter: no validation | Medium | Validation | ⚠️ Open |
+| **VE-008** | answer field: no max length | Medium | Validation | ⚠️ Open |
+| **VE-009** | Freeform answer: missing sanitization | Medium | Validation | ⚠️ Open |
+| **VE-010** | Symlink following in context file reads | Medium | Validation | ⚠️ Open |
+| **MS-001** | statusUpdateTimers not cleared during shutdown | Medium | MCP Server | ⚠️ Open |
+| **MS-003** | spawn_agent accepted during shutdown | Medium | MCP Server | ⚠️ Open |
+| **MS-006** | ReadResourceRequestSchema lacks error boundary | Medium | MCP Server | ⚠️ Open |
+| **MS-008** | console.error in shutdown not guarded for broken stderr | Medium | MCP Server | ⚠️ Open |
+| **MS-011** | send_message TOCTOU: status to sessionId | Medium | MCP Server | ⚠️ Open |
+| **MS-013** | CallToolRequestSchema handler lacks exception boundary | Medium | MCP Server | ⚠️ Open |
+| **MS-021** | No guard against recursive onStatusChange | Medium | MCP Server | ⚠️ Open |
+| **FB-015** | send_message no session-level resume guard | Low | Fallback | ⚠️ Open |
+| **FB-016** | Token cooldown only 60s | Low | Fallback | ⚠️ Open |
+| **FB-017** | Timeout string match in handleSessionError | Low | Fallback | ⚠️ Open |
+| **FB-018** | Stale failure auto-reset at 5 minutes | Low | Fallback | ⚠️ Open |
+| **FB-019** | Single-token mode returns allExhausted immediately | Low | Fallback | ⚠️ Open |
+| **CC-008** | processWaitingTasks duplicate start (safe) | Low | Concurrency | ⚠️ Open |
+| **CC-011** | Question cleanup timing on cancel | Low | Concurrency | ⚠️ Open |
+| **CC-012** | cleanup() missing settled flag | Low | Concurrency | ⚠️ Open |
+| **CC-015** | Map mutation during iteration | Low | Concurrency | ⚠️ Open |
+| **CC-016** | Concurrent rotation code paths | Low | Concurrency | ⚠️ Open |
+| **RM-003** | Fire-and-forget destroySession during rebind | Low | Resources | ⚠️ Open |
+| **RM-005** | staleHandleTimer not cleared during shutdown | Low | Resources | ⚠️ Open |
+| **RM-007** | Progress registry flushTimer ref'd | Low | Resources | ⚠️ Open |
+| **RM-008** | warnedTasks set grows unbounded | Low | Resources | ⚠️ Open |
+| **RM-009** | sessionOwners orphaned on task eviction | Low | Resources | ⚠️ Open |
+| **RM-010** | Question timeout timers ref'd | Low | Resources | ⚠️ Open |
+| **RM-011** | processRegistry entries not cleaned on eviction | Low | Resources | ⚠️ Open |
+| **RM-012** | createOutputFile opens handle outside persistent system | Low | Resources | ⚠️ Open |
+| **RM-013** | Event listeners orphaned between eviction and sweep | Low | Resources | ⚠️ Open |
+| **RM-016** | resourceUpdateTimers leak for deleted tasks | Low | Resources | ⚠️ Open |
+| **SM-005** | send_message creates task without session validation | Low | State Machine | ⚠️ Open |
+| **SM-010** | expediteRateLimitedTasks stale snapshot | Low | State Machine | ⚠️ Open |
+| **SM-015** | Deps not rechecked before execution | Low | State Machine | ⚠️ Open |
+| **PR-005** | Output files no fsync/durability guarantee | Low | Persistence | ⚠️ Open |
+| **PR-006** | Stale handle cleanup closes active task handles | Low | Persistence | ⚠️ Open |
+| **PR-007** | Dirty check uses MD5, docs say charCode hash | Low | Persistence | ⚠️ Open |
+| **PR-008** | No protection against future persistence format versions | Low | Persistence | ⚠️ Open |
+| **PR-009** | createOutputFile and appendToOutputFile race | Low | Persistence | ⚠️ Open |
+| **PR-010** | Persistence corruption if JSON serialization throws | Low | Persistence | ⚠️ Open |
+| **PR-011** | writeChain grows unboundedly | Low | Persistence | ⚠️ Open |
+| **PR-013** | lastSerializedHashes never evicted | Low | Persistence | ⚠️ Open |
+| **VE-011** | file:// URI parsing naive | Low | Validation | ⚠️ Open |
+| **VE-012** | Zod schema mismatch: unified vs role-specific | Low | Validation | ⚠️ Open |
+| **VE-013** | Cancel-all race with concurrent spawn | Low | Validation | ⚠️ Open |
+| **VE-014** | No size check on final assembled prompt | Low | Validation | ⚠️ Open |
+| **MS-004** | CancelTask handler non-null assertion | Low | MCP Server | ⚠️ Open |
+| **MS-005** | ListTasks cursor NaN guard | Low | MCP Server | ⚠️ Open |
+| **MS-007** | task:///all pendingQuestion dereference | Low | MCP Server | ⚠️ Open |
+| **MS-010** | Progress bindings not bulk-cleaned on shutdown | Low | MCP Server | ⚠️ Open |
+| **MS-014** | Subscription registry never cleared | Low | MCP Server | ⚠️ Open |
+| **MS-016** | onExecute callback rejection not handled | Low | MCP Server | ⚠️ Open |
+| **MS-017** | stdin handlers registered after server.connect | Low | MCP Server | ⚠️ Open |
+| **MS-018** | uncaughtException handler resets guard | Low | MCP Server | ⚠️ Open |
+| **FB-020** | Snapshot parsing skips `[` and `>` lines | Info | Fallback | ⚠️ Open |
+| **FB-021** | Fallback-orchestrator swallows async errors | Info | Fallback | ⚠️ Open |
+| **FB-022** | Claude fallback minimum 5-minute timeout | Info | Fallback | ⚠️ Open |
+| **CC-007** | rotateToNext concurrency (safe in single-threaded JS) | Info | Concurrency | ⚠️ Open |
+| **RM-014** | rateLimitTimer ref'd | Info | Resources | ⚠️ Open |
+| **RM-015** | Persist debounce timer ref'd | Info | Resources | ⚠️ Open |
+| **VE-015** | Math.random() for task IDs | Info | Validation | ⚠️ Open |
+| **VE-016** | Template cache: no invalidation | Info | Validation | ⚠️ Open |
+| **VE-017** | Question cleanup: double-reject | Info | Validation | ⚠️ Open |
+| **MS-009** | Progress flush timers fire after task deletion | Info | MCP Server | ⚠️ Open |
+| **MS-012** | send_message doesn't inherit original config | Info | MCP Server | ⚠️ Open |
+| **MS-019** | URI parsing doesn't handle Windows file:/// | Info | MCP Server | ⚠️ Open |
+| **MS-020** | session-hooks hardcoded retryCount: 3 | Info | MCP Server | ⚠️ Open |
+| **PR-015** | ensureStorageDir cache invalidation overly broad | Info | Persistence | ⚠️ Open |
+| **PR-016** | knownDirs cache cleared atomically at 500 | Info | Persistence | ⚠️ Open |
 
 ---
 
-## Findings
+## Fixes Applied
 
-> Sorted HIGH → MED → LOW. All line numbers verified against source unless marked UNVERIFIED.
+### Critical Fixes
 
-| # | Severity | File | Lines | Mistake | Impact | Evidence |
-|---|----------|------|-------|---------|--------|----------|
-| 1 | **HIGH** | `output-file.ts` | 230–232 | `closeStaleHandles` unconditionally calls `finalizedKeys.delete(key)` for every stale handle, including completed tasks | Finalization barrier removed; subsequent `appendToOutputFile` calls pass the guard and write after the footer → structurally corrupt output files | `openHandles.delete(key); handleOpenTimes.delete(key); finalizedKeys.delete(key)` — no check whether task was completed |
-| 2 | **HIGH** | `output-file.ts` | 236–238 | `finalizedKeys.clear()` fires unconditionally when `finalizedKeys.size > 1000` | In a server with >1000 lifetime tasks (~10 full-capacity cycles), all finalization barriers are wiped simultaneously; all pending fire-and-forget appends proceed past the guard | `if (finalizedKeys.size > 1000) { finalizedKeys.clear(); }` |
-| 3 | **HIGH** | `sdk-session-adapter.ts` | 262–264, 1000–1028 | `binding.isPaused` guard (set during proactive rotation at quota <1%) silently drops `session.idle`; new session then re-sends the full original task prompt to a fresh session | Complete task re-execution from scratch, double-billing compute and side effects for any task that triggered proactive rotation near completion | `if (binding.isPaused && event.type !== 'session.error') return;` at line 263; handoff sends `currentTask.prompt` verbatim at line 770 |
-| 4 | **HIGH** | `sdk-session-adapter.ts` | 1265–1280 | `session.shutdown` with `shutdownType === 'routine'` and `!binding.isCompleted` hits no branch — neither COMPLETED nor FAILED is set | Task permanently stuck in RUNNING status until TTL eviction (1hr); no output finalization, stall warning fires after 5min | `if (shutdownType === 'error') { FAILED } else if (binding.isCompleted) { unbind }` — no `else` for routine+incomplete |
-| 5 | **HIGH** | `session-snapshot.ts` | 93–131, 199–201 | `pairsFromSessionEvents` handles only `user.message` and `assistant.message`; all `tool.call` and `tool.result` events silently dropped from snapshot. Additionally, snapshot hard-slices mid-word at 20,000 chars | Claude fallback agent has zero visibility of tools already invoked; re-executes all completed tool calls. Truncated prompt may provide syntactically broken task description | `for (const event of events)` loop handles only two `event.type` values; `snapshot.slice(0, MAX_TOTAL_LENGTH - 100)` at line 201 |
-| 6 | **HIGH** | `claude-code-runner.ts`, `process-registry.ts` | 548–568 | `cancelTask` calls `abortController.abort()` without a reason string; `claude-code-runner.ts` checks `reason.toLowerCase().includes('cancel')` — empty string → false → task marked `TIMED_OUT` instead of `CANCELLED` | Every user-initiated cancel of a Claude fallback task has wrong terminal status; MCP clients and orchestrators misread intentional cancels as timeouts | `if (reason.toLowerCase().includes('cancel')) { CANCELLED } else { TIMED_OUT }` at lines 550–567; abort called with no reason |
-| 7 | **MED** | `sdk-session-adapter.ts` | 718–724 | `rebindWithNewSession` copies `outputBuffer` and `reasoningBuffer` by reference from old binding to new binding; fire-and-forget `destroySession` (line 705) creates a window where late events from old session write to the shared buffer | Buffer corruption possible on slow TCP teardown; partial LLM token from old session prepended to new session's response | `outputBuffer: oldBinding.outputBuffer, reasoningBuffer: oldBinding.reasoningBuffer` — same Array object reference |
-| 8 | **MED** | `task-manager.ts` | 1153–1163 | `task.output.push(line)` fires `this.outputCallback?.(id, line)` at 2001 elements **before** `splice(0, excess)` executes; callback (and MCP notification) sees the element that will be immediately removed | MCP notification consumers briefly see content that is no longer in the resource; orchestrators polling `task:///id` may act on ephemeral content | `task.output.push(line); this.outputCallback?.(…); if (task.output.length > MAX) { task.output.splice(0, …) }` |
-| 9 | **MED** | `index.ts` | 580–587 | `task:///all` handler calls `extractMessageStats(task.output)` for **every** task; worst case = 100 tasks × 2000 lines = 200,000 synchronous iterations per request, blocking the event loop | Every `task:///all` poll or subscription refresh stalls all concurrent MCP responses; cascades with un-debounced status-change notifications (finding #10) | `allTasks.map(task => { const stats = extractMessageStats(task.output); ... })` at lines 585–586 |
-| 10 | **MED** | `index.ts` | 159–192, 195–226 | Output notifications debounced to 1/sec per task (line 189 `setTimeout(…, 1000)`); status-change notifications are **not debounced** and call `sendResourceUpdated({ uri: 'task:///all' })` immediately on every transition | Every token rotation (which fires multiple status transitions) immediately triggers a `task:///all` read of 200K lines; CPU spike cascade during high-rotation periods | `taskManager.onStatusChange(…)` directly calls `server.sendResourceUpdated` with no debounce at lines 220–222 |
-| 11 | **MED** | `output-file.ts` | 196–213 | `finalizeOutputFile` uses `enqueueWrite`; `shutdown()` at close calls `closeAllOutputHandles()` which clears `writeQueues` (line 257) before queued finalize writes execute | Output files missing `# Completed` footer under load or on `SIGKILL`; incomplete files indistinguishable from mid-run files | `writeQueues.clear()` in `closeAllOutputHandles` at line 257 races fire-and-forget `finalizeOutputFile` calls |
-| 12 | **MED** | `sdk-session-adapter.ts` | 1113–1118 | `tool.execution_complete` sends fast tools (<100ms) to `appendOutputFileOnly`; grep, cat, head, and most read-only tools execute in <100ms | Tool completions invisible in `task:///id` resource view; orchestrators polling the resource see no evidence of tool execution for the most common tools | `if (duration < 100) { taskManager.appendOutputFileOnly(…) }` at lines 1114–1115 |
-| 13 | **MED** | `claude-code-runner.ts` | 296–304, 427–429 | `text-start` increments `turnCount` on every new text block; structured JSON output or multi-block responses emit a second `[Assistant Turn N]` marker and inflate `turnCount`; `error` part sets `resultError` but `finish` part (lines 421–422) overwrites it with a generic "Claude stream ended with error" string | Inflated turn counts, mismatched execution log; more specific error discarded, harder debugging | `if (!inTextBlock) { turnCount += 1 }` at line 301; `resultError = \`Claude stream ended with error (…)\`` at line 422 |
-| 14 | **MED** | `task-persistence.ts` | 168 | `quickHash` samples only 4 data points: string length + `charCodeAt(0)` + `charCodeAt(length-1)` + `charCodeAt(length>>1)` — weak fingerprint | Two different serialized states with the same length and same characters at those 3 positions skip the disk write; task state lost on crash | `\`${data.length}:${data.charCodeAt(0)}:${data.charCodeAt(data.length-1)}:${data.charCodeAt(data.length>>1)}\`` |
-| 15 | **MED** | `claude-code-runner.ts` | 451–474 | `tool-approval-request` stream part type is not handled in switch and doesn't match the `tool-error` default guard; falls through silently | Tools never execute if permission mode is not `bypassPermissions`; task appears to hang | No `case 'tool-approval-request'` branch; `default:` only handles `tool-error` by type string check |
-| 16 | **LOW** | `index.ts` | 362–364 | `GetTaskPayload` handler returns `isError: task.status !== TaskStatus.COMPLETED`; cancelled tasks return `isError: true` | MCP clients trigger error-handling flows for intentional user cancellations | `isError: task.status !== TaskStatus.COMPLETED` at line 364 covers CANCELLED, TIMED_OUT equally |
-| 17 | **LOW** | `task-persistence.ts` | 13, 16 | `writeChain` and `lastSerializedHash` are module-level singletons, not per-`cwd`; in a multi-`cwd` scenario the second cwd's state is hashed against the first cwd's last serialized data | State silently skipped for all cwds after the first in the write chain | `let writeChain = Promise.resolve()` and `let lastSerializedHash = ''` at module scope lines 13 and 16 |
-| 18 | **LOW** | `task-persistence.ts` | 101–147 | Pass 2 of `recoverOrphanedTasks` guards on `task.status !== TaskStatus.WAITING`; Pass 1 converts all WAITING tasks to FAILED (line 107), so Pass 2's WAITING guard is never true | Dead code creates false confidence in two-pass recovery; any future change to Pass 1 logic may silently break Pass 2 | Pass 1 at line 107: `TaskStatus.WAITING → FAILED`; Pass 2 at line 127: `if (task.status !== TaskStatus.WAITING …) return task` — always true after Pass 1 |
+| ID | Fix Description | File |
+|----|----------------|------|
+| **FB-001** | Changed `DEFAULT_PERMISSION_MODE` from `'bypassPermissions'` to `'plan'` | `src/services/claude-code-runner.ts` |
+| **FB-023** | Added `resetDate` parameter to `TokenState`; propagated SDK quota reset date from session adapter through `rotateToNext()` | `src/services/account-manager.ts` |
+| **CC-001/SM-002** | Added per-task retry lock (`retryInFlight` flag). Both `processRateLimitedTasks` and `triggerManualRetry` now check and set this flag before calling `retryCallback`, preventing duplicate replacement task spawns | `src/services/task-manager.ts` |
 
----
+### High Fixes
 
-### UNVERIFIED Findings
-
-The following Wave-1 findings could not be confirmed from the lines reviewed in this audit. They are retained for completeness:
-
-| # | Severity | Claim | Reason Not Verified |
-|---|----------|-------|-------------------|
-| A4 | MED | Dual 429 detection — spawner uses fragile regex on error message string rather than `event.data.statusCode` | `sdk-spawner.ts:520–530` not read |
-| A6 | MED | PTY FD count via `(entry.client as any).cliProcess?.pid` — silent failure if SDK renames field | `sdk-client-manager.ts:712–730` not read |
-| A7 | MED | TCP mode with OS-assigned port, no `EADDRINUSE` handling | `sdk-client-manager.ts:307–324` not read |
-| A8 | MED | PTY recycle blocked by `entry.sessions.size === 0` guard during long-running tasks | `sdk-client-manager.ts:702–743` not read |
-| A10 | LOW | `onErrorOccurred` in `session-hooks.ts` fires `appendOutput` + `updateTask` for same error as `handleSessionError` | `session-hooks.ts:103–145` not read |
-| D3 | MED | `filterOutputForResource` strips `[assistant] Turn ended` markers that `parseOutputToExecutionLog` depends on | `filterOutputForResource` implementation not read |
+| ID | Fix Description | File |
+|----|----------------|------|
+| **VE-003** | Changed `String.prototype.replace()` to use function replacer: `.replace('{{user_prompt}}', () => userPrompt)` — prevents `$` pattern interpretation | `src/templates/index.ts` |
+| **VE-001** | Added validation that rejects `specialization` values containing `/`, `\`, or `..` | `src/templates/index.ts` |
+| **VE-002** | Added workspace boundary check: paths resolved with `realpath()` and verified against workspace root | `src/utils/brief-validator.ts` |
+| **FB-002** | Expanded rate limit detection from 1 hardcoded string to 5 regex patterns | `src/services/sdk-session-adapter.ts` |
+| **FB-003** | Status code extraction now uses context-aware regex requiring status-code context (e.g., `/\bstatus[:\s]+429\b/i`) | `src/services/sdk-spawner.ts` |
+| **FB-004** | Replaced recursive `attemptRotationAndResume` with iterative loop. `rotationInProgress` stays true for entire loop duration | `src/services/sdk-session-adapter.ts` |
+| **FB-005** | `fallbackAttempted` flag now reset when task transitions from RATE_LIMITED to retry | `src/index.ts` (onRetry callback) |
+| **CC-002** | Added `isUnbound` guard after 7 await points in async event handlers | `src/services/sdk-session-adapter.ts` |
+| **CC-003** | `session.idle` events now blocked while `rotationInProgress` is true | `src/services/sdk-session-adapter.ts` |
+| **CC-009** | Added fresh task status check immediately before destroying zombie sessions | `src/services/sdk-client-manager.ts` |
+| **SM-011** | Added PENDING status check at the start of `runSDKSession` | `src/services/sdk-spawner.ts` |
+| **PR-001** | Added immediate persist (`persistNow()`) for PENDING→RUNNING transitions | `src/services/task-manager.ts` |
+| **PR-002** | `clearAllTasks` now calls `persistNow()` after clearing the tasks map | `src/services/task-manager.ts` |
+| **MS-002** | Added 30-second force-exit timeout on SIGINT/SIGTERM | `src/index.ts` |
+| **MS-015** | Added `isShuttingDown` guard at the top of `processWaitingTasks()` | `src/services/task-manager.ts` |
 
 ---
 
-## Critical Path
+## Remaining Recommendations — Medium Priority
 
-### Fix 1 — Output finalization barriers (Findings #1 + #2, `output-file.ts:232`, `236–238`)
+The following Medium-severity findings are the highest-priority items for future hardening:
 
-These two bugs share a root cause: `closeStaleHandles` treats `finalizedKeys` as a handle-lifetime cache rather than a permanent write barrier. Fix #1 deletes the finalization key when the stale *handle* closes; fix #2 mass-clears all finalization keys. Together they guarantee every completed task will eventually accept post-footer writes, corrupting every `.output` file on a long-running server. Because the `.output` file is the **source of truth** for Claude fallback snapshots (finding #5) and the only record that survives the 2000-line cap eviction, corrupted files cascade into broken context handoffs. The fix is targeted: in `closeStaleHandles`, skip `finalizedKeys.delete(key)` for any key that is not in `openHandles`; and replace `finalizedKeys.clear()` with a LRU eviction of handle-associated keys only.
+### Security Hardening
+- **VE-004** — Read context files during validation (single read) to eliminate TOCTOU window
+- **VE-005** — Add collision-retry loop in `createTask()` for task ID uniqueness
+- **VE-006** — Add `.max(50)` to `sharedDependsOnSchema` to prevent complexity attacks
+- **VE-007** — Validate `cwd` is absolute, exists, and within workspace roots
+- **VE-008/VE-009** — Add max length to answer field and sanitize freeform answers
+- **VE-010** — Use `lstat()` to detect symlinks in context file reads
+- **PR-004** — Use `O_NOFOLLOW` when opening storage directory files
 
-### Fix 2 — Routine shutdown without completion (Finding #4, `sdk-session-adapter.ts:1265–1280`)
+### Reliability Hardening
+- **SM-001/SM-014** — Add terminal status guard to `appendOutput()` to preserve diagnostic data
+- **SM-009** — Don't evict tasks still referenced as dependencies of non-terminal tasks
+- **SM-012** — Add stuck-PENDING detection (timeout or fail on execute error)
+- **FB-006** — Validate session liveness before `send_message` resume
+- **FB-008** — Preserve `retryCount` in `markAsRateLimited`
+- **CC-004** — Destroy new session in rotation error catch block
+- **MS-003** — Guard task creation during shutdown
+- **MS-006/MS-013** — Add error boundaries to MCP request handlers
 
-A task receiving `session.shutdown` with `shutdownType === 'routine'` while `binding.isCompleted === false` stays in `RUNNING` indefinitely. Since this path bypasses `finalizeOutputFile`, the `.output` file also has no footer. The task consumes an in-memory slot until TTL (1hr), blocks the 100-task cap, and its stall-detection alarm fires after 5min creating noise. Adding a single `else` branch that transitions to `COMPLETED` (matching the `handleSessionIdle` pattern at lines 420–444) eliminates all three consequences with zero side effects on the error path.
+### Resource Management
+- **RM-001** — Allow PTY recycler to handle clients with active sessions
+- **RM-002** — Add zombie session escalation on double destroy failure
+- **RM-004** — Close file handle before deleting from tracking on write error
+- **RM-006/MS-001** — Clear `statusUpdateTimers` during shutdown
 
-### Fix 3 — Synchronous 200K-line iteration in `task:///all` + un-debounced status trigger (Findings #9 + #10, `index.ts:580–587`, `195–226`)
+---
 
-Every status change fires an immediate `sendResourceUpdated({ uri: 'task:///all' })` which causes MCP clients to issue a `ReadResource` for `task:///all`, which synchronously scans 100 × 2000 = 200,000 output lines on the event loop. During token rotation—which produces multiple rapid status transitions (RUNNING → RATE_LIMITED → RUNNING)—this creates a CPU cascade that blocks all other MCP responses. The compound fix requires: (a) add the same 1-second debounce to status-change resource notifications that output notifications already have, and (b) move `extractMessageStats` computation out of the per-task map in `task:///all` (replace with a cached field on TaskState updated in `appendOutput`). Either fix alone halves the problem; both together eliminate the cascade.
+## Methodology
+
+### Approach
+Each domain audit was conducted through line-by-line source code analysis with focus on:
+- **Race condition identification**: Tracing all async paths and identifying windows where interleaving could cause incorrect behavior
+- **State machine verification**: Validating all status transitions against `VALID_TRANSITIONS` and checking for gaps
+- **Resource lifecycle tracking**: Following allocation→use→cleanup paths for PTY FDs, file handles, timers, and memory
+- **Input boundary analysis**: Verifying Zod schemas, path handling, and injection vectors
+
+### Severity Definitions
+- **Critical**: Security vulnerability or data corruption with immediate exploitability
+- **High**: Correctness bug causing incorrect behavior under realistic conditions
+- **Medium**: Edge case that can cause issues under specific conditions or degrades reliability
+- **Low**: Defensive coding improvement or minor inconsistency
+- **Info**: Documentation gap, theoretical concern, or by-design behavior worth noting
+
+### Files Audited
+25+ source files across the full `src/` tree, including all services, tools, utilities, templates, and the MCP server entry point. Each file was reviewed in context with its callers and callees.
+
+### Audit Reports
+Detailed per-domain findings with full race scenario analysis, code location references, and recommended fixes are in:
+- [`stability-audit/01-fallback-recovery.md`](stability-audit/01-fallback-recovery.md)
+- [`stability-audit/02-concurrency-async.md`](stability-audit/02-concurrency-async.md)
+- [`stability-audit/03-resource-management.md`](stability-audit/03-resource-management.md)
+- [`stability-audit/04-state-machine.md`](stability-audit/04-state-machine.md)
+- [`stability-audit/05-persistence-recovery.md`](stability-audit/05-persistence-recovery.md)
+- [`stability-audit/06-input-validation.md`](stability-audit/06-input-validation.md)
+- [`stability-audit/07-mcp-server-tools.md`](stability-audit/07-mcp-server-tools.md)

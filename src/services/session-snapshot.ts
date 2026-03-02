@@ -63,8 +63,8 @@ async function parseOutputFile(filePath: string): Promise<MessagePair[]> {
         continue;
       }
 
-      // Skip other system/tool lines
-      if (line.startsWith('[') || line.startsWith('>')) {
+      // FB-020: Skip only known system prefixes (not all lines starting with '[')
+      if (/^\[(session|tool|rate-limit|rotation|quota|metrics|subagent|system|hooks|question)\]/.test(line) || line.startsWith('>')) {
         continue;
       }
 
@@ -75,7 +75,7 @@ async function parseOutputFile(filePath: string): Promise<MessagePair[]> {
     flushTurn();
     return pairs;
   } catch (error) {
-    console.warn(`[session-snapshot] Failed to read output file: ${error}`);
+    console.error(`[session-snapshot] Failed to read output file: ${error}`);
     return [];
   }
 }
@@ -292,7 +292,7 @@ export async function buildHandoffPromptFromSession(
     }
     return snapshot;
   } catch (error) {
-    console.warn(`[session-snapshot] Failed to load session history: ${error}`);
+    console.error(`[session-snapshot] Failed to load session history: ${error}`);
     return await buildHandoffPrompt(task, maxTurns, reason);
   }
 }

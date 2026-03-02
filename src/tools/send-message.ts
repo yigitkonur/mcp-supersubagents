@@ -150,6 +150,16 @@ export async function handleSendMessage(
     );
   }
 
+  // FB-006: Check if session is mid-rotation before attempting resume
+  const { sdkSessionAdapter } = await import('../services/sdk-session-adapter.js');
+  const binding = sdkSessionAdapter.getBinding(taskId);
+  if (binding?.rotationInProgress) {
+    return mcpError(
+      'Task session is currently being rotated to a different account',
+      'Please retry in a few seconds once rotation completes.'
+    );
+  }
+
   const sessionId = task.sessionId;
   const cwd = parsed.cwd || task.cwd || process.cwd();
   const timeout = parsed.timeout || task.timeout;

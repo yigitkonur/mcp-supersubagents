@@ -31,6 +31,14 @@ import type {
 import { taskManager } from './task-manager.js';
 import type { FailureContext } from '../types.js';
 
+/** Per-task retry counters to enforce a finite retry budget across hook invocations. */
+const taskRetryCounters = new Map<string, number>();
+
+/** Reset the retry counter when a task completes or is cancelled. */
+export function clearTaskRetryCounter(taskId: string): void {
+  taskRetryCounters.delete(taskId);
+}
+
 /**
  * Create session hooks for a specific task.
  * These hooks integrate SDK lifecycle events with our task management.
@@ -118,10 +126,12 @@ export function createSessionHooks(taskId: string): SessionHooks {
 
       // Determine error handling strategy
       if (input.recoverable) {
-        // For recoverable errors, suggest retry
+        const current = taskRetryCounters.get(taskId) || 0;
+        const remaining = Math.max(0, 3 - current);
+        taskRetryCounters.set(taskId, current + 1);
         return {
-          errorHandling: 'retry',
-          retryCount: 3,
+          errorHandling: remaining > 0 ? 'retry' : 'abort',
+          retryCount: remaining,
           userNotification: `Recoverable error in ${input.errorContext}: ${errorMsg.slice(0, 100)}`,
         };
       }

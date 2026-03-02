@@ -110,8 +110,8 @@ export async function handleSharedSpawn(
     }
   }
 
-  // 3. Assemble prompt with context file contents
-  const enrichedPrompt = await assemblePromptWithContext(params.prompt, params.context_files);
+  // 3. Assemble prompt with context file contents (uses cached content from validation to avoid TOCTOU)
+  const enrichedPrompt = await assemblePromptWithContext(params.prompt, params.context_files, validation.fileContents);
 
   // 4. Apply matryoshka template (base + specialization overlay)
   const finalPrompt = config.taskType && isValidTaskType(config.taskType)

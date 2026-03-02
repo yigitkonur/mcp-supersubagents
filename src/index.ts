@@ -87,6 +87,9 @@ function isBrokenPipeLikeError(value: unknown): boolean {
 let streamExitInProgress = false;
 let shutdownHandler: ((signal?: string, exitCode?: number) => Promise<void>) | null = null;
 let monitorTimer: NodeJS.Timeout | null = null;
+let isShuttingDown = false;
+let recentExceptionCount = 0;
+let inStatusChangeCallback = false;
 const BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS = (() => {
   const parsed = Number.parseInt(process.env.BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS || '', 10);
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -148,10 +151,18 @@ taskManager.onRetry(async (task) => {
 
 // Register execute callback for waiting tasks (dependencies satisfied)
 taskManager.onExecute(async (task) => {
-  const { executeWaitingTask } = await import('./services/sdk-spawner.js');
+  try {
+    const { executeWaitingTask } = await import('./services/sdk-spawner.js');
 
-  console.error(`[index] Executing waiting task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
-  await executeWaitingTask(task);
+    console.error(`[index] Executing waiting task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
+    await executeWaitingTask(task);
+  } catch (err) {
+    console.error(`[mcp-server] Execute failed for ${task.id}:`, err);
+    taskManager.updateTask(task.id, {
+      status: TaskStatus.FAILED,
+      error: `Execution startup failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
 });
 
 // --- Progress & Resource notification wiring ---
@@ -194,46 +205,52 @@ taskManager.onOutput((taskId, line) => {
 
 // Status changes: task notifications + progress + resource updates
 taskManager.onStatusChange((task, previousStatus) => {
-  // 1. MCP Task status notification
-  const mcpTask = buildMCPTask(task);
-  server.notification({
-    method: 'notifications/tasks/status',
-    params: { ...mcpTask },
-  }).catch(logNotifyError);
+  if (inStatusChangeCallback) return;
+  inStatusChangeCallback = true;
+  try {
+    // 1. MCP Task status notification
+    const mcpTask = buildMCPTask(task);
+    server.notification({
+      method: 'notifications/tasks/status',
+      params: { ...mcpTask },
+    }).catch(logNotifyError);
 
-  // 2. Progress notification for state transition
-  progressRegistry.sendProgress(task.id, `Status: ${previousStatus} → ${task.status}`);
+    // 2. Progress notification for state transition
+    progressRegistry.sendProgress(task.id, `Status: ${previousStatus} → ${task.status}`);
 
-  // 3. Unregister progress on terminal states
-  if (TERMINAL_STATUSES.has(task.status)) {
-    progressRegistry.unregister(task.id);
-  }
-
-  // 4. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
-  const uri = taskIdToUri(task.id);
-  const sessionUri = `${uri}/session`;
-  if (!statusUpdateTimers.has(task.id)) {
-    const needsUpdate = subscriptionRegistry.isSubscribed(uri)
-      || subscriptionRegistry.isSubscribed(sessionUri)
-      || subscriptionRegistry.isSubscribed('task:///all')
-      || subscriptionRegistry.isSubscribed('system:///status');
-    if (needsUpdate) {
-      statusUpdateTimers.set(task.id, setTimeout(() => {
-        statusUpdateTimers.delete(task.id);
-        if (subscriptionRegistry.isSubscribed(uri)) {
-          server.sendResourceUpdated({ uri }).catch(logNotifyError);
-        }
-        if (subscriptionRegistry.isSubscribed(sessionUri)) {
-          server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
-        }
-        if (subscriptionRegistry.isSubscribed('task:///all')) {
-          server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
-        }
-        if (subscriptionRegistry.isSubscribed('system:///status')) {
-          server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
-        }
-      }, 1000).unref());
+    // 3. Unregister progress on terminal states
+    if (TERMINAL_STATUSES.has(task.status)) {
+      progressRegistry.unregister(task.id);
     }
+
+    // 4. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
+    const uri = taskIdToUri(task.id);
+    const sessionUri = `${uri}/session`;
+    if (!statusUpdateTimers.has(task.id)) {
+      const needsUpdate = subscriptionRegistry.isSubscribed(uri)
+        || subscriptionRegistry.isSubscribed(sessionUri)
+        || subscriptionRegistry.isSubscribed('task:///all')
+        || subscriptionRegistry.isSubscribed('system:///status');
+      if (needsUpdate) {
+        statusUpdateTimers.set(task.id, setTimeout(() => {
+          statusUpdateTimers.delete(task.id);
+          if (subscriptionRegistry.isSubscribed(uri)) {
+            server.sendResourceUpdated({ uri }).catch(logNotifyError);
+          }
+          if (subscriptionRegistry.isSubscribed(sessionUri)) {
+            server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
+          }
+          if (subscriptionRegistry.isSubscribed('task:///all')) {
+            server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+          }
+          if (subscriptionRegistry.isSubscribed('system:///status')) {
+            server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
+          }
+        }, 1000).unref());
+      }
+    }
+  } finally {
+    inStatusChangeCallback = false;
   }
 });
 
@@ -246,6 +263,10 @@ taskManager.onTaskCreated(() => {
 taskManager.onTaskDeleted((taskId) => {
   progressRegistry.unregister(taskId);
   subscriptionRegistry.unsubscribe(taskIdToUri(taskId));
+  const resTimer = resourceUpdateTimers.get(taskId);
+  if (resTimer) { clearTimeout(resTimer); resourceUpdateTimers.delete(taskId); }
+  const statTimer = statusUpdateTimers.get(taskId);
+  if (statTimer) { clearTimeout(statTimer); statusUpdateTimers.delete(taskId); }
   server.sendResourceListChanged().catch(logNotifyError);
 });
 
@@ -297,18 +318,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-  const { name, arguments: args } = request.params;
-  const ctx: ToolContext = {
-    progressToken: extra._meta?.progressToken,
-    sendNotification: extra.sendNotification,
-  };
+  if (isShuttingDown) return mcpValidationError('Server is shutting down — request rejected');
+  try {
+    const { name, arguments: args } = request.params;
+    const ctx: ToolContext = {
+      progressToken: extra._meta?.progressToken,
+      sendNotification: extra.sendNotification,
+    };
 
-  switch (name) {
-    case 'spawn_agent': return handleSpawnAgent(args, ctx);
-    case 'send_message': return handleSendMessage(args, ctx);
-    case 'cancel_task': return handleCancelTask(args);
-    case 'answer_question': return handleAnswerQuestion(args);
-    default: return mcpValidationError(`Unknown tool \`${name}\`. Available: spawn_agent, send_message, cancel_task, answer_question.`);
+    switch (name) {
+      case 'spawn_agent': return handleSpawnAgent(args, ctx);
+      case 'send_message': return handleSendMessage(args, ctx);
+      case 'cancel_task': return handleCancelTask(args);
+      case 'answer_question': return handleAnswerQuestion(args);
+      default: return mcpValidationError(`Unknown tool \`${name}\`. Available: spawn_agent, send_message, cancel_task, answer_question.`);
+    }
+  } catch (err) {
+    return mcpValidationError(`Internal error: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
 
@@ -326,6 +352,9 @@ server.setRequestHandler(ListTasksRequestSchema, async (request) => {
   const PAGE_SIZE = 50;
   const allTasks = taskManager.getAllTasks();
   const startIndex = request.params?.cursor ? parseInt(request.params.cursor, 10) : 0;
+  if (Number.isNaN(startIndex) || startIndex < 0) {
+    throw new McpError(ErrorCode.InvalidParams, `Invalid cursor: ${request.params?.cursor}`);
+  }
   const page = allTasks.slice(startIndex, startIndex + PAGE_SIZE);
   return {
     tasks: page.map(buildMCPTask),
@@ -343,7 +372,9 @@ server.setRequestHandler(CancelTaskRequestSchema, async (request) => {
   if (!result.success) {
     throw new McpError(ErrorCode.InvalidParams, result.error || 'Cannot cancel task');
   }
-  return buildMCPTask(taskManager.getTask(taskId)!);
+  const updatedTask = taskManager.getTask(taskId);
+  if (!updatedTask) throw new McpError(ErrorCode.InvalidParams, 'Task was removed during cancel');
+  return buildMCPTask(updatedTask);
 });
 
 // tasks/result — return filtered output as CallToolResult-compatible payload
@@ -547,6 +578,7 @@ function canSendMessage(task: { status: TaskStatus; sessionId?: string }): boole
 }
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  try {
   const uri = request.params.uri;
   
   // Handle system:///status
@@ -613,11 +645,11 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       }),
       pending_questions: allTasks
         .filter(t => t.pendingQuestion)
-        .map(t => ({
-          task_id: t.id,
-          question: t.pendingQuestion!.question,
-          choices: t.pendingQuestion!.choices,
-        })),
+        .map(t => {
+          const q = t.pendingQuestion;
+          if (!q) return null;
+          return { task_id: t.id, question: q.question, choices: q.choices };
+        }).filter(Boolean),
     };
     
     return {
@@ -754,6 +786,9 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       text: JSON.stringify(data),
     }],
   };
+  } catch (err) {
+    throw new McpError(ErrorCode.InternalError, `Resource error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 });
 
 server.setRequestHandler(SubscribeRequestSchema, async (request) => {
@@ -834,16 +869,15 @@ async function main() {
   installStdIoSafetyGuards();
 
   // Graceful shutdown with SDK cleanup (guard against double-shutdown)
-  let isShuttingDown = false;
   const shutdown = async (signal?: string, exitCode = 0) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     const forceExitTimer = setTimeout(() => {
-      console.error('[shutdown] Force exit — cleanup timed out after 30s');
+      try { console.error('[shutdown] Force exit — cleanup timed out after 30s'); } catch { /* stderr broken */ }
       process.exit(exitCode ?? 0);
     }, 30_000);
     forceExitTimer.unref();
-    console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
+    try { console.error(`Shutting down${signal ? ` (${signal})` : ''}...`); } catch { /* stderr broken */ }
     if (monitorTimer) {
       clearInterval(monitorTimer);
       monitorTimer = null;
@@ -868,6 +902,12 @@ async function main() {
     try {
       questionRegistry.cleanup();
     } catch {}
+    try {
+      progressRegistry.clear();
+    } catch {}
+    try {
+      subscriptionRegistry.clear();
+    } catch {}
     clearTimeout(forceExitTimer);
     process.exit(exitCode);
   };
@@ -875,14 +915,15 @@ async function main() {
 
   // STDIO transport (only supported mode)
   const transport = new StdioServerTransport();
-  await server.connect(transport);
 
-  // If the MCP client disconnects, stdin closes; exit to avoid orphaned hot-loop processes.
+  // Register stdin handlers BEFORE connect to avoid missing early disconnects
   const onStdioDisconnected = () => {
     shutdown('stdio_disconnected', 0).catch(() => process.exit(0));
   };
   process.stdin.once('end', onStdioDisconnected);
   process.stdin.once('close', onStdioDisconnected);
+
+  await server.connect(transport);
 
   process.on('SIGINT', () => shutdown('SIGINT', 0));
   process.on('SIGTERM', () => shutdown('SIGTERM', 0));
@@ -911,6 +952,13 @@ async function main() {
       exitOnBrokenPipe('uncaughtException', err);
       return;
     }
+
+    // Rate-limit uncaught exceptions to prevent infinite loops
+    if (++recentExceptionCount > 10) {
+      try { console.error('[fatal] Too many uncaught exceptions — exiting'); } catch { /* stderr broken */ }
+      process.exit(1);
+    }
+    setTimeout(() => { recentExceptionCount = Math.max(0, recentExceptionCount - 1); }, 5000).unref();
 
     // Guard against recursive uncaught-exception loops.
     if (uncaughtExceptionInProgress) {

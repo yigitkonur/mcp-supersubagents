@@ -96,8 +96,16 @@ class ProgressRegistry {
             this.doSend(binding, msg, sendTotal);
           }
         }, THROTTLE_MS);
+        if (binding.flushTimer.unref) binding.flushTimer.unref();
       }
     }
+  }
+
+  clear(): void {
+    for (const [, binding] of this.bindings) {
+      if (binding.flushTimer) clearTimeout(binding.flushTimer);
+    }
+    this.bindings.clear();
   }
 
   private doSend(binding: ProgressBinding, message: string, total?: number): void {

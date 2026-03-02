@@ -21,6 +21,9 @@ const finalizedKeys = new Set<string>();
 // Track when each handle was opened for stale handle cleanup
 const handleOpenTimes = new Map<string, number>();
 
+// Track last successful write time per handle for stale detection (PR-006)
+const handleLastWriteTime = new Map<string, number>();
+
 // Prevent concurrent opens from racing on the same key
 const pendingOpens = new Map<string, Promise<FileHandle>>();
 
@@ -124,12 +127,17 @@ export async function createOutputFile(cwd: string, taskId: string): Promise<str
     const header = `# Task: ${taskId}\n# Started: ${new Date().toISOString()}\n# Working directory: ${cwd}\n${'─'.repeat(60)}\n\n`;
     // Use a+ and only write header when file is empty to avoid truncating
     // lines that may have been appended concurrently by appendToOutputFile.
+    // PR-009: If the file already has content (race with append), the size > 0
+    // check intentionally skips the header — this is safe and by design.
     const handle = await open(outputPath, 'a+', 0o600);
-    const fileStat = await handle.stat();
-    if (fileStat.size === 0) {
-      await handle.write(header);
+    try {
+      const fileStat = await handle.stat();
+      if (fileStat.size === 0) {
+        await handle.write(header);
+      }
+    } finally {
+      await handle.close().catch(() => {});
     }
-    await handle.close();
     return outputPath;
   } catch (error) {
     console.error(`[output-file] Failed to create output file: ${error}`);
@@ -163,14 +171,20 @@ export async function appendToOutputFile(cwd: string, taskId: string, line: stri
       }
 
       await handle.write(line + '\n');
+      handleLastWriteTime.set(key, Date.now());
       return true;
     });
   } catch {
     // Don't break task execution for file I/O issues
-    // Remove broken handle so next call re-opens
+    // RM-004: Close broken handle before discarding reference
+    const brokenHandle = openHandles.get(key);
     openHandles.delete(key);
     handleOpenTimes.delete(key);
+    handleLastWriteTime.delete(key);
     pendingOpens.delete(key);
+    if (brokenHandle) {
+      brokenHandle.close().catch(() => {});
+    }
     if (!warnedTasks.has(key)) {
       warnedTasks.add(key);
       console.error(`[output-file] Write failed for ${key} (further errors suppressed)`);
@@ -218,7 +232,9 @@ export async function finalizeOutputFile(cwd: string, taskId: string, status: st
 export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
   const now = Date.now();
   for (const [key, openedAt] of handleOpenTimes) {
-    if (now - openedAt > maxAgeMs) {
+    // PR-006: Prefer last-write time for staleness; fall back to open time
+    const lastActive = handleLastWriteTime.get(key) ?? openedAt;
+    if (now - lastActive > maxAgeMs) {
       const handle = openHandles.get(key);
       if (handle) {
         try {
@@ -229,8 +245,12 @@ export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
       }
       openHandles.delete(key);
       handleOpenTimes.delete(key);
+      handleLastWriteTime.delete(key);
     }
   }
+  // RM-008: Bound warnedTasks set to prevent unbounded growth
+  if (warnedTasks.size > 500) warnedTasks.clear();
+
   // Cap finalizedKeys growth: remove entries for tasks with no open handle (fully done)
   if (finalizedKeys.size > 1000) {
     let toRemove = finalizedKeys.size - 900;
@@ -263,6 +283,7 @@ export async function closeAllOutputHandles(): Promise<void> {
     openHandles.delete(key);
   }
   handleOpenTimes.clear();
+  handleLastWriteTime.clear();
   warnedTasks.clear();
   pendingOpens.clear();
   writeQueues.clear();
@@ -271,12 +292,13 @@ export async function closeAllOutputHandles(): Promise<void> {
 // Periodic stale handle cleanup — runs every 60s, closes handles open > 5min
 const STALE_HANDLE_CHECK_INTERVAL = 60_000;
 const STALE_HANDLE_MAX_AGE = 5 * 60_000;
-const staleHandleTimer = setInterval(() => {
+let staleHandleTimer: NodeJS.Timeout | undefined;
+staleHandleTimer = setInterval(() => {
   closeStaleHandles(STALE_HANDLE_MAX_AGE).catch(() => {});
 }, STALE_HANDLE_CHECK_INTERVAL);
 staleHandleTimer.unref(); // Don't prevent Node.js from exiting
 
 export async function shutdownOutputFileCleanup(): Promise<void> {
-  clearInterval(staleHandleTimer);
+  if (staleHandleTimer) clearInterval(staleHandleTimer);
   await closeAllOutputHandles();
 }

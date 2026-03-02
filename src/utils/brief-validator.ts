@@ -1,4 +1,4 @@
-import { access, stat, readFile, realpath, constants } from 'fs/promises';
+import { access, stat, lstat, readFile, realpath, constants } from 'fs/promises';
 import { extname, isAbsolute } from 'path';
 
 // --- Validation rule types ---
@@ -17,6 +17,7 @@ export interface ValidationError {
 export interface ValidationResult {
   valid: boolean;
   errors: ValidationError[];
+  fileContents?: Map<string, string>;
 }
 
 interface ToolValidationRules {
@@ -153,6 +154,7 @@ export async function validateBrief(
   if (!rules) return { valid: true, errors: [] };
 
   const errors: ValidationError[] = [];
+  const fileContents = new Map<string, string>();
 
   // 1. Prompt length check
   if (prompt.length < rules.minPromptLength) {
@@ -235,6 +237,20 @@ export async function validateBrief(
       }
     }
 
+    // VE-010: Symlink check — reject symlinks for context files
+    try {
+      const lstats = await lstat(file.path);
+      if (lstats.isSymbolicLink()) {
+        errors.push({
+          code: 'SYMLINK_NOT_ALLOWED',
+          message: `File "${file.path}" is a symlink — symlinks are not allowed for context files`,
+        });
+        continue;
+      }
+    } catch {
+      // lstat failed — let subsequent checks handle it
+    }
+
     // Size check
     try {
       const fileStat = await stat(file.path);
@@ -254,6 +270,21 @@ export async function validateBrief(
       });
       continue;
     }
+
+    // VE-004: Read file content at validation time to avoid TOCTOU
+    try {
+      const content = await readFile(file.path, 'utf-8');
+      if (content.length > rules.maxFileSizeBytes) {
+        errors.push({
+          code: 'FILE_TOO_LARGE',
+          message: `FILE TOO LARGE: "${file.path}" content is ${Math.round(content.length / 1024)}KB (max: ${Math.round(rules.maxFileSizeBytes / 1024)}KB)`,
+        });
+        continue;
+      }
+      fileContents.set(file.path, content);
+    } catch {
+      // readFile failed — already validated access above, treat as non-fatal
+    }
   }
 
   // Total size check
@@ -265,7 +296,7 @@ export async function validateBrief(
     });
   }
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, fileContents };
 }
 
 // --- Error message formatting ---
@@ -302,7 +333,7 @@ export function formatValidationError(toolName: string, errors: ValidationError[
 
 // --- Context file content assembly ---
 
-export async function assemblePromptWithContext(prompt: string, contextFiles?: ContextFile[]): Promise<string> {
+export async function assemblePromptWithContext(prompt: string, contextFiles?: ContextFile[], cachedContents?: Map<string, string>): Promise<string> {
   if (!contextFiles || contextFiles.length === 0) return prompt;
 
   const sections: string[] = [prompt, '', '---', '', '## 📎 ATTACHED CONTEXT FILES', ''];
@@ -315,7 +346,8 @@ export async function assemblePromptWithContext(prompt: string, contextFiles?: C
     sections.push('');
 
     try {
-      const content = await readFile(file.path, 'utf-8');
+      // VE-004: Use pre-read cached content when available to avoid TOCTOU
+      const content = cachedContents?.get(file.path) ?? await readFile(file.path, 'utf-8');
       // Truncate if over limit (should be caught by validation, but safety net)
       const truncated = content.length > MAX_FILE_SIZE
         ? content.slice(0, MAX_FILE_SIZE) + '\n\n[... TRUNCATED — file exceeds 200KB limit ...]'

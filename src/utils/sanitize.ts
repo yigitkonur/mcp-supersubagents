@@ -11,7 +11,7 @@ import {
 
 const sharedTimeoutSchema = z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).default(TASK_TIMEOUT_DEFAULT_MS).optional();
 const sharedModelSchema = z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional();
-const sharedDependsOnSchema = z.array(z.string().min(1)).optional();
+const sharedDependsOnSchema = z.array(z.string().min(1)).max(50).optional();
 const sharedLabelsSchema = z.array(z.string().min(1).max(50)).max(10).optional();
 
 const contextFileSchema = z.object({
@@ -24,7 +24,7 @@ const contextFileSchema = z.object({
 export const SpawnTaskSchema = z.object({
   prompt: z.string().min(1).max(50000),
   timeout: sharedTimeoutSchema,
-  cwd: z.string().optional(),
+  cwd: z.string().regex(/^\//, 'cwd must be an absolute path').optional(),
   model: sharedModelSchema,
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
   autonomous: z.boolean().default(true).optional(),

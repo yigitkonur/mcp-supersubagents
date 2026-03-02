@@ -74,6 +74,7 @@ class QuestionRegistry {
       const timeoutId = setTimeout(() => {
         this.handleTimeout(taskId);
       }, QUESTION_TIMEOUT_MS);
+      if (timeoutId.unref) timeoutId.unref();
 
       const binding: QuestionBinding = {
         taskId,
@@ -224,7 +225,10 @@ class QuestionRegistry {
       if (!trimmedAnswer) {
         return { valid: false, error: 'Answer cannot be empty.' };
       }
-      return { valid: true, answer: trimmedAnswer, wasFreeform: true };
+      // VE-009: Strip control characters for freeform answers
+      // eslint-disable-next-line no-control-regex
+      const sanitized = trimmedAnswer.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+      return { valid: true, answer: sanitized, wasFreeform: true };
     }
 
     // Not allowed
@@ -347,6 +351,7 @@ class QuestionRegistry {
    */
   cleanup(): void {
     for (const [taskId, binding] of this.bindings) {
+      binding.settled = true;
       clearTimeout(binding.timeoutId);
       binding.reject(new Error('Server shutdown'));
     }

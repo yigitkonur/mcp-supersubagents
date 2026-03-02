@@ -12,7 +12,7 @@ import { mcpText, mcpError } from '../utils/format.js';
 
 const AnswerQuestionSchema = z.object({
   task_id: z.string().min(1).describe('Task ID with pending question'),
-  answer: z.string().min(1).describe('Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"'),
+  answer: z.string().min(1).max(10000).describe('Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"'),
 });
 
 export const answerQuestionTool = {

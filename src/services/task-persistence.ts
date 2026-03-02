@@ -15,6 +15,10 @@ const writeChains = new Map<string, Promise<void>>();
 // Dirty tracking: skip writes when serialized data hasn't changed (per cwd/filePath)
 const lastSerializedHashes = new Map<string, string>();
 
+// PR-011: Write coalescing — collapse rapid writes to at most 2 per filePath
+const writeInProgressSet = new Set<string>();
+const writePendingArgs = new Map<string, { cwd: string; tasks: TaskState[]; cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }> }>();
+
 /**
  * Get the storage directory path (~/.super-agents/)
  */
@@ -72,7 +76,19 @@ interface PersistedData {
 }
 
 function serializeTasks(tasks: TaskState[], cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>): string {
-  const serializable = tasks.map(task => {
+  // PR-010: Safe per-task serialization — exclude tasks that fail to serialize
+  const safeTasks = tasks.filter(task => {
+    try {
+      const { session, ...rest } = task;
+      JSON.stringify(rest);
+      return true;
+    } catch {
+      console.error(`[task-persistence] Task ${task.id} not serializable — excluded`);
+      return false;
+    }
+  });
+
+  const serializable = safeTasks.map(task => {
     // Exclude session reference as it's non-serializable
     const { session, ...rest } = task;
     return rest;
@@ -106,6 +122,20 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
       return applyTaskDefaults(task);
     }
     if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING || task.status === TaskStatus.WAITING) {
+      // PR-012: For WAITING tasks, check if deps are all satisfied → promote to PENDING
+      if (task.status === TaskStatus.WAITING && task.dependsOn) {
+        const allDepsSatisfied = task.dependsOn.every((depId: string) => {
+          const dep = tasks.find(t => t.id === depId);
+          return dep && dep.status === TaskStatus.COMPLETED;
+        });
+        if (allDepsSatisfied) {
+          return applyTaskDefaults({
+            ...task,
+            status: TaskStatus.PENDING,
+          });
+        }
+      }
+
       const prevStatus = task.status;
       return applyTaskDefaults({
         ...task,
@@ -127,50 +157,76 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
  */
 export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>): Promise<boolean> {
   const filePath = getStoragePath(cwd);
-  return new Promise<boolean>((resolve) => {
-    const chain = writeChains.get(filePath) ?? Promise.resolve();
-    writeChains.set(filePath, chain.then(async () => {
-      if (!(await ensureStorageDir())) {
-        resolve(false);
-        return;
-      }
 
-      const tempPath = `${filePath}.tmp.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  // PR-011: Write coalescing — if a write is in progress, mark pending and return
+  if (writeInProgressSet.has(filePath)) {
+    writePendingArgs.set(filePath, { cwd, tasks, cooldowns });
+    return true;
+  }
 
-      try {
-        const data = serializeTasks(tasks, cooldowns);
+  writeInProgressSet.add(filePath);
 
-        // Skip write if data hasn't changed (dirty check via length + hash)
-        const quickHash = createHash('md5').update(data).digest('hex');
-        if (quickHash === lastSerializedHashes.get(filePath)) {
-          resolve(true);
+  try {
+    return await new Promise<boolean>((resolve) => {
+      const chain = writeChains.get(filePath) ?? Promise.resolve();
+      writeChains.set(filePath, chain.then(async () => {
+        if (!(await ensureStorageDir())) {
+          resolve(false);
           return;
         }
 
-        // Atomic write: open with restrictive perms, fsync, then rename
-        const fd = await openFile(tempPath, 'w', 0o600);
-        await fd.writeFile(data, 'utf-8');
-        await fd.datasync();
-        await fd.close();
-        await rename(tempPath, filePath);
-        lastSerializedHashes.set(filePath, quickHash);
+        const tempPath = `${filePath}.tmp.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-        resolve(true);
-      } catch (error) {
-        console.error(`[task-persistence] Failed to save tasks: ${error}`);
-        storageDirExists = false; // Force re-check next time
-
-        // Clean up temp file if it exists
         try {
-          await unlink(tempPath);
-        } catch {
-          // Ignore cleanup errors
-        }
+          const data = serializeTasks(tasks, cooldowns);
 
-        resolve(false);
-      }
-    }).catch(() => resolve(false)));
-  });
+          // Skip write if data hasn't changed (dirty check via length + hash)
+          const quickHash = createHash('md5').update(data).digest('hex');
+          if (quickHash === lastSerializedHashes.get(filePath)) {
+            resolve(true);
+            return;
+          }
+
+          // Atomic write: open with restrictive perms, fsync, then rename
+          const fd = await openFile(tempPath, 'w', 0o600);
+          await fd.writeFile(data, 'utf-8');
+          await fd.datasync();
+          await fd.close();
+          await rename(tempPath, filePath);
+          lastSerializedHashes.set(filePath, quickHash);
+
+          // PR-013: Evict stale hash entries to prevent unbounded growth
+          if (lastSerializedHashes.size > 50) {
+            for (const key of lastSerializedHashes.keys()) {
+              if (!writeChains.has(key)) lastSerializedHashes.delete(key);
+            }
+          }
+
+          resolve(true);
+        } catch (error) {
+          console.error(`[task-persistence] Failed to save tasks: ${error}`);
+          storageDirExists = false; // Force re-check next time
+
+          // Clean up temp file if it exists
+          try {
+            await unlink(tempPath);
+          } catch {
+            // Ignore cleanup errors
+          }
+
+          resolve(false);
+        }
+      }).catch(() => resolve(false)));
+    });
+  } finally {
+    writeInProgressSet.delete(filePath);
+    // PR-011: If a write was queued while we were writing, run it now
+    const pending = writePendingArgs.get(filePath);
+    if (pending) {
+      writePendingArgs.delete(filePath);
+      saveTasks(pending.cwd, pending.tasks, pending.cooldowns).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -224,6 +280,12 @@ export async function loadTasks(cwd: string): Promise<{ tasks: TaskState[]; cool
         await rename(filePath, backupPath);
         console.error(`[task-persistence] Corrupted file backed up to ${backupPath}`);
       } catch { /* best effort */ }
+      return { tasks: [], cooldowns: undefined };
+    }
+
+    // PR-008: Version guard for future formats
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.version && parsed.version > 2) {
+      console.error(`[task-persistence] Persistence file version ${parsed.version} is newer than supported (2). Data may be corrupted — please upgrade or delete ${filePath}`);
       return { tasks: [], cooldowns: undefined };
     }
 

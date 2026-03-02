@@ -142,6 +142,11 @@ class AccountManager {
         for (let i = 0; i < this.tokens.length; i++) {
           const state = this.tokens[i];
           if (!state.failedAt) {
+            if (i !== this.currentIndex) {
+              this.rotationCount++;
+              this.lastRotationTime = new Date();
+              console.error(`[account-manager] Shadow rotation: token #${this.currentIndex + 1} → #${i + 1} (in cooldown)`);
+            }
             this.currentIndex = i;
             return state.token;
           }
@@ -153,11 +158,21 @@ class AccountManager {
               state.resetDate = undefined;
               state.failureReason = undefined;
               state.failureCount = 0;
+              if (i !== this.currentIndex) {
+                this.rotationCount++;
+                this.lastRotationTime = new Date();
+                console.error(`[account-manager] Shadow rotation: token #${this.currentIndex + 1} → #${i + 1} (reset date elapsed)`);
+              }
               this.currentIndex = i;
               return state.token;
             }
           }
           if ((now - state.failedAt) >= FAILED_TOKEN_COOLDOWN_MS) {
+            if (i !== this.currentIndex) {
+              this.rotationCount++;
+              this.lastRotationTime = new Date();
+              console.error(`[account-manager] Shadow rotation: token #${this.currentIndex + 1} → #${i + 1} (cooldown expired)`);
+            }
             this.currentIndex = i;
             return state.token;
           }
