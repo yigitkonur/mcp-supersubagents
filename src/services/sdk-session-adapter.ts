@@ -776,8 +776,10 @@ class SDKSessionAdapter {
     oldBinding: SessionBinding,
     newSession: CopilotSession
   ): Promise<boolean> {
-    // Unsubscribe from old session and destroy it to release PTY FDs (RC-3 fix)
-    oldBinding.isUnbound = true;
+    // Unsubscribe from old session events and destroy it to release PTY FDs (RC-3 fix)
+    // Note: we do NOT set oldBinding.isUnbound = true here — it's the same reference as
+    // the `binding` in attemptRotationAndResume's while loop, and setting it would break
+    // the retry loop if this rebind fails. We set it only after successful send below.
     oldBinding.unsubscribe();
     sdkClientManager.destroySession(oldBinding.sessionId).catch((err) => {
       console.error(`[sdk-session-adapter] Failed to destroy old session ${oldBinding.sessionId} during rebind:`, err);
@@ -861,6 +863,10 @@ class SDKSessionAdapter {
       await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
       return false;
     }
+
+    // Only mark old binding as unbound after successful send — safe to do now
+    // since the retry loop will not re-enter (we're returning true).
+    oldBinding.isUnbound = true;
     return true;
   }
 

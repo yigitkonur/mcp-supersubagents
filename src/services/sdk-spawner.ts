@@ -11,6 +11,7 @@
 
 import type { SessionConfig, CopilotSession } from '@github/copilot-sdk';
 import { existsSync } from 'fs';
+import path from 'path';
 import { realpath as realpathAsync } from 'fs/promises';
 import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
@@ -187,7 +188,9 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     try {
       const resolvedCwd = await realpathAsync(options.cwd);
       const resolvedRoot = await realpathAsync(workspaceRoot);
-      if (resolvedCwd.startsWith(resolvedRoot + '/') || resolvedCwd === resolvedRoot) {
+      const relativePath = path.relative(resolvedRoot, resolvedCwd);
+      const isWithin = resolvedCwd === resolvedRoot || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+      if (isWithin) {
         cwd = options.cwd;
       } else {
         console.error(`[sdk-spawner] CWD "${options.cwd}" is outside workspace root "${workspaceRoot}", using workspace root`);

@@ -214,12 +214,14 @@ export async function finalizeOutputFile(cwd: string, taskId: string, status: st
       await handle.close();
       openHandles.delete(key);
       handleOpenTimes.delete(key);
+      handleLastWriteTime.delete(key);
       pendingOpens.delete(key);
       return true;
     });
   } catch {
     openHandles.delete(key);
     handleOpenTimes.delete(key);
+    handleLastWriteTime.delete(key);
     pendingOpens.delete(key);
     writeQueues.delete(key);
     return false;

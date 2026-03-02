@@ -650,7 +650,8 @@ class SDKClientManager {
 
           taskManager.appendOutput(ownerTaskId, `[system] Session appears stalled (${Math.round(inactiveMs / 60000)}min without output). Destroying zombie session.`);
           
-          // Destroy the zombie session
+          // Destroy the zombie session — save reference before removing from tracking
+          const zombieSession = entry.sessions.get(sessionId);
           entry.sessions.delete(sessionId);
           this.sessionOwners.delete(sessionId);
           questionRegistry.clearQuestion(ownerTaskId, 'zombie session swept');
@@ -661,7 +662,14 @@ class SDKClientManager {
               `delete zombie session ${sessionId}`,
             );
           } catch {
-            // Best effort
+            // deleteSession failed — fall back to destroySessionWithRetry (same pattern as stale-session path)
+            if (zombieSession) {
+              try {
+                await destroySessionWithRetry(zombieSession, sessionId, DESTROY_SESSION_TIMEOUT_MS);
+              } catch {
+                console.error(`[sdk-client-manager] WARNING: Zombie session ${sessionId} survived both delete and destroy`);
+              }
+            }
           }
           
           // Mark the task as failed so it can be retried
