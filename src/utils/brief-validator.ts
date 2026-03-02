@@ -153,6 +153,7 @@ export const VALIDATION_RULES: Record<string, ToolValidationRules> = {
   'spawn_planner': PLANNER_RULES,
   'spawn_tester': TESTER_RULES,
   'spawn_researcher': RESEARCHER_RULES,
+  'spawn_general': GENERAL_RULES,
   // spawn_agent delegates to these by role name
   'coder': CODER_RULES,
   'planner': PLANNER_RULES,

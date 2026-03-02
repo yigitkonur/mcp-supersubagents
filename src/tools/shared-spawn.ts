@@ -87,7 +87,7 @@ export function createSpawnHandler<T extends SharedSpawnParams>(
 }
 
 /**
- * Shared spawn handler used by all 4 specialized tools.
+ * Shared spawn handler used by all 5 specialized roles.
  * Performs: brief validation → context file assembly → template application → task spawn.
  */
 export async function handleSharedSpawn(

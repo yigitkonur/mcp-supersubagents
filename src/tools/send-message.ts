@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { taskManager, isSessionActive } from '../services/task-manager.js';
+import { taskManager } from '../services/task-manager.js';
 import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { progressRegistry } from '../services/progress-registry.js';
 import { sdkClientManager } from '../services/sdk-client-manager.js';
