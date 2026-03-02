@@ -61,6 +61,7 @@ test-results/
 # ============================================
 .super-agents/
 .agent-workspace/
+.agents/
 .windsurf/
 
 # ============================================
@@ -85,7 +86,15 @@ test-brief.md
 *.sync-conflict-*
 
 # ============================================
+# Local dev tooling configs
+# ============================================
+jean.json
+mcp_servers.json
+worktree-init.sh
+
+# ============================================
 # Misc runtime artifacts
 # ============================================
 *.tgz
 private/
+lorem.txt
