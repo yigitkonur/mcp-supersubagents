@@ -47,6 +47,13 @@ Check pending questions via resource \`task:///all\`.`,
     },
     required: ['task_id', 'answer'],
   },
+  annotations: {
+    title: 'Answer Question',
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
 };
 
 export async function handleAnswerQuestion(args: unknown): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {

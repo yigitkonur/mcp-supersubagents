@@ -107,6 +107,16 @@ export const spawnAgentTool = {
     },
     required: ['role', 'prompt'],
   },
+  annotations: {
+    title: 'Spawn Agent',
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+  execution: {
+    taskSupport: 'forbidden',
+  },
 };
 
 // --- Handler ---

@@ -25,6 +25,8 @@ import { buildMCPTask } from './services/task-status-mapper.js';
 import { progressRegistry } from './services/progress-registry.js';
 import { subscriptionRegistry, taskIdToUri, uriToTaskId } from './services/subscription-registry.js';
 import { questionRegistry } from './services/question-registry.js';
+import { abortAllFallbackSessions } from './services/claude-code-runner.js';
+import { processRegistry } from './services/process-registry.js';
 import { mcpText, mcpValidationError } from './utils/format.js';
 import { TaskStatus } from './types.js';
 import type { ToolContext } from './types.js';
@@ -41,7 +43,6 @@ const server = new Server(
       tasks: {
         list: {},
         cancel: {},
-        requests: { tools: { call: {} } },
       },
       resources: {
         subscribe: true,
@@ -85,6 +86,14 @@ function isBrokenPipeLikeError(value: unknown): boolean {
 
 let streamExitInProgress = false;
 let shutdownHandler: ((signal?: string, exitCode?: number) => Promise<void>) | null = null;
+let monitorTimer: NodeJS.Timeout | null = null;
+const BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS = (() => {
+  const parsed = Number.parseInt(process.env.BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS || '', 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 15_000;
+})();
 
 function exitOnBrokenPipe(source: string, value: unknown): void {
   if (streamExitInProgress || !isBrokenPipeLikeError(value)) return;
@@ -98,7 +107,7 @@ function exitOnBrokenPipe(source: string, value: unknown): void {
 
   if (shutdownHandler) {
     // Ensure we never hang indefinitely during cleanup on a broken transport.
-    const forceExitTimer = setTimeout(() => process.exit(0), 5000);
+    const forceExitTimer = setTimeout(() => process.exit(0), BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS);
     forceExitTimer.unref();
 
     shutdownHandler(`broken_pipe:${source}`, 0)
@@ -160,18 +169,24 @@ taskManager.onOutput((taskId, line) => {
 
   // 2. Debounced resource updated notification (max 1/sec per task)
   const uri = taskIdToUri(taskId);
+  const sessionUri = `${uri}/session`;
   if (!resourceUpdateTimers.has(taskId)) {
-    const needsUpdate = subscriptionRegistry.isSubscribed(uri) || subscriptionRegistry.isSubscribed('task:///all');
+    const needsUpdate = subscriptionRegistry.isSubscribed(uri)
+      || subscriptionRegistry.isSubscribed(sessionUri)
+      || subscriptionRegistry.isSubscribed('task:///all');
     if (needsUpdate) {
       resourceUpdateTimers.set(taskId, setTimeout(() => {
         resourceUpdateTimers.delete(taskId);
         if (subscriptionRegistry.isSubscribed(uri)) {
           server.sendResourceUpdated({ uri }).catch(logNotifyError);
         }
+        if (subscriptionRegistry.isSubscribed(sessionUri)) {
+          server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
+        }
         if (subscriptionRegistry.isSubscribed('task:///all')) {
           server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
         }
-      }, 1000));
+      }, 1000).unref());
     }
   }
 });
@@ -195,8 +210,12 @@ taskManager.onStatusChange((task, previousStatus) => {
 
   // 4. Resource updated notification (if subscribed)
   const uri = taskIdToUri(task.id);
+  const sessionUri = `${uri}/session`;
   if (subscriptionRegistry.isSubscribed(uri)) {
     server.sendResourceUpdated({ uri }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed(sessionUri)) {
+    server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
   }
   if (subscriptionRegistry.isSubscribed('task:///all')) {
     server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
@@ -342,7 +361,7 @@ server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
   }
   return {
     content: [{ type: 'text' as const, text }],
-    isError: task.status === TaskStatus.FAILED,
+    isError: task.status !== TaskStatus.COMPLETED,
   };
 });
 
@@ -511,7 +530,7 @@ function extractMessageStats(output: string[]): {
 
 // Helper: Check if task can receive messages
 function canSendMessage(task: { status: TaskStatus; sessionId?: string }): boolean {
-  const allowedStatuses = [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RATE_LIMITED, TaskStatus.TIMED_OUT];
+  const allowedStatuses = [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.RATE_LIMITED, TaskStatus.TIMED_OUT, TaskStatus.CANCELLED];
   return !!(task.sessionId && allowedStatuses.includes(task.status));
 }
 
@@ -755,8 +774,18 @@ questionRegistry.onQuestionAsked((taskId, question) => {
 
   // Send resource update for subscribed clients
   const uri = taskIdToUri(taskId);
+  const sessionUri = `${uri}/session`;
   if (subscriptionRegistry.isSubscribed(uri)) {
     server.sendResourceUpdated({ uri }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed(sessionUri)) {
+    server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed('task:///all')) {
+    server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+  }
+  if (subscriptionRegistry.isSubscribed('system:///status')) {
+    server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
   }
 });
 
@@ -798,12 +827,26 @@ async function main() {
     if (isShuttingDown) return;
     isShuttingDown = true;
     console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
+    if (monitorTimer) {
+      clearInterval(monitorTimer);
+      monitorTimer = null;
+    }
+    for (const timer of resourceUpdateTimers.values()) {
+      clearTimeout(timer);
+    }
+    resourceUpdateTimers.clear();
+    try {
+      abortAllFallbackSessions(`Server shutdown${signal ? ` (${signal})` : ''}`);
+    } catch {}
     try {
       await taskManager.shutdown();
       await shutdownSDK();
     } catch (err) {
       console.error('Shutdown error:', err);
     }
+    try {
+      questionRegistry.cleanup();
+    } catch {}
     process.exit(exitCode);
   };
   shutdownHandler = shutdown;
@@ -821,6 +864,9 @@ async function main() {
 
   process.on('SIGINT', () => shutdown('SIGINT', 0));
   process.on('SIGTERM', () => shutdown('SIGTERM', 0));
+  process.on('exit', () => {
+    processRegistry.killAllSync();
+  });
 
   // Log unhandled errors but do NOT crash — crashing kills the MCP transport.
   // Task-level error handling already catches most issues; crashing here would
@@ -866,7 +912,7 @@ async function main() {
   });
 
   // Periodic session leak detection (every 5 min)
-  const monitorTimer = setInterval(() => {
+  monitorTimer = setInterval(() => {
     const stats = getSDKStats();
     if (stats.bindings > 0 || stats.sessions > 0) {
       console.error(

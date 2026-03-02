@@ -31,14 +31,18 @@ export const cancelTaskTool = {
 - Cancel many: \`{ "task_id": ["abc", "def", "ghi"] }\`
 - Clear all: \`{ "task_id": "all", "clear": true, "confirm": true }\`
 
-Running/pending tasks are killed (SIGTERM). Completed/failed tasks are removed from memory.
+Running/pending/waiting/rate-limited tasks are killed (SIGTERM). Completed/failed tasks are removed from memory.
 Use MCP Resources to check task status: read \`task:///all\` or \`task:///{id}\`.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
-        type: 'string',
-        description: 'Task ID to cancel, or "all" to clear workspace.',
+        type: ['string', 'array'],
+        minLength: 1,
+        items: { type: 'string', minLength: 1 },
+        minItems: 1,
+        maxItems: 50,
+        description: 'Task ID, array of task IDs, or "all" to clear workspace.',
       },
       clear: {
         type: 'boolean',
@@ -66,6 +70,7 @@ interface CancelResult {
   previous_status?: string;
   error?: string;
   outputFilePath?: string;
+  already_dead?: boolean;
 }
 
 export async function handleCancelTask(args: unknown): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
@@ -98,9 +103,10 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
     }
     
     // Normalize to array
-    const taskIds = Array.isArray(parsed.task_id) 
+    const normalizedTaskIds = Array.isArray(parsed.task_id)
       ? parsed.task_id.map(id => id.toLowerCase().trim())
       : [parsed.task_id.toLowerCase().trim()];
+    const taskIds = [...new Set(normalizedTaskIds)];
     
     // Process each task
     const results: CancelResult[] = await Promise.all(taskIds.map(async (taskId) => {
@@ -120,6 +126,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
           success: true, 
           previous_status: previousStatus,
           outputFilePath,
+          already_dead: cancelResult.alreadyDead,
         };
       } else {
         return { 
@@ -140,7 +147,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       const result = results[0];
       if (result.success) {
         const parts: (string | null)[] = [
-          `✅ **Task cancelled**`,
+          result.already_dead ? `✅ **Task already finished**` : `✅ **Task cancelled**`,
           `task_id: \`${result.task_id}\``,
           `previous_status: ${displayStatus(result.previous_status!)}`,
           result.outputFilePath ? `output_file: \`${result.outputFilePath}\`` : null,
@@ -151,7 +158,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       } else {
         return mcpError(
           `Failed to cancel **${result.task_id}**: ${result.error}`,
-          'Only running/pending/waiting tasks can be cancelled. Check task:///all for status.'
+          'Only running/pending/waiting/rate-limited tasks can be cancelled. Check task:///all for status.'
         );
       }
     }
