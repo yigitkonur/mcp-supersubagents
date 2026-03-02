@@ -273,6 +273,8 @@ export interface TaskState {
   pendingQuestion?: PendingQuestion;
   /** Path to live output file for agent monitoring */
   outputFilePath?: string;
+  /** Incrementally updated message stats (avoids full output scan) */
+  cachedStats?: { round: number; lastUserMessage?: string; totalMessages: number; };
 }
 
 export interface SpawnOptions {

@@ -1,0 +1,148 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "triggerOnUpdates": false,
+  "ignorePatterns": "build/**\nnode_modules/**\npnpm-lock.yaml\n*.d.ts\n*.tsbuildinfo\n.super-agents/**\n.claude/**\n.agents/**\n.windsurf/**\n.git/**\nscripts/**\njean.json\nmcp_servers.json\nworktree-init.sh\nskills-lock.json\n*.log\ncoverage/**\ntest-results/**",
+  "excludeAuthors": ["dependabot[bot]", "renovate[bot]", "github-actions[bot]"],
+  "includeBranches": ["main"],
+  "fileChangeLimit": 50,
+  "rules": [
+    {
+      "id": "stdio-no-console-log",
+      "rule": "Never use console.log, console.warn, console.info, or console.debug anywhere in the codebase. All logging must use console.error (stderr). This is an MCP server using STDIO transport — any stdout output corrupts the JSON-RPC protocol framing and breaks the client connection. This is the single most common cause of 'MCP connection broken' bugs.",
+      "scope": ["src/**/*.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "state-mutation-object-assign",
+      "rule": "Task state updates in TaskManager must use Object.assign(task, updates) for in-place mutation. Never replace the object with spread syntax like this.tasks.set(id, { ...task, ...updates }). appendOutput() holds a direct reference to the task object in the Map — replacing the object causes appendOutput to push to a stale copy, silently losing output data.",
+      "scope": ["src/services/task-manager.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "output-trim-splice-not-slice",
+      "rule": "Output arrays must be trimmed in-place with splice(0, excess), never with slice(-limit). slice() creates a new array and breaks the live object reference that appendOutput() and other consumers hold. The same principle applies to any mutable array on TaskState that is accessed by reference.",
+      "scope": ["src/services/task-manager.ts", "src/services/output-file.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "async-boolean-guard",
+      "rule": "Async methods that must not run concurrently (rate-limit processing, shutdown, cleanup, clearing) must use a boolean guard: check the flag before entering, set it before the first await, and clear it in a finally block. Missing guards cause re-entrant execution that corrupts shared state. See existing patterns: isProcessingRateLimits, isClearing, isShuttingDown, rotationInProgress.",
+      "scope": ["src/services/**/*.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "write-chain-serialization",
+      "rule": "Disk writes to persistence files and output files must be serialized through a write chain (writeChain = writeChain.then(...)) or per-key write queue (enqueueWrite). Concurrent writes to the same file cause data corruption or partial writes. Never use raw fs.writeFile without going through the serialization layer.",
+      "scope": ["src/services/task-persistence.ts", "src/services/output-file.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "state-machine-valid-transitions",
+      "rule": "Task status changes must go through the VALID_TRANSITIONS map. Never set task.status directly — always use taskManager.updateTask() which validates the transition. Illegal transitions (e.g., COMPLETED -> RUNNING) must be logged and rejected, not thrown. Terminal statuses (COMPLETED, FAILED, CANCELLED, TIMED_OUT) accept no further transitions.",
+      "scope": ["src/services/task-manager.ts", "src/services/**/*.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "session-id-task-id-mapping",
+      "rule": "After token rotation rebind, the session ID changes and no longer equals the task ID. Always use sdkClientManager.sessionOwners map to resolve taskId from sessionId. Never assume session ID and task ID are equal — this assumption breaks after any rotation and causes sweepers, zombie detectors, and question cleanup to target the wrong task.",
+      "scope": ["src/services/sdk-client-manager.ts", "src/services/sdk-session-adapter.ts", "src/services/sdk-spawner.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "path-traversal-prevention",
+      "rule": "When accepting file paths or working directories from tool parameters, resolve with realpath and verify the resolved path starts with the workspace root (resolvedCwd.startsWith(resolvedRoot + '/') || resolvedCwd === resolvedRoot). Reject paths outside the workspace boundary. Never pass user-provided paths directly to fs operations without containment validation.",
+      "scope": ["src/services/sdk-spawner.ts", "src/tools/**/*.ts", "src/utils/brief-validator.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "zod-input-validation",
+      "rule": "All MCP tool handlers must validate input using the Zod schema from src/utils/sanitize.ts. The Zod schema must exactly match the inputSchema advertised in the tool definition. Schema mismatches cause silent failures where valid-looking requests fail at runtime. When adding a new field to a tool, update both the Zod schema and the tool's inputSchema.",
+      "scope": ["src/tools/**/*.ts", "src/utils/sanitize.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "error-handling-three-tier",
+      "rule": "Follow the three-tier error handling model: (1) Swallow in cleanup/shutdown paths that must not block forward progress (try-catch with empty/comment-only catch). (2) Log and continue with console.error('[service-name] ...') for non-critical failures in event handlers and health checks. (3) Propagate via throw or return { success: false } at API boundaries where the caller needs to know. Never mix tiers — cleanup code must not throw, API boundaries must not swallow.",
+      "scope": ["src/**/*.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "idempotent-cleanup",
+      "rule": "Cleanup and unbind operations must be idempotent — safe to call multiple times. Use a guard flag (e.g., isUnbound) that is checked at the top and set before the first operation. The second call should be a no-op. This prevents double-free errors during concurrent shutdown paths.",
+      "scope": ["src/services/sdk-session-adapter.ts", "src/services/process-registry.ts", "src/services/output-file.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "kill-escalation-protocol",
+      "rule": "Process termination must follow the kill escalation protocol: (1) session.abort() with 5s timeout, (2) abortController.abort(), (3) SIGTERM to PID, (4) wait 3 seconds, (5) SIGKILL if still alive. Never skip directly to SIGKILL — it prevents graceful cleanup. Guard all signal operations with hasValidPid() since fallback sessions may have only an AbortController and no PID.",
+      "scope": ["src/services/process-registry.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "no-secrets-in-output",
+      "rule": "Never log PAT tokens, API keys, or full credential values to stderr or task output. When logging token-related events (rotation, exhaustion, cooldown), log the token index or a masked suffix only. Secrets must never appear in MCP resource responses (task:///*, system:///status).",
+      "scope": ["src/services/account-manager.ts", "src/services/sdk-spawner.ts", "src/index.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "singleton-module-scope",
+      "rule": "Services must be instantiated once at module scope and exported as a named constant (e.g., export const taskManager = new TaskManager()). Services import each other's singletons directly. Break circular dependencies with lazy await import() inside methods, not at module scope. Never create multiple instances of a service — shared state would diverge.",
+      "scope": ["src/services/**/*.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "dependency-cycle-detection",
+      "rule": "Task dependencies must be validated with DFS cycle detection at both spawn time and runtime. The cycle detector must treat terminal tasks as leaf nodes (completed deps don't create false cycles). Self-dependencies and duplicate dep IDs must be rejected. processWaitingTasks() must re-check for runtime deadlocks on every status change.",
+      "scope": ["src/services/task-manager.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "template-build-sync",
+      "rule": "When adding, renaming, or removing .mdx template files in src/templates/ or src/templates/overlays/, the build script in package.json must be updated to copy them to build/templates/. TypeScript's tsc only compiles .ts files — .mdx files are not included in the build output automatically. Missing templates cause fallback to raw user prompts without the matryoshka system prompt.",
+      "scope": ["src/templates/**/*.mdx", "package.json"],
+      "severity": "medium"
+    },
+    {
+      "id": "planner-always-opus",
+      "rule": "The super-planner role must always use claude-opus-4.6 regardless of the model parameter passed by the caller. resolveModel() enforces this — do not bypass it for planner tasks. If you see a planner task using a non-Opus model, it's a bug.",
+      "scope": ["src/models.ts", "src/tools/spawn-agent.ts", "src/tools/shared-spawn.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "tcp-not-stdio-for-sdk",
+      "rule": "CopilotClient must be created with useStdio: false (TCP mode). macOS has stdio pipe race conditions that cause session hangs. Never switch to stdio mode for the Copilot SDK client — this was a deliberate architectural decision to work around a platform-specific bug.",
+      "scope": ["src/services/sdk-client-manager.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "brief-validation-per-role",
+      "rule": "Brief validation requirements differ by role: coder requires min 1000 chars and at least 1 context file with .md extension; planner requires min 300 chars with no context file requirement; tester requires min 300 chars and at least 1 context file; researcher requires min 200 chars with no context file requirement. When modifying role requirements, update both the Zod schema in sanitize.ts and the validation logic in brief-validator.ts.",
+      "scope": ["src/utils/brief-validator.ts", "src/utils/sanitize.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "mcp-response-format",
+      "rule": "Tool handler responses must use the mcpText() or mcpValidationError() helpers from src/utils/format.ts. Success responses return { content: [{ type: 'text', text: string }] }. Error responses must include isError: true. Never return raw strings, unstructured objects, or objects missing the content array — these break MCP client parsing.",
+      "scope": ["src/tools/**/*.ts", "src/index.ts"],
+      "severity": "high"
+    },
+    {
+      "id": "no-any-except-sdk-casts",
+      "rule": "Do not use 'any' type. Use 'unknown' with type guards instead. The only exception is (part as any) casts in claude-code-runner.ts where the AI SDK provider type union doesn't expose stream part properties consistently across versions. If you need a cast elsewhere, add a comment explaining why the type system can't express the constraint.",
+      "scope": ["src/**/*.ts"],
+      "severity": "medium"
+    },
+    {
+      "id": "fallback-single-flight",
+      "rule": "The Claude fallback orchestrator must prevent multiple fallback attempts for the same task. Check task.fallbackAttempted before initiating fallback — if already attempted, return false immediately. Double fallbacks waste resources and can cause duplicate output.",
+      "scope": ["src/services/fallback-orchestrator.ts", "src/services/exhaustion-fallback.ts"],
+      "severity": "medium"
+    }
+  ],
+  "statusCheck": true,
+  "updateExistingSummaryComment": true,
+  "includeConfidenceScore": true,
+  "summarySection": { "included": true, "collapsible": true, "defaultOpen": true },
+  "issuesTableSection": { "included": true, "collapsible": true, "defaultOpen": false }
+}

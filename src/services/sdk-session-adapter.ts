@@ -260,7 +260,7 @@ class SDKSessionAdapter {
     }
 
     // Skip events if session is paused (during rotation)
-    if (binding.isPaused && event.type !== 'session.error') {
+    if (binding.isPaused && event.type !== 'session.error' && event.type !== 'session.idle') {
       return;
     }
 
@@ -720,8 +720,8 @@ class SDKSessionAdapter {
       session: newSession,
       sessionId: newSession.sessionId,
       unsubscribe: () => {},
-      outputBuffer: oldBinding.outputBuffer,
-      reasoningBuffer: oldBinding.reasoningBuffer,
+      outputBuffer: [...oldBinding.outputBuffer],
+      reasoningBuffer: [...oldBinding.reasoningBuffer],
       lastMessageId: oldBinding.lastMessageId,
       startTime: oldBinding.startTime,
       isCompleted: false,
@@ -1112,7 +1112,7 @@ class SDKSessionAdapter {
         metrics.successCount++;
         // Trivial tools (<100ms): compact single line to in-memory, verbose to file
         if (duration < 100) {
-          taskManager.appendOutputFileOnly(taskId, `[tool] Completed: ${metrics.toolName} (${duration}ms)`);
+          taskManager.appendOutput(taskId, `[tool] ${metrics.toolName} (${duration}ms)`);
         } else {
           taskManager.appendOutput(taskId, `[tool] ${metrics.toolName} (${duration}ms)`);
         }
@@ -1276,6 +1276,16 @@ class SDKSessionAdapter {
       this.unbind(taskId);
     } else if (binding.isCompleted) {
       // Session shut down normally after completion — ensure cleanup
+      this.unbind(taskId);
+    } else {
+      // Routine shutdown but task not yet marked completed — complete it now
+      binding.isCompleted = true;
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.COMPLETED,
+        endTime: new Date().toISOString(),
+        exitCode: 0,
+        session: undefined,
+      });
       this.unbind(taskId);
     }
   }

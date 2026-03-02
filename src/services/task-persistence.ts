@@ -9,11 +9,11 @@ const STORAGE_DIR_NAME = '.super-agents';
 // Cache to avoid repeated mkdir calls
 let storageDirExists = false;
 
-// Write mutex to serialize concurrent saveTasks calls
-let writeChain = Promise.resolve();
+// Write mutex to serialize concurrent saveTasks calls (per cwd/filePath)
+const writeChains = new Map<string, Promise<void>>();
 
-// Dirty tracking: skip writes when serialized data hasn't changed
-let lastSerializedHash = '';
+// Dirty tracking: skip writes when serialized data hasn't changed (per cwd/filePath)
+const lastSerializedHashes = new Map<string, string>();
 
 /**
  * Get the storage directory path (~/.super-agents/)
@@ -99,8 +99,9 @@ function applyTaskDefaults(task: TaskState): TaskState {
 }
 
 function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
-  // Pass 1: Recover RUNNING/PENDING → FAILED, keep RATE_LIMITED
-  const pass1 = tasks.map(task => {
+  // All non-terminal tasks (RUNNING, PENDING, WAITING) → FAILED on restart
+  // RATE_LIMITED tasks are preserved for retry
+  return tasks.map(task => {
     if (task.status === TaskStatus.RATE_LIMITED) {
       return applyTaskDefaults(task);
     }
@@ -119,54 +120,29 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
     }
     return applyTaskDefaults(task);
   });
-
-  // Pass 2: Fail WAITING tasks whose dependencies are now all terminal/missing
-  // (they can never be satisfied since no process will complete their deps)
-  const taskMap = new Map(pass1.map(t => [t.id, t]));
-  return pass1.map(task => {
-    if (task.status !== TaskStatus.WAITING || !task.dependsOn?.length) return task;
-
-    const hasViableDep = task.dependsOn.some(depId => {
-      const dep = taskMap.get(depId);
-      // A dep is viable if it exists and is in a non-terminal, non-waiting state
-      // After pass1, only RATE_LIMITED and COMPLETED survive as non-terminal
-      return dep && (dep.status === TaskStatus.COMPLETED || dep.status === TaskStatus.RATE_LIMITED);
-    });
-
-    if (!hasViableDep) {
-      return {
-        ...task,
-        status: TaskStatus.FAILED,
-        endTime: new Date().toISOString(),
-        error: 'Server restarted - dependencies cannot be satisfied',
-        timeoutReason: 'server_restart' as const,
-        timeoutContext: { detectedBy: 'startup_recovery' as const },
-      };
-    }
-    return task;
-  });
 }
 
 /**
  * Save tasks to disk with atomic write (async)
  */
 export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>): Promise<boolean> {
+  const filePath = getStoragePath(cwd);
   return new Promise<boolean>((resolve) => {
-    writeChain = writeChain.then(async () => {
+    const chain = writeChains.get(filePath) ?? Promise.resolve();
+    writeChains.set(filePath, chain.then(async () => {
       if (!(await ensureStorageDir())) {
         resolve(false);
         return;
       }
 
-      const filePath = getStoragePath(cwd);
       const tempPath = `${filePath}.tmp.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
       try {
         const data = serializeTasks(tasks, cooldowns);
 
         // Skip write if data hasn't changed (dirty check via length + hash)
-        const quickHash = `${data.length}:${data.charCodeAt(0)}:${data.charCodeAt(data.length - 1)}:${data.charCodeAt(data.length >> 1)}`;
-        if (quickHash === lastSerializedHash) {
+        const quickHash = createHash('md5').update(data).digest('hex');
+        if (quickHash === lastSerializedHashes.get(filePath)) {
           resolve(true);
           return;
         }
@@ -177,7 +153,7 @@ export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Arr
         await fd.datasync();
         await fd.close();
         await rename(tempPath, filePath);
-        lastSerializedHash = quickHash;
+        lastSerializedHashes.set(filePath, quickHash);
 
         resolve(true);
       } catch (error) {
@@ -193,7 +169,7 @@ export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Arr
 
         resolve(false);
       }
-    }).catch(() => resolve(false));
+    }).catch(() => resolve(false)));
   });
 }
 

@@ -418,7 +418,7 @@ export async function runClaudeCodeSession(
             if (typeof maybeDuration === 'number') providerDurationMs = maybeDuration;
           }
 
-          if ((part as any).finishReason?.unified === 'error') {
+          if ((part as any).finishReason?.unified === 'error' && !resultError) {
             resultError = `Claude stream ended with error (${(part as any).finishReason?.raw ?? 'unknown'})`;
           }
           break;
@@ -446,6 +446,11 @@ export async function runClaudeCodeSession(
             const filePart = part as Record<string, unknown>;
             taskManager.appendOutput(taskId, `[file] ${filePart.mimeType ?? 'unknown'}`);
           }
+          break;
+
+        case 'tool-approval-request':
+          // Auto-approve: the server runs in bypass-permissions mode
+          console.error(`[claude-code-runner] Received tool-approval-request for task ${taskId} (auto-approve mode — no action needed)`);
           break;
 
         default:

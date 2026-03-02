@@ -1151,15 +1151,35 @@ class TaskManager {
         task.timeoutContext = undefined;
       }
       task.output.push(line);
+      
+      if (task.output.length > MAX_OUTPUT_LINES) {
+        task.output.splice(0, task.output.length - MAX_OUTPUT_LINES);
+      }
+
+      // Update cached stats incrementally
+      if (!task.cachedStats) {
+        task.cachedStats = { round: 0, totalMessages: 0 };
+      }
+      if (line.startsWith('--- Turn ') || line.includes('[assistant] Message complete') || line.includes('[turn]')) {
+        task.cachedStats.round++;
+        task.cachedStats.totalMessages++;
+      }
+      if (line.includes('[user]') || line.includes('[prompt]') || line.includes('Sending prompt:')) {
+        const msgMatch = line.match(/(?:\[user\]|\[prompt\]|Sending prompt:)\s*(.+)/);
+        if (msgMatch) {
+          task.cachedStats.lastUserMessage = msgMatch[1].slice(0, 100) + (msgMatch[1].length > 100 ? '...' : '');
+          task.cachedStats.totalMessages++;
+        }
+      }
+      if (line.includes('[tool] Starting:')) {
+        task.cachedStats.totalMessages++;
+      }
+
       try { this.outputCallback?.(id, line); } catch {}
 
       // Write to output file for live monitoring (async, fire-and-forget)
       if (task.cwd) {
         appendToOutputFile(task.cwd, task.id, line).catch(() => {});
-      }
-      
-      if (task.output.length > MAX_OUTPUT_LINES) {
-        task.output.splice(0, task.output.length - MAX_OUTPUT_LINES);
       }
       
       if (!task.sessionId) {

@@ -1,0 +1,36 @@
+{
+  "files": [
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "description": "System architecture with state diagrams, protocol flow, rate-limit handling strategy, and component breakdown. Essential context for understanding service boundaries and the spawn-to-completion lifecycle."
+    },
+    {
+      "path": "CLAUDE.md",
+      "description": "Project conventions: singleton pattern, in-place mutation rules, async race prevention patterns, three-tier error handling, state machine transitions, token rotation flow, kill escalation protocol, template system, and critical gotchas. Read before reviewing any PR."
+    },
+    {
+      "path": "src/types.ts",
+      "description": "Core type definitions: TaskState, TaskStatus enum, shared interfaces, error classification constants (ROTATABLE_STATUS_CODES). Defines the data model that all services share.",
+      "scope": ["src/**/*.ts"]
+    },
+    {
+      "path": "src/models.ts",
+      "description": "Model ID definitions, ENABLE_OPUS visibility control, resolveModel() logic including the planner-always-Opus override. Review when model selection or role dispatch changes.",
+      "scope": ["src/models.ts", "src/tools/**/*.ts"]
+    },
+    {
+      "path": "src/utils/sanitize.ts",
+      "description": "Zod v4 schemas for all tool inputs. Shared field schemas (timeout, model, depends_on, labels, context files) and per-role schemas. The source of truth for input validation — must match tool inputSchema definitions.",
+      "scope": ["src/tools/**/*.ts", "src/utils/**/*.ts"]
+    },
+    {
+      "path": "src/config/timeouts.ts",
+      "description": "Timeout constants and environment variable reading. Defines task timeout, stall warning, TTL, and broken pipe exit thresholds.",
+      "scope": ["src/config/**/*.ts", "src/services/**/*.ts"]
+    },
+    {
+      "path": "README.md",
+      "description": "User-facing tool reference, resource URI specs, agent template descriptions, workflows, and troubleshooting. Useful for verifying that code changes align with documented behavior."
+    }
+  ]
+}

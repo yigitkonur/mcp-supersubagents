@@ -157,6 +157,7 @@ taskManager.onExecute(async (task) => {
 // --- Progress & Resource notification wiring ---
 
 const resourceUpdateTimers = new Map<string, NodeJS.Timeout>();
+const statusUpdateTimers = new Map<string, NodeJS.Timeout>();
 
 const logNotifyError = process.env.DEBUG_NOTIFICATIONS
   ? (e: unknown) => console.error('[notify]', e instanceof Error ? e.message : e)
@@ -208,20 +209,31 @@ taskManager.onStatusChange((task, previousStatus) => {
     progressRegistry.unregister(task.id);
   }
 
-  // 4. Resource updated notification (if subscribed)
+  // 4. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
   const uri = taskIdToUri(task.id);
   const sessionUri = `${uri}/session`;
-  if (subscriptionRegistry.isSubscribed(uri)) {
-    server.sendResourceUpdated({ uri }).catch(logNotifyError);
-  }
-  if (subscriptionRegistry.isSubscribed(sessionUri)) {
-    server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
-  }
-  if (subscriptionRegistry.isSubscribed('task:///all')) {
-    server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
-  }
-  if (subscriptionRegistry.isSubscribed('system:///status')) {
-    server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
+  if (!statusUpdateTimers.has(task.id)) {
+    const needsUpdate = subscriptionRegistry.isSubscribed(uri)
+      || subscriptionRegistry.isSubscribed(sessionUri)
+      || subscriptionRegistry.isSubscribed('task:///all')
+      || subscriptionRegistry.isSubscribed('system:///status');
+    if (needsUpdate) {
+      statusUpdateTimers.set(task.id, setTimeout(() => {
+        statusUpdateTimers.delete(task.id);
+        if (subscriptionRegistry.isSubscribed(uri)) {
+          server.sendResourceUpdated({ uri }).catch(logNotifyError);
+        }
+        if (subscriptionRegistry.isSubscribed(sessionUri)) {
+          server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
+        }
+        if (subscriptionRegistry.isSubscribed('task:///all')) {
+          server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+        }
+        if (subscriptionRegistry.isSubscribed('system:///status')) {
+          server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
+        }
+      }, 1000).unref());
+    }
   }
 });
 
@@ -361,7 +373,7 @@ server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
   }
   return {
     content: [{ type: 'text' as const, text }],
-    isError: task.status !== TaskStatus.COMPLETED,
+    isError: task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.CANCELLED,
   };
 });
 
@@ -583,7 +595,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const data = {
       count: allTasks.length,
       tasks: allTasks.map(task => {
-        const stats = extractMessageStats(task.output);
+        const stats = task.cachedStats || { round: 0, totalMessages: 0 };
         return {
           id: task.id,
           status: task.status,

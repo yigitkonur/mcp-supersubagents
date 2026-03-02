@@ -132,7 +132,8 @@ export function applyTemplate(taskType: TaskType, userPrompt: string, specializa
     // Map task type to overlay prefix: super-coder -> coder, super-planner -> planner
     const overlayPrefix = taskType.replace('super-', '');
     const overlayPath = join(__dirname, 'overlays', `${overlayPrefix}-${specialization}.mdx`);
-    overlay = loadFile(overlayPath) || '';
+    // Fallback: try bare {specialization}.mdx (cross-role overlays like arabic-answer)
+    overlay = loadFile(overlayPath) || loadFile(join(__dirname, 'overlays', `${specialization}.mdx`)) || '';
   }
 
   // Combine base + overlay

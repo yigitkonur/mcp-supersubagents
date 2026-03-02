@@ -129,6 +129,22 @@ function pairsFromSessionEvents(events: SessionEvent[]): MessagePair[] {
       }
       flush();
     }
+
+    if (event.type === 'tool.execution_start') {
+      const d = event.data as Record<string, unknown>;
+      const toolName = String(d.toolName ?? d.name ?? 'unknown');
+      pendingAssistant += `\n[Used tool: ${toolName}]`;
+      continue;
+    }
+
+    if (event.type === 'tool.execution_complete') {
+      const d = event.data as Record<string, unknown>;
+      const toolName = String(d.toolName ?? d.name ?? 'unknown');
+      const result = (d.result as Record<string, unknown>)?.content ?? d.output ?? '';
+      const truncResult = typeof result === 'string' ? result.slice(0, 500) : JSON.stringify(result).slice(0, 500);
+      pendingAssistant += `\n[Tool result (${toolName}): ${truncResult}]`;
+      continue;
+    }
   }
 
   flush();
@@ -198,7 +214,15 @@ export async function buildHandoffPrompt(task: TaskState, maxTurns: number = MAX
   // Join and enforce total length limit
   const snapshot = parts.join('\n');
   if (snapshot.length > MAX_TOTAL_LENGTH) {
-    return snapshot.slice(0, MAX_TOTAL_LENGTH - 100) + '\n\n...[context truncated]\n\nPlease continue working on the original task.';
+    const cutoff = MAX_TOTAL_LENGTH - 100;
+    let breakPoint = snapshot.lastIndexOf('\n', cutoff);
+    if (breakPoint < cutoff * 0.8) {
+      breakPoint = snapshot.lastIndexOf(' ', cutoff);
+    }
+    if (breakPoint < cutoff * 0.8) {
+      breakPoint = cutoff;
+    }
+    return snapshot.slice(0, breakPoint) + '\n\n...[context truncated]\n\nPlease continue working on the original task.';
   }
 
   return snapshot;
@@ -256,7 +280,15 @@ export async function buildHandoffPromptFromSession(
 
     const snapshot = parts.join('\n');
     if (snapshot.length > MAX_TOTAL_LENGTH) {
-      return snapshot.slice(0, MAX_TOTAL_LENGTH - 100) + '\n\n...[context truncated]\n\nPlease continue working on the original task.';
+      const cutoff = MAX_TOTAL_LENGTH - 100;
+      let breakPoint = snapshot.lastIndexOf('\n', cutoff);
+      if (breakPoint < cutoff * 0.8) {
+        breakPoint = snapshot.lastIndexOf(' ', cutoff);
+      }
+      if (breakPoint < cutoff * 0.8) {
+        breakPoint = cutoff;
+      }
+      return snapshot.slice(0, breakPoint) + '\n\n...[context truncated]\n\nPlease continue working on the original task.';
     }
     return snapshot;
   } catch (error) {

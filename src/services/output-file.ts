@@ -229,12 +229,18 @@ export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
       }
       openHandles.delete(key);
       handleOpenTimes.delete(key);
-      finalizedKeys.delete(key);
     }
   }
-  // Cap finalizedKeys to prevent unbounded growth from tasks without handles
+  // Cap finalizedKeys growth: remove entries for tasks with no open handle (fully done)
   if (finalizedKeys.size > 1000) {
-    finalizedKeys.clear();
+    let toRemove = finalizedKeys.size - 900;
+    for (const fk of finalizedKeys) {
+      if (toRemove <= 0) break;
+      if (!openHandles.has(fk) && !writeQueues.has(fk)) {
+        finalizedKeys.delete(fk);
+        toRemove--;
+      }
+    }
   }
 }
 
@@ -242,6 +248,12 @@ export async function closeStaleHandles(maxAgeMs: number): Promise<void> {
  * Close all open file handles (called during shutdown)
  */
 export async function closeAllOutputHandles(): Promise<void> {
+  // Drain all pending write queues before closing handles
+  const pendingWrites = Array.from(writeQueues.values());
+  if (pendingWrites.length > 0) {
+    await Promise.allSettled(pendingWrites);
+  }
+
   for (const [key, handle] of openHandles) {
     try {
       await handle.close();
@@ -252,7 +264,6 @@ export async function closeAllOutputHandles(): Promise<void> {
   }
   handleOpenTimes.clear();
   warnedTasks.clear();
-  finalizedKeys.clear();
   pendingOpens.clear();
   writeQueues.clear();
 }

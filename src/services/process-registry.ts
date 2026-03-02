@@ -98,7 +98,7 @@ export class ProcessRegistry {
     // Signal the AbortController if present
     if (abortController) {
       try {
-        abortController.abort();
+        abortController.abort('cancelled');
         handledWithoutSignal = true;
       } catch {}
     }
@@ -161,7 +161,7 @@ export class ProcessRegistry {
         log(`killAll: sent SIGTERM to pid=${entry.pid} task=${entry.taskId}`);
       }
       if (entry.abortController) {
-        try { entry.abortController.abort(); } catch {}
+        try { entry.abortController.abort('cancelled'); } catch {}
       }
     }
 
@@ -219,7 +219,7 @@ export class ProcessRegistry {
 
     for (const entry of entries) {
       if (entry.abortController) {
-        try { entry.abortController.abort(); } catch {}
+        try { entry.abortController.abort('cancelled'); } catch {}
       }
       if (!this.hasValidPid(entry.pid)) {
         continue;
