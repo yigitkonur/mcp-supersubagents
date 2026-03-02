@@ -93,6 +93,20 @@ mcp_servers.json
 worktree-init.sh
 
 # ============================================
+# Audit / analysis artifacts (generated, not source)
+# ============================================
+stability-audit/
+deep-dive-audit/
+CLAUDE.md.bak.old
+arabic-answer-invocation.txt
+
+# ============================================
+# Local MCP / skills config
+# ============================================
+mcp-config.json
+skills-lock.json
+
+# ============================================
 # Misc runtime artifacts
 # ============================================
 *.tgz
