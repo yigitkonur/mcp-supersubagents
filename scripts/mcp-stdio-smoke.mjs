@@ -140,7 +140,6 @@ async function spawnAndWait(client, cwd, index, prompt, taskTimeoutMs, waitTimeo
       prompt,
       cwd,
       timeout: taskTimeoutMs,
-      autonomous: true,
       model: 'claude-haiku-4.5',
       labels: ['mcp-smoke', `case-${index}`],
     },

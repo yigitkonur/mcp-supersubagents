@@ -24,6 +24,7 @@ export const ALL_ACCEPTED_MODELS: string[] = [
   'claude-haiku-4.5',
   'opus', // alias for claude-opus-4.6
   'sonnet', // alias for claude-sonnet-4.6
+  'claude-sonnet-4.5', // backward compat alias
 ];
 
 /**
@@ -41,8 +42,8 @@ export function resolveModel(requested?: string, taskType?: string): ModelId {
   // 'opus' alias and 'claude-opus-4.6' always bypass ENABLE_OPUS
   if (requested === 'opus' || requested === 'claude-opus-4.6') return OPUS_MODEL;
 
-  // 'sonnet' alias
-  if (requested === 'sonnet' || requested === 'claude-sonnet-4.6') return DEFAULT_MODEL;
+  // 'sonnet' alias + backward compat for old name
+  if (requested === 'sonnet' || requested === 'claude-sonnet-4.6' || requested === 'claude-sonnet-4.5') return DEFAULT_MODEL;
 
   if ((Object.keys(MODELS) as ModelId[]).includes(requested as ModelId)) return requested as ModelId;
   return DEFAULT_MODEL;

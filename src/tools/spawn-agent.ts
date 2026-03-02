@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../models.js';
-import { CODER_LANGUAGES, PLANNING_TYPES, TESTING_TYPES, RESEARCH_TYPES } from '../utils/sanitize.js';
 import { handleSharedSpawn, type SharedSpawnParams, type SpawnToolConfig } from './shared-spawn.js';
 import type { TaskType } from '../templates/index.js';
 import { REASONING_EFFORTS, type ToolContext, type ReasoningEffort } from '../types.js';
