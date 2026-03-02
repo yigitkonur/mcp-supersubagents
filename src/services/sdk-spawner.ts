@@ -163,11 +163,10 @@ function ensureRotationCallbackRegistered(): void {
 
 /**
  * Resolve effective agent mode from options.
- * Priority: explicit mode > enable_fleet legacy flag > default (fleet).
+ * Priority: explicit mode > default (fleet).
  */
-function resolveMode(options: Pick<SpawnOptions, 'mode' | 'enableFleet'>): AgentMode {
+function resolveMode(options: Pick<SpawnOptions, 'mode'>): AgentMode {
   if (options.mode) return options.mode;
-  if (options.enableFleet) return 'fleet';
   return DEFAULT_AGENT_MODE; // 'fleet'
 }
 
@@ -204,7 +203,6 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
 
   // Create the task in the task manager
   const task = taskManager.createTask(prompt, cwd, model, {
-    autonomous: options.autonomous ?? true,
     isResume: !!options.resumeSessionId,
     retryInfo: options.retryInfo,
     dependsOn: options.dependsOn,
@@ -316,7 +314,6 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
     cwd,
     model,
     timeout: task.timeout,
-    autonomous: task.autonomous,
     labels: task.labels,
     provider: task.provider,
     fallbackAttempted: task.fallbackAttempted,

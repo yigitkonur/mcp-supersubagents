@@ -130,6 +130,24 @@ const RESEARCHER_RULES: ToolValidationRules = {
   ].join('\n'),
 };
 
+const GENERAL_RULES: ToolValidationRules = {
+  toolName: 'spawn_agent(role: "general")',
+  minPromptLength: 200,
+  requireContextFiles: false,
+  minContextFiles: 0,
+  requireMdExtension: false,
+  maxFileSizeBytes: MAX_FILE_SIZE,
+  maxTotalSizeBytes: MAX_TOTAL_SIZE,
+  briefTemplate: [
+    '🎯 OBJECTIVE: [What you need done — be specific]',
+    '📋 CONTEXT: [Background information and constraints]',
+    '📦 DELIVERABLES: [What files/outputs to produce]',
+  ].join('\n'),
+  workflowHint: [
+    '📎 TIP: General agent handles non-code tasks like writing, analysis, documentation, and organization.',
+  ].join('\n'),
+};
+
 export const VALIDATION_RULES: Record<string, ToolValidationRules> = {
   'spawn_coder': CODER_RULES,
   'spawn_planner': PLANNER_RULES,
@@ -140,6 +158,7 @@ export const VALIDATION_RULES: Record<string, ToolValidationRules> = {
   'planner': PLANNER_RULES,
   'tester': TESTER_RULES,
   'researcher': RESEARCHER_RULES,
+  'general': GENERAL_RULES,
 };
 
 // --- Validation functions ---

@@ -82,7 +82,7 @@ function normalizeClaudeModel(model?: string): string {
   const normalized = model.toLowerCase();
   if (normalized.includes('opus') || normalized === 'claude-opus-4.6') return 'opus';
   if (normalized.includes('haiku') || normalized === 'claude-haiku-4.5') return 'haiku';
-  if (normalized.includes('sonnet') || normalized === 'claude-sonnet-4.5') return 'sonnet';
+  if (normalized.includes('sonnet') || normalized === 'claude-sonnet-4.6') return 'sonnet';
 
   return model;
 }

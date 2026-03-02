@@ -2,7 +2,7 @@ import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { taskManager } from '../services/task-manager.js';
 import { applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, type ToolContext, type AgentMode } from '../types.js';
+import { TaskStatus, type ToolContext, type AgentMode, type ReasoningEffort } from '../types.js';
 import { mcpText, mcpValidationError } from '../utils/format.js';
 import {
   validateBrief,
@@ -17,11 +17,9 @@ export interface SharedSpawnParams {
   model?: string;
   cwd?: string;
   timeout?: number;
-  autonomous?: boolean;
   depends_on?: string[];
   labels?: string[];
-  enable_fleet?: boolean;
-  reasoning_effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoning_effort?: ReasoningEffort;
   mode?: AgentMode;
 }
 
@@ -73,10 +71,8 @@ export function createSpawnHandler<T extends SharedSpawnParams>(
         model: config.getModel?.(parsed) ?? parsed.model,
         cwd: parsed.cwd,
         timeout: parsed.timeout,
-        autonomous: parsed.autonomous,
         depends_on: parsed.depends_on,
         labels: parsed.labels,
-        enable_fleet: parsed.enable_fleet,
         reasoning_effort: parsed.reasoning_effort,
         mode: parsed.mode,
       },
@@ -133,11 +129,9 @@ export async function handleSharedSpawn(
       timeout: params.timeout,
       cwd: params.cwd,
       model: params.model,
-      autonomous: params.autonomous,
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
       taskType: config.taskType || 'super-coder',
-      enableFleet: params.enable_fleet,
       reasoningEffort: params.reasoning_effort,
       mode: params.mode,
     });

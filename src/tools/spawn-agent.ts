@@ -3,7 +3,7 @@ import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../mo
 import { CODER_LANGUAGES, PLANNING_TYPES, TESTING_TYPES, RESEARCH_TYPES } from '../utils/sanitize.js';
 import { handleSharedSpawn, type SharedSpawnParams, type SpawnToolConfig } from './shared-spawn.js';
 import type { TaskType } from '../templates/index.js';
-import type { ToolContext } from '../types.js';
+import { REASONING_EFFORTS, type ToolContext, type ReasoningEffort } from '../types.js';
 import { mcpValidationError } from '../utils/format.js';
 import {
   TASK_TIMEOUT_DEFAULT_MS,
@@ -13,7 +13,7 @@ import {
 
 // --- Role definitions ---
 
-const ROLES = ['coder', 'planner', 'tester', 'researcher'] as const;
+const ROLES = ['coder', 'planner', 'tester', 'researcher', 'general'] as const;
 type Role = typeof ROLES[number];
 
 const ROLE_TO_TASK_TYPE: Record<Role, TaskType> = {
@@ -21,6 +21,7 @@ const ROLE_TO_TASK_TYPE: Record<Role, TaskType> = {
   planner: 'super-planner',
   tester: 'super-tester',
   researcher: 'super-researcher',
+  general: 'super-general',
 };
 
 // --- Zod schema ---
@@ -38,11 +39,9 @@ const SpawnAgentSchema = z.object({
   model: z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional(),
   cwd: z.string().optional(),
   timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).default(TASK_TIMEOUT_DEFAULT_MS).optional(),
-  autonomous: z.boolean().default(true).optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1).max(50)).max(10).optional(),
-  enable_fleet: z.boolean().optional(),
-  reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+  reasoning_effort: z.enum(REASONING_EFFORTS as unknown as [string, ...string[]]).optional(),
   mode: z.enum(['fleet', 'plan', 'autopilot']).default('fleet').optional(),
 });
 
@@ -57,6 +56,7 @@ export const spawnAgentTool = {
 - planner: Architecture/planning. Min 300-char prompt. Always uses opus. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
 - tester: QA/testing. Min 300-char prompt + min 1 context file. Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
 - researcher: Investigation. Min 200-char prompt. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
+- general: General-purpose non-code tasks. Min 200-char prompt. Include: OBJECTIVE, CONTEXT, DELIVERABLES.
 
 **Workflow:** researcher -> planner -> coder -> tester. Chain with depends_on.
 **Status:** Read resource \`task:///all\` or \`task:///{id}\`.`,
@@ -67,7 +67,7 @@ export const spawnAgentTool = {
       role: {
         type: 'string',
         enum: [...ROLES],
-        description: 'Agent role: coder, planner, tester, or researcher.',
+        description: 'Agent role: coder, planner, tester, researcher, or general.',
       },
       prompt: {
         type: 'string',
@@ -87,7 +87,7 @@ export const spawnAgentTool = {
       },
       specialization: {
         type: 'string',
-        description: 'Role-specific specialization. coder: typescript/python/react/etc. planner: feature/bugfix/migration/etc. tester: playwright/rest/suite/etc. researcher: security/library/performance/etc.',
+        description: 'Role-specific specialization. coder: typescript/python/react/etc. planner: feature/bugfix/migration/etc. tester: playwright/rest/suite/etc. researcher: security/library/performance/etc. general: writing/analysis/documentation/etc.',
       },
       model: {
         type: 'string',
@@ -96,7 +96,6 @@ export const spawnAgentTool = {
       },
       cwd: { type: 'string', description: 'Working directory (absolute path).' },
       timeout: { type: 'number', description: `Max duration in ms. Default: ${TASK_TIMEOUT_DEFAULT_MS}. Max: ${TASK_TIMEOUT_MAX_MS}.` },
-      autonomous: { type: 'boolean', description: 'Run without asking for confirmation. Default: true.' },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
@@ -107,7 +106,6 @@ export const spawnAgentTool = {
         items: { type: 'string' },
         description: 'Labels for grouping/filtering (max 10, 50 chars each).',
       },
-      enable_fleet: { type: 'boolean', description: 'Enable fleet mode for parallel agent execution (legacy — use mode instead).' },
       reasoning_effort: {
         type: 'string',
         enum: ['low', 'medium', 'high', 'xhigh'],
@@ -145,7 +143,7 @@ export async function handleSpawnAgent(
     parsed = SpawnAgentSchema.parse(args);
   } catch (error) {
     return mcpValidationError(
-      `**SCHEMA VALIDATION FAILED — spawn_agent**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\nRequired: role (coder|planner|tester|researcher) + prompt (string).`
+      `**SCHEMA VALIDATION FAILED — spawn_agent**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\nRequired: role (coder|planner|tester|researcher|general) + prompt (string).`
     );
   }
 
@@ -160,11 +158,9 @@ export async function handleSpawnAgent(
     model,
     cwd: parsed.cwd,
     timeout: parsed.timeout,
-    autonomous: parsed.autonomous,
     depends_on: parsed.depends_on,
     labels: parsed.labels,
-    enable_fleet: parsed.enable_fleet,
-    reasoning_effort: parsed.reasoning_effort,
+    reasoning_effort: parsed.reasoning_effort as ReasoningEffort | undefined,
     mode: parsed.mode,
   };
 

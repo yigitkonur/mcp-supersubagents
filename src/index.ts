@@ -138,7 +138,6 @@ taskManager.onRetry(async (task) => {
       prompt: task.prompt,
       cwd: task.cwd,
       model: task.model,
-      autonomous: task.autonomous ?? true,
       retryInfo: task.retryInfo,
       fallbackAttempted: false,
     });

@@ -181,7 +181,6 @@ export async function handleSendMessage(
       prompt: message,
       timeout,
       cwd,
-      autonomous: true,
       resumeSessionId: sessionId,
       labels: [...(task.labels || []), `continued-from:${task.id}`],
     });

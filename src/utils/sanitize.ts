@@ -6,7 +6,7 @@ import {
   TASK_TIMEOUT_MAX_MS,
   TASK_TIMEOUT_MIN_MS,
 } from '../config/timeouts.js';
-import { AGENT_MODES, DEFAULT_AGENT_MODE } from '../types.js';
+import { AGENT_MODES, DEFAULT_AGENT_MODE, REASONING_EFFORTS } from '../types.js';
 
 // --- Shared field schemas ---
 
@@ -14,8 +14,7 @@ const sharedTimeoutSchema = z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_T
 const sharedModelSchema = z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional();
 const sharedDependsOnSchema = z.array(z.string().min(1)).max(50).optional();
 const sharedLabelsSchema = z.array(z.string().min(1).max(50)).max(10).optional();
-const sharedFleetSchema = z.boolean().optional();
-const sharedReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).optional();
+const sharedReasoningEffortSchema = z.enum(REASONING_EFFORTS as unknown as [string, ...string[]]).optional();
 const sharedModeSchema = z.enum(AGENT_MODES as unknown as [string, ...string[]]).default(DEFAULT_AGENT_MODE).optional();
 
 const contextFileSchema = z.object({
@@ -31,11 +30,9 @@ export const SpawnTaskSchema = z.object({
   cwd: z.string().regex(/^\//, 'cwd must be an absolute path').optional(),
   model: sharedModelSchema,
   task_type: z.enum(TASK_TYPE_IDS as [string, ...string[]]).optional(),
-  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
   context_files: z.array(contextFileSchema).max(20).optional(),
-  enable_fleet: sharedFleetSchema,
   reasoning_effort: sharedReasoningEffortSchema,
   mode: sharedModeSchema,
 });
@@ -45,30 +42,37 @@ export const SpawnTaskSchema = z.object({
 export const CODER_LANGUAGES = [
   'typescript', 'python', 'rust', 'go', 'java', 'ruby', 'swift', 'csharp', 'kotlin',
   'react', 'nextjs', 'vue', 'supabase', 'tauri', 'triggerdev', 'supastarter',
-  'general',
+  'general', 'general-purpose',
 ] as const;
 export type CoderLanguage = typeof CODER_LANGUAGES[number];
 
 // --- Planner types ---
 
 export const PLANNING_TYPES = [
-  'feature', 'bugfix', 'migration', 'refactor', 'architecture',
+  'feature', 'bugfix', 'migration', 'refactor', 'architecture', 'general-purpose',
 ] as const;
 export type PlanningType = typeof PLANNING_TYPES[number];
 
 // --- Testing types ---
 
 export const TESTING_TYPES = [
-  'playwright', 'rest', 'graphql', 'suite', 'accessibility', 'performance', 'security', 'general',
+  'playwright', 'rest', 'graphql', 'suite', 'accessibility', 'performance', 'security', 'general', 'general-purpose',
 ] as const;
 export type TestingType = typeof TESTING_TYPES[number];
 
 // --- Research types ---
 
 export const RESEARCH_TYPES = [
-  'security', 'library', 'performance', 'architecture', 'general',
+  'security', 'library', 'performance', 'architecture', 'general', 'general-purpose',
 ] as const;
 export type ResearchType = typeof RESEARCH_TYPES[number];
+
+// --- General types ---
+
+export const GENERAL_TYPES = [
+  'writing', 'analysis', 'documentation', 'organization', 'general-purpose',
+] as const;
+export type GeneralType = typeof GENERAL_TYPES[number];
 
 // --- Per-tool schemas ---
 
@@ -79,10 +83,8 @@ export const SpawnCoderSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
-  enable_fleet: sharedFleetSchema,
   reasoning_effort: sharedReasoningEffortSchema,
   mode: sharedModeSchema,
 });
@@ -94,10 +96,8 @@ export const SpawnPlannerSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
-  enable_fleet: sharedFleetSchema,
   reasoning_effort: sharedReasoningEffortSchema,
   mode: sharedModeSchema,
 });
@@ -109,10 +109,8 @@ export const SpawnTesterSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
-  enable_fleet: sharedFleetSchema,
   reasoning_effort: sharedReasoningEffortSchema,
   mode: sharedModeSchema,
 });
@@ -124,10 +122,21 @@ export const SpawnResearcherSchema = z.object({
   model: sharedModelSchema,
   cwd: z.string().optional(),
   timeout: sharedTimeoutSchema,
-  autonomous: z.boolean().default(true).optional(),
   depends_on: sharedDependsOnSchema,
   labels: sharedLabelsSchema,
-  enable_fleet: sharedFleetSchema,
+  reasoning_effort: sharedReasoningEffortSchema,
+  mode: sharedModeSchema,
+});
+
+export const SpawnGeneralSchema = z.object({
+  prompt: z.string().min(1).max(100000),
+  context_files: z.array(contextFileSchema).max(20).optional(),
+  general_type: z.enum(GENERAL_TYPES).optional(),
+  model: sharedModelSchema,
+  cwd: z.string().optional(),
+  timeout: sharedTimeoutSchema,
+  depends_on: sharedDependsOnSchema,
+  labels: sharedLabelsSchema,
   reasoning_effort: sharedReasoningEffortSchema,
   mode: sharedModeSchema,
 });

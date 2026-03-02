@@ -8,6 +8,9 @@ export type AgentMode = 'fleet' | 'plan' | 'autopilot';
 export const AGENT_MODES: readonly AgentMode[] = ['fleet', 'plan', 'autopilot'] as const;
 export const DEFAULT_AGENT_MODE: AgentMode = 'fleet';
 
+export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+
 export type FallbackReason =
   | 'copilot_startup_no_accounts'
   | 'copilot_accounts_exhausted'
@@ -254,7 +257,6 @@ export interface TaskState {
   error?: string;
   cwd?: string;
   model?: string;
-  autonomous?: boolean;
   isResume?: boolean;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
@@ -293,7 +295,6 @@ export interface SpawnOptions {
   cwd?: string;
   model?: string;
   taskType?: string;
-  autonomous?: boolean;
   resumeSessionId?: string;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
@@ -301,10 +302,8 @@ export interface SpawnOptions {
   provider?: Provider;
   fallbackAttempted?: boolean;
   switchAttempted?: boolean;
-  /** Enable fleet mode for parallel agent execution (opt-in, legacy — use mode instead) */
-  enableFleet?: boolean;
   /** Reasoning effort level for the session */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: ReasoningEffort;
   /** Execution mode: fleet (parallel agents), plan (plan-then-execute), autopilot (direct execution) */
   mode?: AgentMode;
 }

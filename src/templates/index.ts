@@ -9,6 +9,7 @@ export const TASK_TYPES = {
   'super-planner': 'super planner for all planning tasks',
   'super-researcher': 'super researcher for answering any question',
   'super-tester': 'super tester to test stuff properly',
+  'super-general': 'general-purpose agent for non-code tasks',
 } as const;
 
 export type TaskType = keyof typeof TASK_TYPES;
