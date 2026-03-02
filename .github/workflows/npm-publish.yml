@@ -46,9 +46,7 @@ jobs:
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VER=$(node -p "require('./package.json').version")
           echo "name=$PKG_NAME version=$PKG_VER"
-          set +e
-          npm view "${PKG_NAME}@${PKG_VER}" version 2>/dev/null
-          if [ $? -eq 0 ]; then
+          if npm view "${PKG_NAME}@${PKG_VER}" version 2>/dev/null; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -61,8 +59,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           BUMP="${{ inputs.bump || 'patch' }}"
-          npm version "$BUMP" -m "chore: bump to v%s [skip ci]"
-          git push && git push --tags
+          NEXT_VER=$(npm version "$BUMP" --no-git-tag-version | tr -d 'v')
+          echo "version=$NEXT_VER" >> "$GITHUB_OUTPUT"
+
+          # Clean up stale tag if it exists (from a previous failed run)
+          TAG="v${NEXT_VER}"
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          git add package.json
+          git commit -m "chore: bump to v${NEXT_VER} [skip ci]"
+          git tag -a "$TAG" -m "chore: bump to v${NEXT_VER} [skip ci]"
+          git push --follow-tags
           echo "bumped=true" >> "$GITHUB_OUTPUT"
 
       - name: Rebuild after bump
