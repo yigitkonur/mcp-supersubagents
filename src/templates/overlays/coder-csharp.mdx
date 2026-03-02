@@ -1,0 +1,58 @@
+## C#-SPECIFIC GUIDELINES
+
+You are working in a **C#** codebase. Apply these principles with zero exceptions.
+
+### LINQ — Use It Everywhere
+- Use LINQ for collection operations — it's more readable than manual loops
+- Prefer method syntax (`.Where().Select()`) over query syntax (`from x in ...`) — follow project convention
+- Use `FirstOrDefault()`, `SingleOrDefault()` — know the difference (Single throws if >1)
+- Avoid `ToList()` / `ToArray()` unless you need materialization — keep queries lazy with `IEnumerable<T>`
+- Use `Any()` instead of `Count() > 0` for existence checks
+
+### Async/Await — The Right Way
+- Make async methods return `Task` or `Task<T>` — never `async void` except event handlers
+- Use `await` all the way — never mix `.Result` or `.Wait()` with async (deadlock risk)
+- Use `ConfigureAwait(false)` in library code (not in UI/ASP.NET controller code)
+- Use `CancellationToken` as the last parameter on async methods — propagate it through
+- Use `ValueTask<T>` for hot-path methods that frequently complete synchronously
+
+### Nullable Reference Types
+- Enable `<Nullable>enable</Nullable>` — if the project has it, respect it fully
+- Use `?` suffix for nullable: `string?` means "might be null"
+- Use `!` (null-forgiving) only when you've verified non-null through logic the compiler can't see — add a comment
+- Use `[NotNull]`, `[MaybeNull]`, `[NotNullWhen]` attributes for nuanced nullability
+- Prefer `is not null` over `!= null` in pattern matching contexts
+
+### Record Types & Immutability
+- Use `record` types for immutable data transfer objects: `record UserDto(string Name, string Email);`
+- Use `record struct` for value-type records (stack-allocated, no GC pressure)
+- Use `with` expressions for non-destructive mutation: `var updated = user with { Name = "New" };`
+- Use `init` properties for immutable-after-construction objects
+- Use `required` keyword (C# 11+) for mandatory init properties
+
+### Pattern Matching
+- Use pattern matching in `switch` expressions — cleaner than if/else chains
+- Use `is` patterns: `if (obj is string s)`, `if (value is > 0 and < 100)`
+- Use `switch` expressions for exhaustive matching: `var result = status switch { ... }`
+- Use property patterns: `if (user is { Name: "admin", IsActive: true })`
+- Use discard `_` for cases you don't handle: `_ => throw new InvalidOperationException()`
+
+### Entity Framework Core (if applicable)
+- Use `AsNoTracking()` for read-only queries — significant performance improvement
+- Use `Include()` for eager loading — avoid N+1 queries
+- Use `AsSplitQuery()` for queries with multiple includes
+- Keep DbContext lifetime short — scoped per request in ASP.NET
+- Use migrations — never modify the database schema manually
+
+### Naming Conventions
+- `PascalCase` for classes, methods, properties, events, namespaces
+- `camelCase` for local variables, parameters
+- `_camelCase` for private fields (with underscore prefix)
+- `I` prefix for interfaces: `IUserRepository`
+- `Async` suffix for async methods: `GetUserAsync()`
+- Boolean properties: `Is*`, `Has*`, `Can*`
+
+### Testing Considerations
+- Use constructor injection for testability — all dependencies through constructor
+- Use interfaces for external dependencies — mockable with Moq, NSubstitute, etc.
+- Follow project's test framework conventions (xUnit, NUnit, MSTest)

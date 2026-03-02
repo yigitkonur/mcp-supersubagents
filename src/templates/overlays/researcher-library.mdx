@@ -1,0 +1,59 @@
+## LIBRARY EVALUATION REFERENCE
+
+These frameworks help structure library evaluation. Use what's relevant — a simple "which library" question may only need a comparison matrix, while an adoption decision needs the full analysis. Let the research question guide depth.
+
+---
+
+### COMPARISON MATRIX (Template)
+
+When comparing libraries, this structure helps organize findings:
+
+| Criterion | Library A | Library B |
+|-----------|-----------|-----------|
+| Core features | Does it do what we need? | |
+| Performance / bundle size | Benchmarks, minified+gzip | |
+| TypeScript support | Native types? Quality? | |
+| License | Compatible with our project? | |
+| Maintenance | Last release, active issues | |
+| Migration cost | From current → this library | |
+| Community | Downloads, SO questions, Discord | |
+
+---
+
+### GITHUB HEALTH SIGNALS
+
+Quick health check for any library:
+
+| Signal | Healthy | Red Flag |
+|--------|---------|----------|
+| Last commit | <3 months | >12 months |
+| Contributors | >5 active | Single maintainer |
+| Releases | Regular | None in >1 year |
+| Open issues | Triaged, responsive | >500 untriaged |
+
+---
+
+### LICENSE COMPATIBILITY (Reference)
+
+| Our License | Safe | Risky |
+|-------------|------|-------|
+| MIT/Apache | MIT, Apache, BSD, ISC | GPL (copyleft) |
+| GPL | MIT, Apache, GPL, LGPL | Proprietary |
+| Proprietary | MIT, Apache, BSD, ISC | GPL, AGPL |
+
+---
+
+### MIGRATION COST FACTORS
+
+When evaluating a library that replaces an existing one:
+- API surface similarity (drop-in vs complete rewrite)
+- Files affected (scope)
+- Type compatibility
+- Test impact
+- Runtime behavior differences
+
+---
+
+### COMMUNITY HEALTH SIGNALS
+
+Beyond GitHub: npm/PyPI download trends, Stack Overflow activity, Discord/Slack community responsiveness, blog ecosystem, conference talks.

@@ -1,0 +1,57 @@
+{
+  "name": "mcp-supersubagents",
+  "version": "1.4.16",
+  "description": "MCP server for spawning and managing GitHub Copilot CLI sub-agents — parallel task execution with planner, coder, researcher & tester specialists",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "mcp-supersubagents": "build/index.js",
+    "copilot-mcp-server": "build/index.js",
+    "super-subagents": "build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yigitkonur/mcp-supersubagents.git"
+  },
+  "homepage": "https://github.com/yigitkonur/mcp-supersubagents#readme",
+  "bugs": {
+    "url": "https://github.com/yigitkonur/mcp-supersubagents/issues"
+  },
+  "author": "Yiğit Konur <yigit35@gmail.com>",
+  "scripts": {
+    "build": "tsc --noEmitOnError false; cp src/templates/*.mdx build/templates/; mkdir -p build/templates/overlays && cp src/templates/overlays/*.mdx build/templates/overlays/",
+    "dev": "tsx watch src/index.ts",
+    "start": "node build/index.js",
+    "clean": "rm -rf build",
+    "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "copilot",
+    "github",
+    "cli",
+    "agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.34",
+    "@github/copilot-sdk": "^0.1.29",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ai": "^6.0.79",
+    "ai-sdk-provider-claude-code": "^3.4.0",
+    "unique-names-generator": "^4.7.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
