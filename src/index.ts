@@ -137,7 +137,7 @@ taskManager.onRetry(async (task) => {
       model: task.model,
       autonomous: task.autonomous ?? true,
       retryInfo: task.retryInfo,
-      fallbackAttempted: task.fallbackAttempted,
+      fallbackAttempted: false,
     });
     return newTaskId;
   } catch (err) {
@@ -838,6 +838,11 @@ async function main() {
   const shutdown = async (signal?: string, exitCode = 0) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
+    const forceExitTimer = setTimeout(() => {
+      console.error('[shutdown] Force exit — cleanup timed out after 30s');
+      process.exit(exitCode ?? 0);
+    }, 30_000);
+    forceExitTimer.unref();
     console.error(`Shutting down${signal ? ` (${signal})` : ''}...`);
     if (monitorTimer) {
       clearInterval(monitorTimer);
@@ -847,6 +852,10 @@ async function main() {
       clearTimeout(timer);
     }
     resourceUpdateTimers.clear();
+    for (const timer of statusUpdateTimers.values()) {
+      clearTimeout(timer);
+    }
+    statusUpdateTimers.clear();
     try {
       abortAllFallbackSessions(`Server shutdown${signal ? ` (${signal})` : ''}`);
     } catch {}
@@ -859,6 +868,7 @@ async function main() {
     try {
       questionRegistry.cleanup();
     } catch {}
+    clearTimeout(forceExitTimer);
     process.exit(exitCode);
   };
   shutdownHandler = shutdown;

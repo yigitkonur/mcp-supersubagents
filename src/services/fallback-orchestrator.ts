@@ -28,15 +28,18 @@ export async function triggerClaudeFallback(taskId: string, request: FallbackReq
     return false;
   }
 
-  taskManager.updateTask(taskId, {
-    fallbackAttempted: true,
-    switchAttempted: true,
-  });
-
+  // Re-check terminal state BEFORE setting the single-flight guard.
+  // If the task reached terminal state between the first check and now,
+  // we must not set fallbackAttempted (fallback never actually ran).
   const freshTask = taskManager.getTask(taskId);
   if (!freshTask || isTerminalStatus(freshTask.status)) {
     return false;
   }
+
+  taskManager.updateTask(taskId, {
+    fallbackAttempted: true,
+    switchAttempted: true,
+  });
 
   const cwd = request.cwd || freshTask.cwd || process.cwd();
   const taskTimeout = freshTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;

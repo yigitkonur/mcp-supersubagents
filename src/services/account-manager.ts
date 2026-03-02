@@ -19,6 +19,7 @@ interface TokenState {
   failedAt?: number;
   failureReason?: string;
   failureCount: number;
+  resetDate?: string;
 }
 
 interface AccountRotationResult {
@@ -123,13 +124,40 @@ class AccountManager {
     if (!current) return undefined;
     // If current token is in active cooldown, scan for a non-cooldown token
     if (current.failedAt) {
+      // Honor quota reset date if available
+      if (current.resetDate) {
+        const resetTime = new Date(current.resetDate).getTime();
+        if (!isNaN(resetTime) && Date.now() >= resetTime) {
+          current.failedAt = undefined;
+          current.resetDate = undefined;
+          current.failureReason = undefined;
+          current.failureCount = 0;
+          return current.token;
+        }
+      }
       const age = Date.now() - current.failedAt;
       if (age < FAILED_TOKEN_COOLDOWN_MS) {
         // Current token in cooldown — try to find any available token
         const now = Date.now();
         for (let i = 0; i < this.tokens.length; i++) {
           const state = this.tokens[i];
-          if (!state.failedAt || (now - state.failedAt) >= FAILED_TOKEN_COOLDOWN_MS) {
+          if (!state.failedAt) {
+            this.currentIndex = i;
+            return state.token;
+          }
+          // Check resetDate for this token too
+          if (state.resetDate) {
+            const rt = new Date(state.resetDate).getTime();
+            if (!isNaN(rt) && now >= rt) {
+              state.failedAt = undefined;
+              state.resetDate = undefined;
+              state.failureReason = undefined;
+              state.failureCount = 0;
+              this.currentIndex = i;
+              return state.token;
+            }
+          }
+          if ((now - state.failedAt) >= FAILED_TOKEN_COOLDOWN_MS) {
             this.currentIndex = i;
             return state.token;
           }
@@ -196,7 +224,7 @@ class AccountManager {
    * @param fromTokenIndex - Index of the token that actually failed (avoids thundering-herd misattribution)
    * @returns Result with new token or exhausted status
    */
-  rotateToNext(reason: string = 'unknown', fromTokenIndex?: number): AccountRotationResult {
+  rotateToNext(reason: string = 'unknown', fromTokenIndex?: number, resetDate?: string): AccountRotationResult {
     if (this.tokens.length === 0) {
       return { success: false, error: 'No tokens configured' };
     }
@@ -219,7 +247,8 @@ class AccountManager {
       failedState.failedAt = Date.now();
       failedState.failureReason = reason;
       failedState.failureCount++;
-      console.error(`[account-manager] Token #${failIndex + 1} failed: ${reason} (count: ${failedState.failureCount})`);
+      failedState.resetDate = resetDate;
+      console.error(`[account-manager] Token #${failIndex + 1} failed: ${reason} (count: ${failedState.failureCount})${resetDate ? ` resetDate: ${resetDate}` : ''}`);
     }
 
     // Find next available token

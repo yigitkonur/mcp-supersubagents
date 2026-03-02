@@ -347,6 +347,11 @@ async function runSDKSession(
     return;
   }
 
+  if (task.status !== TaskStatus.PENDING) {
+    console.error(`[sdk-spawner] Task ${taskId} is ${task.status}, expected PENDING — skipping session creation`);
+    return;
+  }
+
   const timeout = options.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const timeoutAt = new Date(Date.now() + timeout).toISOString();
 
@@ -515,14 +520,31 @@ async function handleSessionError(
 }
 
 /**
- * Extract HTTP status code from error message
+ * Context-aware HTTP status code patterns to avoid false positives on
+ * error messages that happen to contain bare numbers like "429" or "500".
+ * Structured statusCode from SDK events takes priority; this is the
+ * string-fallback path only.
+ */
+const STATUS_CODE_PATTERNS: [RegExp, number][] = [
+  [/\bstatus[\s:]+429\b/i, 429],
+  [/\b429\s*(Too Many Requests|rate limit)/i, 429],
+  [/\bHTTP[\/\s]\d+\.\d+\s+429\b/i, 429],
+  [/\bstatus[\s:]+5\d{2}\b/i, 500],
+  [/\bstatus[\s:]+502\b/i, 502],
+  [/\bstatus[\s:]+503\b/i, 503],
+  [/\bstatus[\s:]+504\b/i, 504],
+  [/\bHTTP[\/\s]\d+\.\d+\s+5\d{2}\b/i, 500],
+];
+
+/**
+ * Extract HTTP status code from error message using context-aware patterns.
+ * Semantic phrases (rate limit, too many requests, quota) are still matched
+ * as a last resort to catch non-standard error formats.
  */
 function extractStatusCode(errorMessage: string): number | undefined {
-  if (/\b429\b/.test(errorMessage)) return 429;
-  if (/\b500\b/.test(errorMessage)) return 500;
-  if (/\b502\b/.test(errorMessage)) return 502;
-  if (/\b503\b/.test(errorMessage)) return 503;
-  if (/\b504\b/.test(errorMessage)) return 504;
+  for (const [pattern, code] of STATUS_CODE_PATTERNS) {
+    if (pattern.test(errorMessage)) return code;
+  }
   if (/rate.?limit/i.test(errorMessage)) return 429;
   if (/too many requests/i.test(errorMessage)) return 429;
   if (/quota/i.test(errorMessage)) return 429;

@@ -18,7 +18,7 @@ import { TaskStatus, ToolMetrics, isTerminalStatus, type FallbackReason } from '
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MODEL = 'sonnet';
-const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'bypassPermissions';
+const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_FALLBACK_PERMISSION_MODE || 'plan';
 const TOOL_POLICY_MODE = process.env.CLAUDE_FALLBACK_TOOL_POLICY || 'allow_all';
 const DEBUG = process.env.DEBUG_CLAUDE_FALLBACK === 'true';
 const activeFallbackControllers = new Map<string, AbortController>();

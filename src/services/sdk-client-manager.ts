@@ -179,6 +179,7 @@ class SDKClientManager {
   private isShuttingDown = false;
   private staleSessionTimer: ReturnType<typeof setInterval> | null = null;
   private sweepCycle = 0;
+  private ptyCheckFailures: Map<string, number> = new Map(); // consecutive lsof failure count per client key
 
   private findEntryByClient(client: CopilotClient): ClientEntry | undefined {
     for (const entry of this.clients.values()) {
@@ -627,6 +628,15 @@ class SDKClientManager {
 
         if (inactiveMs > ZOMBIE_THRESHOLD_MS) {
           console.error(`[sdk-client-manager] Zombie session detected: ${sessionId} (${Math.round(inactiveMs / 60000)}min inactive)`);
+
+          // CC-009: Re-check task status before zombie kill — task may have completed since initial check
+          const freshTask = taskManager.getTask(ownerTaskId);
+          if (!freshTask || TERMINAL_STATUSES.has(freshTask.status as any)) {
+            entry.sessions.delete(sessionId);
+            this.sessionOwners.delete(sessionId);
+            continue;
+          }
+
           taskManager.appendOutput(ownerTaskId, `[system] Session appears stalled (${Math.round(inactiveMs / 60000)}min without output). Destroying zombie session.`);
           
           // Destroy the zombie session
@@ -715,6 +725,7 @@ class SDKClientManager {
       if (!pid) continue;
 
       let ptmxCount = 0;
+      let countCheckFailed = false;
       try {
         // Cross-platform PTY FD detection:
         // - macOS: PTY master devices appear as /dev/ptmx
@@ -724,13 +735,28 @@ class SDKClientManager {
           { timeout: 5_000 }
         );
         ptmxCount = parseInt(stdout.trim(), 10) || 0;
+        // Reset consecutive failure count on success
+        this.ptyCheckFailures.delete(key);
       } catch {
-        // grep -c returns exit code 1 when count is 0 → ptmxCount stays 0
-        continue;
+        // grep -c returns exit code 1 when count is 0, OR lsof itself failed.
+        // Track consecutive failures: if the check keeps failing, assume the worst
+        // to prevent unbounded PTY FD accumulation.
+        const consecutiveFailures = (this.ptyCheckFailures.get(key) ?? 0) + 1;
+        this.ptyCheckFailures.set(key, consecutiveFailures);
+
+        const PTY_CHECK_FAILURE_THRESHOLD = 3;
+        if (consecutiveFailures >= PTY_CHECK_FAILURE_THRESHOLD) {
+          console.error(`[sdk-client-manager] PTY FD check failed ${consecutiveFailures} consecutive times for ${key}, assuming threshold exceeded as conservative fallback`);
+          ptmxCount = PTY_RECYCLE_THRESHOLD + 1;
+          countCheckFailed = true;
+        } else {
+          continue;
+        }
       }
 
       if (ptmxCount > PTY_RECYCLE_THRESHOLD && entry.sessions.size === 0) {
-        console.error(`[sdk-client-manager] Sweeper: recycling client ${key} (${ptmxCount} ptmx FDs, 0 active sessions)`);
+        console.error(`[sdk-client-manager] Sweeper: recycling client ${key} (${countCheckFailed ? 'estimated' : ptmxCount} ptmx FDs, 0 active sessions)`);
+        this.ptyCheckFailures.delete(key);
         // Escalating shutdown: graceful → force
         try {
           await withTimeout(entry.client.stop(), RECYCLE_STOP_TIMEOUT_MS, `stop client ${key}`);

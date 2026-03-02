@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { taskManager, isSessionActive } from '../services/task-manager.js';
 import { spawnCopilotTask } from '../services/sdk-spawner.js';
 import { progressRegistry } from '../services/progress-registry.js';
+import { sdkClientManager } from '../services/sdk-client-manager.js';
 import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
@@ -101,6 +102,24 @@ export async function handleSendMessage(
     );
   }
 
+  // Finding 2: Reject resume for tasks that ran on Claude fallback —
+  // the Copilot session was destroyed and cannot be resumed.
+  if (task.provider === 'claude-cli') {
+    return mcpError(
+      'This task ran on Claude fallback and cannot be resumed via send_message',
+      'Use `spawn_agent` to start a new task with the original prompt.'
+    );
+  }
+
+  // Finding 2: Check if the Copilot session is still alive in the SDK client manager.
+  // Sessions can be destroyed during unbind, sweeps, or rotation.
+  if (!sdkClientManager.getSession(task.sessionId)) {
+    return mcpError(
+      `Session "${task.sessionId}" is no longer active`,
+      'The session was destroyed (unbind, sweep, or rotation). Use `spawn_agent` to start a new task.'
+    );
+  }
+
   // Check if task is in a state that can receive messages
   const allowedStatuses = [
     TaskStatus.COMPLETED,
@@ -135,6 +154,15 @@ export async function handleSendMessage(
   const cwd = parsed.cwd || task.cwd || process.cwd();
   const timeout = parsed.timeout || task.timeout;
   const message = (parsed.message || 'continue').trim();
+
+  // Finding 1: If the task is RATE_LIMITED, mark it FAILED before spawning
+  // to prevent the auto-retry scheduler from also spawning a duplicate.
+  if (task.status === TaskStatus.RATE_LIMITED) {
+    taskManager.updateTask(task.id, {
+      status: TaskStatus.FAILED,
+      error: 'Superseded by manual send_message resume',
+    });
+  }
 
   resumeInProgress.add(taskId);
   try {

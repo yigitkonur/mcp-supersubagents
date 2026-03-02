@@ -94,7 +94,7 @@ export async function handleSharedSpawn(
   ctx?: ToolContext,
 ): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
   // 1. Validate the brief
-  const validation = await validateBrief(config.toolName, params.prompt, params.context_files);
+  const validation = await validateBrief(config.toolName, params.prompt, params.context_files, params.cwd);
   if (!validation.valid) {
     return mcpValidationError(formatValidationError(config.toolName, validation.errors));
   }

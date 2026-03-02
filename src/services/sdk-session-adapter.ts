@@ -46,8 +46,18 @@ type SubagentCompletedEvent = Extract<SessionEvent, { type: 'subagent.completed'
 type SubagentFailedEvent = Extract<SessionEvent, { type: 'subagent.failed' }>;
 type AssistantTurnStartEvent = Extract<SessionEvent, { type: 'assistant.turn_start' }>;
 
-// String-based rate limit detection fallback
-const RATE_LIMIT_STRING = "Sorry, you've hit a rate limit that restricts the number of Copilot model requests";
+// String-based rate limit detection fallback (FB-002: broader pattern matching)
+const RATE_LIMIT_PATTERNS = [
+  /rate limit/i,
+  /too many requests/i,
+  /quota exceeded/i,
+  /try again in \d+/i,
+  /usage limit/i,
+];
+
+function isRateLimitMessage(text: string): boolean {
+  return RATE_LIMIT_PATTERNS.some(p => p.test(text));
+}
 
 // Health check model for testing account availability
 const HEALTH_CHECK_MODEL = 'claude-haiku-4.5';
@@ -417,6 +427,11 @@ class SDKSessionAdapter {
    * Handle session.idle event - indicates completion
    */
   private handleSessionIdle(taskId: string, _event: SessionIdleEvent, binding: SessionBinding): void {
+    // CC-003: Ignore session.idle during rotation to prevent premature COMPLETED
+    if (binding.rotationInProgress) {
+      console.error(`[sdk-session-adapter] Ignoring session.idle for ${taskId} — rotation in progress`);
+      return;
+    }
     if (!binding.isCompleted) {
       binding.isCompleted = true;
       
@@ -516,6 +531,9 @@ class SDKSessionAdapter {
       return;
     }
 
+    // CC-002: Re-check isUnbound after rotation await
+    if (binding.isUnbound) return;
+
     // RC-6: Re-check terminal state before marking — task may have been cancelled/completed during rotation
     const currentTask = taskManager.getTask(taskId);
     if (!currentTask || isTerminalStatus(currentTask.status)) {
@@ -530,6 +548,7 @@ class SDKSessionAdapter {
           errorMessage: message,
           session: binding.session,
         });
+        if (binding.isUnbound) return; // CC-002: Recheck after await
         if (started) {
           this.unbind(taskId);
           return;
@@ -545,6 +564,7 @@ class SDKSessionAdapter {
         errorMessage: message,
         session: binding.session,
       });
+      if (binding.isUnbound) return; // CC-002: Recheck after await
       if (started) {
         this.unbind(taskId);
         return;
@@ -579,7 +599,8 @@ class SDKSessionAdapter {
           statusCode
         );
 
-        // RC-2: Check terminal state after await — task may have been cancelled during rotation callback
+        // CC-002 + RC-2: Check isUnbound and terminal state after await
+        if (binding.isUnbound) return false;
         const taskAfterCallback = taskManager.getTask(taskId);
         if (!taskAfterCallback || isTerminalStatus(taskAfterCallback.status)) {
           console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterCallback?.status ?? 'deleted'} during rotation callback`);
@@ -588,94 +609,101 @@ class SDKSessionAdapter {
 
         if (result.rotated && result.newSession) {
           // Successfully rotated - rebind with new session
-          await this.rebindWithNewSession(taskId, binding, result.newSession);
-          return true;
+          const rebindSuccess = await this.rebindWithNewSession(taskId, binding, result.newSession);
+          return rebindSuccess;
         }
       } catch (err) {
         console.error(`[sdk-session-adapter] Rotation callback failed:`, err);
       }
     }
 
-    // Try rotating via SDK client manager directly
-    const task = taskManager.getTask(taskId);
-    if (!task) return false;
+    // Iterative rotation loop — replaces former recursive self-call to avoid
+    // unbounded stack growth when many accounts fail health checks in a row.
+    while (binding.rotationAttempts < binding.maxRotationAttempts) {
+      // Try rotating via SDK client manager directly
+      const task = taskManager.getTask(taskId);
+      if (!task) return false;
 
-    const taskCwd = task.cwd || process.cwd();
-    // RC-5: Heartbeat before long-running rotateOnError
-    taskManager.appendOutput(taskId, `[rotation] Rotating to next account...`);
-    const failedTokenIndex = sdkClientManager.getSessionTokenIndex(binding.sessionId);
-    const rotationResult = await sdkClientManager.rotateOnError(taskCwd, `status_${statusCode}`, failedTokenIndex);
+      const taskCwd = task.cwd || process.cwd();
+      // RC-5: Heartbeat before long-running rotateOnError
+      taskManager.appendOutput(taskId, `[rotation] Rotating to next account...`);
+      const failedTokenIndex = sdkClientManager.getSessionTokenIndex(binding.sessionId);
+      const rotationResult = await sdkClientManager.rotateOnError(taskCwd, `status_${statusCode}`, failedTokenIndex);
 
-    // RC-2: Check terminal state after rotateOnError await
-    const taskAfterRotate = taskManager.getTask(taskId);
-    if (!taskAfterRotate || isTerminalStatus(taskAfterRotate.status)) {
-      console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterRotate?.status ?? 'deleted'} during rotateOnError`);
-      return false;
-    }
-
-    if (!rotationResult.success) {
-      if (shouldFallbackToClaudeCode(rotationResult)) {
-        // All accounts exhausted - fallback to Claude Agent SDK
-        taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
-
-        // Get task and calculate remaining timeout
-        const task = taskManager.getTask(taskId);
-        if (!task) return false;
-
-        const started = await triggerClaudeFallback(taskId, {
-          reason: 'copilot_accounts_exhausted',
-          errorMessage: 'All Copilot accounts exhausted',
-          session: binding.session,
-          cwd: taskCwd,
-        });
-
-        // RC-14: Check terminal state after triggerClaudeFallback await
-        const taskAfterFallback = taskManager.getTask(taskId);
-        if (!taskAfterFallback || isTerminalStatus(taskAfterFallback.status)) {
-          console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterFallback?.status ?? 'deleted'} during Claude fallback`);
-          return false;
-        }
-
-        if (started) {
-          // Unbind current session
-          this.unbind(taskId);
-          return true; // Indicate fallback was triggered
-        }
-      }
-      return false;
-    }
-
-    // RC-5: Heartbeat before long-running health check
-    taskManager.appendOutput(taskId, `[rotation] Running health check on new account...`);
-    const healthCheckPassed = await this.performHealthCheck(taskCwd);
-
-    // RC-2: Check terminal state after health check await
-    const taskAfterHealth = taskManager.getTask(taskId);
-    if (!taskAfterHealth || isTerminalStatus(taskAfterHealth.status)) {
-      console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterHealth?.status ?? 'deleted'} during health check`);
-      return false;
-    }
-
-    if (!healthCheckPassed) {
-      taskManager.appendOutput(taskId, `[rotation] Health check failed, trying next account (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
-      if (binding.rotationAttempts >= binding.maxRotationAttempts) {
+      // CC-002 + RC-2: Check isUnbound and terminal state after rotateOnError await
+      if (binding.isUnbound) return false;
+      const taskAfterRotate = taskManager.getTask(taskId);
+      if (!taskAfterRotate || isTerminalStatus(taskAfterRotate.status)) {
+        console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterRotate?.status ?? 'deleted'} during rotateOnError`);
         return false;
       }
-      // Recursively try next account
-      return this.attemptRotationAndResume(taskId, binding, statusCode, errorMessage);
-    }
 
-    // Cross-token resume is architecturally impossible — the new token's client
-    // has no knowledge of the old session. Create a fresh session with a new ID
-    // and send a handoff prompt that includes context from the old session.
-    try {
-      taskManager.appendOutput(taskId, `[rotation] Health check passed, creating new session with rotated account...`);
+      if (!rotationResult.success) {
+        if (shouldFallbackToClaudeCode(rotationResult)) {
+          // All accounts exhausted - fallback to Claude Agent SDK
+          taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
+
+          // Get task and calculate remaining timeout
+          const taskForFallback = taskManager.getTask(taskId);
+          if (!taskForFallback) return false;
+
+          const started = await triggerClaudeFallback(taskId, {
+            reason: 'copilot_accounts_exhausted',
+            errorMessage: 'All Copilot accounts exhausted',
+            session: binding.session,
+            cwd: taskCwd,
+          });
+
+          // CC-002 + RC-14: Check isUnbound and terminal state after triggerClaudeFallback await
+          if (binding.isUnbound) return false;
+          const taskAfterFallback = taskManager.getTask(taskId);
+          if (!taskAfterFallback || isTerminalStatus(taskAfterFallback.status)) {
+            console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterFallback?.status ?? 'deleted'} during Claude fallback`);
+            return false;
+          }
+
+          if (started) {
+            // Unbind current session
+            this.unbind(taskId);
+            return true; // Indicate fallback was triggered
+          }
+        }
+        return false;
+      }
+
+      // RC-5: Heartbeat before long-running health check
+      taskManager.appendOutput(taskId, `[rotation] Running health check on new account...`);
+      const healthCheckPassed = await this.performHealthCheck(taskCwd);
+
+      // CC-002 + RC-2: Check isUnbound and terminal state after health check await
+      if (binding.isUnbound) return false;
+      const taskAfterHealth = taskManager.getTask(taskId);
+      if (!taskAfterHealth || isTerminalStatus(taskAfterHealth.status)) {
+        console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterHealth?.status ?? 'deleted'} during health check`);
+        return false;
+      }
+
+      if (!healthCheckPassed) {
+        taskManager.appendOutput(taskId, `[rotation] Health check failed, trying next account (attempt ${binding.rotationAttempts}/${binding.maxRotationAttempts})...`);
+        binding.rotationAttempts++;
+        continue; // Iterate instead of recursing
+      }
+
+      // Cross-token resume is architecturally impossible — the new token's client
+      // has no knowledge of the old session. Create a fresh session with a new ID
+      // and send a handoff prompt that includes context from the old session.
+      try {
+        taskManager.appendOutput(taskId, `[rotation] Health check passed, creating new session with rotated account...`);
 
       // Generate a unique session ID for the retry to avoid collision with the old session
       const retrySessionId = `${taskId}-r${binding.rotationAttempts}`;
       const newSession = await sdkClientManager.createSession(taskCwd, retrySessionId, {}, taskId);
 
-      // RC-2: Check terminal state after createSession await
+      // CC-002 + RC-2: Check isUnbound and terminal state after createSession await
+      if (binding.isUnbound) {
+        await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
+        return false;
+      }
       const taskAfterCreate = taskManager.getTask(taskId);
       if (!taskAfterCreate || isTerminalStatus(taskAfterCreate.status)) {
         console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterCreate?.status ?? 'deleted'} during createSession`);
@@ -683,12 +711,20 @@ class SDKSessionAdapter {
         return false;
       }
 
-      await this.rebindWithNewSession(taskId, binding, newSession);
+      const rebindSuccess = await this.rebindWithNewSession(taskId, binding, newSession);
+      if (!rebindSuccess) {
+        taskManager.appendOutput(taskId, `[rotation] Rebind failed (send error), trying next account...`);
+        continue; // try next rotation attempt in the while loop
+      }
       return true;
     } catch (createErr) {
       console.error(`[sdk-session-adapter] Failed to create new session after rotation:`, createErr);
       return false;
     }
+    } // end while
+
+    // All rotation attempts exhausted
+    return false;
   }
 
   /**
@@ -698,7 +734,7 @@ class SDKSessionAdapter {
     taskId: string,
     oldBinding: SessionBinding,
     newSession: CopilotSession
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Unsubscribe from old session and destroy it to release PTY FDs (RC-3 fix)
     oldBinding.isUnbound = true;
     oldBinding.unsubscribe();
@@ -711,7 +747,7 @@ class SDKSessionAdapter {
     if (!task || isTerminalStatus(task.status)) {
       console.error(`[sdk-session-adapter] Task ${taskId} is ${task?.status ?? 'deleted'}, skipping rebind`);
       await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
-      return;
+      return false;
     }
 
     // Create new binding preserving state
@@ -773,8 +809,17 @@ class SDKSessionAdapter {
     try {
       await newSession.send({ prompt: handoffPrompt });
     } catch (err) {
-      console.error(`[sdk-session-adapter] Failed to send handoff prompt:`, err);
+      console.error(`[sdk-session-adapter] Failed to send handoff prompt to new session ${newSession.sessionId}:`, err);
+      // Send failed — the task would silently stall. Clean up the orphaned binding
+      // and signal failure so the caller can try the next recovery path.
+      taskManager.appendOutput(taskId, `[rotation] Handoff send failed, cleaning up orphaned session`);
+      newBinding.isUnbound = true;
+      newBinding.unsubscribe();
+      this.bindings.delete(taskId);
+      await sdkClientManager.destroySession(newSession.sessionId).catch(() => {});
+      return false;
     }
+    return true;
   }
 
   /**
@@ -886,7 +931,7 @@ class SDKSessionAdapter {
     // String-based rate limit detection fallback
     // Only check current message content to avoid loops
     const rateLimitContent = event.data.content || '';
-    if (rateLimitContent.includes(RATE_LIMIT_STRING) && !binding.isCompleted && !binding.isPaused && !binding.rotationInProgress) {
+    if (isRateLimitMessage(rateLimitContent) && !binding.isCompleted && !binding.isPaused && !binding.rotationInProgress) {
       // Check max rotation attempts first (parity with error-driven path at line 418)
       if (binding.rotationAttempts >= binding.maxRotationAttempts) {
         const currentTask = taskManager.getTask(taskId);

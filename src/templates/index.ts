@@ -128,12 +128,17 @@ export function applyTemplate(taskType: TaskType, userPrompt: string, specializa
 
   // Load specialization overlay if requested
   let overlay = '';
-  if (specialization) {
+  let safeSpecialization = specialization;
+  if (safeSpecialization && (/[\/\\]|\.\./.test(safeSpecialization))) {
+    console.error(`[templates] Invalid specialization rejected: ${safeSpecialization}`);
+    safeSpecialization = undefined;
+  }
+  if (safeSpecialization) {
     // Map task type to overlay prefix: super-coder -> coder, super-planner -> planner
     const overlayPrefix = taskType.replace('super-', '');
-    const overlayPath = join(__dirname, 'overlays', `${overlayPrefix}-${specialization}.mdx`);
+    const overlayPath = join(__dirname, 'overlays', `${overlayPrefix}-${safeSpecialization}.mdx`);
     // Fallback: try bare {specialization}.mdx (cross-role overlays like arabic-answer)
-    overlay = loadFile(overlayPath) || loadFile(join(__dirname, 'overlays', `${specialization}.mdx`)) || '';
+    overlay = loadFile(overlayPath) || loadFile(join(__dirname, 'overlays', `${safeSpecialization}.mdx`)) || '';
   }
 
   // Combine base + overlay
@@ -158,6 +163,6 @@ export function applyTemplate(taskType: TaskType, userPrompt: string, specializa
 
   // Inject user prompt
   return combined.includes('{{user_prompt}}')
-    ? combined.replace('{{user_prompt}}', userPrompt)
+    ? combined.replace('{{user_prompt}}', () => userPrompt)
     : `${combined}\n\n---\n\n${userPrompt}`;
 }

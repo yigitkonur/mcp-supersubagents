@@ -1,4 +1,4 @@
-import { access, stat, readFile, constants } from 'fs/promises';
+import { access, stat, readFile, realpath, constants } from 'fs/promises';
 import { extname, isAbsolute } from 'path';
 
 // --- Validation rule types ---
@@ -147,6 +147,7 @@ export async function validateBrief(
   toolName: string,
   prompt: string,
   contextFiles?: ContextFile[],
+  cwd?: string,
 ): Promise<ValidationResult> {
   const rules = VALIDATION_RULES[toolName];
   if (!rules) return { valid: true, errors: [] };
@@ -215,6 +216,23 @@ export async function validateBrief(
         });
       }
       continue;
+    }
+
+    // Workspace boundary check (prevent path traversal via symlinks)
+    if (cwd) {
+      try {
+        const resolvedPath = await realpath(file.path);
+        const normalizedCwd = await realpath(cwd);
+        if (!resolvedPath.startsWith(normalizedCwd + '/') && resolvedPath !== normalizedCwd) {
+          errors.push({
+            code: 'PATH_TRAVERSAL',
+            message: `File "${file.path}" resolves outside workspace boundary`,
+          });
+          continue;
+        }
+      } catch {
+        // realpath failed — let subsequent checks handle it
+      }
     }
 
     // Size check

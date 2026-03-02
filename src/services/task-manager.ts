@@ -1,4 +1,4 @@
-import { generateTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
+import { generateUniqueTaskId, normalizeTaskId } from '../utils/task-id-generator.js';
 import { TaskState, TaskStatus, TERMINAL_STATUSES, isTerminalStatus } from '../types.js';
 import { saveTasks, loadTasks } from './task-persistence.js';
 import { shouldRetryNow, hasExceededMaxRetries } from './retry-queue.js';
@@ -8,13 +8,14 @@ import { processRegistry } from './process-registry.js';
 import { unlink } from 'fs/promises';
 
 const MAX_TASKS = 100;
+const retryInFlight = new Set<string>();
 
 /** Legal state transitions - if a transition isn't in this map, it's rejected */
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
   [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED]),
-  [TaskStatus.RATE_LIMITED]: new Set([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.RUNNING]),
+  [TaskStatus.RATE_LIMITED]: new Set([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.RUNNING, TaskStatus.TIMED_OUT]),
   [TaskStatus.COMPLETED]: new Set([]), // terminal
   [TaskStatus.FAILED]: new Set([]),  // terminal
   [TaskStatus.CANCELLED]: new Set([]),  // terminal
@@ -205,6 +206,17 @@ class TaskManager {
     // Run cleanup on loaded tasks (removes expired ones)
     this.cleanup();
     
+    // Add jitter to RATE_LIMITED tasks whose nextRetryTime is in the past
+    // to prevent thundering herd when all retry immediately after restart
+    for (const task of this.tasks.values()) {
+      if (task.status === TaskStatus.RATE_LIMITED && task.retryInfo) {
+        const nextRetry = task.retryInfo.nextRetryTime ? new Date(task.retryInfo.nextRetryTime).getTime() : 0;
+        if (nextRetry < Date.now()) {
+          task.retryInfo.nextRetryTime = new Date(Date.now() + Math.random() * 60000).toISOString();
+        }
+      }
+    }
+
     // Process rate-limited tasks for auto-retry
     this.processRateLimitedTasks();
 
@@ -315,6 +327,7 @@ class TaskManager {
    * Process waiting tasks and start those with satisfied dependencies
    */
   private processWaitingTasks(): void {
+    if (this.isShuttingDown || this.isClearing) return;
     const waitingTasks = Array.from(this.tasks.values())
       .filter(t => t.status === TaskStatus.WAITING);
     
@@ -494,6 +507,8 @@ class TaskManager {
           console.error(`[task-manager] Auto-retrying task ${task.id} (attempt ${(task.retryInfo?.retryCount ?? 0) + 1})`);
           
           if (this.retryCallback) {
+            if (retryInFlight.has(task.id)) continue;
+            retryInFlight.add(task.id);
             // Kill old session before spawning retry
             try {
               await processRegistry.killTask(task.id);
@@ -533,6 +548,8 @@ class TaskManager {
               });
               console.error(`[task-manager] Auto-retry failed for ${task.id}; backing off 60s: ${err instanceof Error ? err.message : String(err)}`);
               // Don't mark FAILED — task stays RATE_LIMITED for next retry cycle
+            } finally {
+              retryInFlight.delete(task.id);
             }
           } else {
             console.error(`[task-manager] No retry callback registered, task ${task.id} will wait`);
@@ -670,6 +687,8 @@ class TaskManager {
         this.deleteOutputFile(task);
       }
       this.tasks.clear();
+      // Persist empty state immediately so cleared tasks don't reappear on restart
+      await this.persistNow();
       this.scheduleRateLimitCheck();
       return count;
     } finally {
@@ -683,17 +702,24 @@ class TaskManager {
    */
   async triggerManualRetry(taskId: string): Promise<{ success: boolean; newTaskId?: string; error?: string }> {
     const normalizedId = normalizeTaskId(taskId);
+    if (retryInFlight.has(normalizedId)) {
+      return { success: false, error: 'Retry already in progress for this task' };
+    }
+    retryInFlight.add(normalizedId);
     const task = this.tasks.get(normalizedId);
     
     if (!task) {
+      retryInFlight.delete(normalizedId);
       return { success: false, error: 'Task not found' };
     }
     
     if (task.status !== TaskStatus.RATE_LIMITED) {
+      retryInFlight.delete(normalizedId);
       return { success: false, error: `Task is not rate-limited (status: ${task.status})` };
     }
     
     if (!this.retryCallback) {
+      retryInFlight.delete(normalizedId);
       return { success: false, error: 'No retry callback registered' };
     }
     
@@ -722,6 +748,8 @@ class TaskManager {
       };
     } catch (err) {
       return { success: false, error: `Retry spawn failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      retryInFlight.delete(normalizedId);
     }
   }
 
@@ -886,8 +914,30 @@ class TaskManager {
       }
     }
 
-    // Check WAITING tasks for timeout
+    // Check WAITING, PENDING, and RATE_LIMITED tasks for timeout
     for (const task of this.tasks.values()) {
+      if (task.status === TaskStatus.PENDING && task.timeoutAt && now >= new Date(task.timeoutAt).getTime()) {
+        this.updateTask(task.id, {
+          status: TaskStatus.TIMED_OUT,
+          error: 'Task timed out while pending',
+          endTime: new Date().toISOString(),
+          timeoutReason: 'hard_timeout',
+          timeoutContext: { detectedBy: 'health_check' },
+        });
+        void this.abortFallbackTask(task.id, 'Task timed out while pending');
+        continue;
+      }
+      if (task.status === TaskStatus.RATE_LIMITED && task.timeoutAt && now >= new Date(task.timeoutAt).getTime()) {
+        this.updateTask(task.id, {
+          status: TaskStatus.TIMED_OUT,
+          error: 'Task timed out while rate-limited',
+          endTime: new Date().toISOString(),
+          timeoutReason: 'hard_timeout',
+          timeoutContext: { detectedBy: 'health_check' },
+        });
+        void this.abortFallbackTask(task.id, 'Task timed out while rate-limited');
+        continue;
+      }
       if (task.status !== TaskStatus.WAITING) continue;
       if (task.timeoutAt && now >= new Date(task.timeoutAt).getTime()) {
         this.updateTask(task.id, {
@@ -985,7 +1035,7 @@ class TaskManager {
         throw new Error(`Task capacity reached (${MAX_TASKS}); no evictable terminal tasks available`);
       }
     }
-    const id = generateTaskId();
+    const id = generateUniqueTaskId(new Set(this.tasks.keys()));
     const normalizedId = normalizeTaskId(id);
     
     // Determine initial status based on dependencies
@@ -1094,9 +1144,15 @@ class TaskManager {
     // No need to re-set in Map — object reference is unchanged
     const shouldPersist = options?.persist !== false || updates.status !== undefined;
     if (shouldPersist) {
-      // Flush immediately for terminal transitions to minimize crash window
+      // Flush immediately for terminal and critical transitions to minimize crash window
       if (updates.status && isTerminalStatus(updates.status)) {
-        this.persistNow().catch(() => {});
+        this.persistNow().catch(err => {
+          console.error(`[task-manager] Failed to persist terminal state for ${id}:`, err);
+        });
+      } else if (updates.status === TaskStatus.RUNNING && previousStatus === TaskStatus.PENDING) {
+        this.persistNow().catch(err => {
+          console.error(`[task-manager] Failed to persist RUNNING state for ${id}:`, err);
+        });
       } else {
         this.schedulePersist('state');
       }
@@ -1119,8 +1175,10 @@ class TaskManager {
     }
 
     // When a task fails/cancels/times out, cascade to waiting dependents
+    // Use queueMicrotask to batch dependency checks and prevent unbounded
+    // synchronous recursion when cascading failures propagate through chains.
     if (updates.status === TaskStatus.FAILED || updates.status === TaskStatus.CANCELLED || updates.status === TaskStatus.TIMED_OUT) {
-      this.processWaitingTasks();
+      queueMicrotask(() => this.processWaitingTasks());
     }
 
     return task;
@@ -1143,6 +1201,11 @@ class TaskManager {
     const normalizedId = normalizeTaskId(id);
     const task = this.tasks.get(normalizedId);
     if (task) {
+      // Block late output on terminal tasks after a brief grace period for final metrics
+      if (isTerminalStatus(task.status)) {
+        const terminalTs = task.endTime ? new Date(task.endTime).getTime() : 0;
+        if (Date.now() - terminalTs > 5000) return;
+      }
       const now = new Date().toISOString();
       task.lastOutputAt = now;
       task.lastHeartbeatAt = now;

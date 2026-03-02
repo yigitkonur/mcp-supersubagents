@@ -149,7 +149,7 @@ export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Arr
 
         // Atomic write: open with restrictive perms, fsync, then rename
         const fd = await openFile(tempPath, 'w', 0o600);
-        await fd.write(data);
+        await fd.writeFile(data, 'utf-8');
         await fd.datasync();
         await fd.close();
         await rename(tempPath, filePath);
@@ -206,11 +206,26 @@ export async function loadTasks(cwd: string): Promise<{ tasks: TaskState[]; cool
     const MAX_PERSIST_FILE_SIZE = 10 * 1024 * 1024; // 10MB
     if (fileStats.size > MAX_PERSIST_FILE_SIZE) {
       console.error(`[task-persistence] Persistence file too large (${fileStats.size} bytes), starting fresh`);
+      const backupPath = `${filePath}.corrupt.${Date.now()}`;
+      try {
+        await rename(filePath, backupPath);
+        console.error(`[task-persistence] Oversized file backed up to ${backupPath}`);
+      } catch { /* best effort */ }
       return { tasks: [], cooldowns: undefined };
     }
 
     const data = await readFile(filePath, 'utf-8');
-    const parsed = JSON.parse(data);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(data);
+    } catch (parseError) {
+      const backupPath = `${filePath}.corrupt.${Date.now()}`;
+      try {
+        await rename(filePath, backupPath);
+        console.error(`[task-persistence] Corrupted file backed up to ${backupPath}`);
+      } catch { /* best effort */ }
+      return { tasks: [], cooldowns: undefined };
+    }
 
     // Support both v1 (plain array) and v2 (object with tasks + cooldowns) formats
     let tasks: TaskState[];
@@ -242,7 +257,12 @@ export async function loadTasks(cwd: string): Promise<{ tasks: TaskState[]; cool
     // Recover orphaned tasks (server crashed while they were running)
     return { tasks: recoverOrphanedTasks(validTasks as TaskState[]), cooldowns };
   } catch (error) {
-    console.error(`[task-persistence] Failed to load tasks (corrupted?), starting fresh: ${error}`);
+    console.error(`[task-persistence] Failed to load tasks: ${error}`);
+    const backupPath = `${filePath}.corrupt.${Date.now()}`;
+    try {
+      await rename(filePath, backupPath);
+      console.error(`[task-persistence] Corrupted file backed up to ${backupPath}`);
+    } catch { /* best effort */ }
     return { tasks: [], cooldowns: undefined };
   }
 }
