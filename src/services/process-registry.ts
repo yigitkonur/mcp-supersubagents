@@ -79,9 +79,10 @@ export class ProcessRegistry {
         log(`killTask: aborting session for task=${taskId} pid=${pid ?? 'n/a'}`);
         await Promise.race([
           session.abort(),
-          new Promise<void>((_, reject) =>
-            setTimeout(() => reject(new Error('abort timeout')), 5000)
-          ),
+          new Promise<void>((_, reject) => {
+            const timeout = setTimeout(() => reject(new Error('abort timeout')), 5000);
+            timeout.unref();
+          }),
         ]);
         handledWithoutSignal = true;
         // Check if abort was sufficient
@@ -124,7 +125,10 @@ export class ProcessRegistry {
     log(`killTask: sent SIGTERM to pid=${pid} task=${taskId}`);
 
     // Step 3: wait 3s
-    await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 3000);
+      timeout.unref();
+    });
 
     // Step 4: SIGKILL if still alive
     if (this.isAlive(pid, pgid)) {
@@ -166,7 +170,10 @@ export class ProcessRegistry {
     }
 
     // Wait 5s
-    await new Promise<void>((resolve) => setTimeout(resolve, 5000));
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
+      timeout.unref();
+    });
 
     // SIGKILL stragglers
     for (const entry of entries) {

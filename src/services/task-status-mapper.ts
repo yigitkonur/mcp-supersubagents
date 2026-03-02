@@ -113,8 +113,10 @@ export function buildStatusMessage(task: TaskState): string {
         if (turnCount > 0) {
           parts.push(`turns: ${turnCount}`);
         }
-        if (totalTokens.input > 0 || totalTokens.output > 0) {
-          parts.push(`tokens: ${totalTokens.input + totalTokens.output}`);
+        const tokIn = totalTokens?.input ?? 0;
+        const tokOut = totalTokens?.output ?? 0;
+        if (tokIn > 0 || tokOut > 0) {
+          parts.push(`tokens: ${tokIn + tokOut}`);
         }
         if (completedSubagents?.length > 0) {
           parts.push(`subagents: ${completedSubagents.length}`);
@@ -206,8 +208,10 @@ export function buildStatusMessage(task: TaskState): string {
         if (turnCount > 0) {
           parts.push(`turns completed: ${turnCount}`);
         }
-        if (totalTokens.input > 0 || totalTokens.output > 0) {
-          parts.push(`tokens used: ${totalTokens.input + totalTokens.output}`);
+        const tokIn = totalTokens?.input ?? 0;
+        const tokOut = totalTokens?.output ?? 0;
+        if (tokIn > 0 || tokOut > 0) {
+          parts.push(`tokens used: ${tokIn + tokOut}`);
         }
       }
       

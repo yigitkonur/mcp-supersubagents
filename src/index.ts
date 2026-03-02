@@ -396,7 +396,8 @@ server.setRequestHandler(GetTaskPayloadRequestSchema, async (request) => {
   }
   let text = filtered.join('\n');
   if (Buffer.byteLength(text) > MAX_RESULT_BYTES) {
-    text = text.slice(-MAX_RESULT_BYTES);
+    const buf = Buffer.from(text);
+    text = buf.subarray(-MAX_RESULT_BYTES).toString('utf8');
   }
   if (totalLines > MAX_RESULT_LINES) {
     text = `[truncated: showing last ${MAX_RESULT_LINES} of ${totalLines} lines]\n${text}`;

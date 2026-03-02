@@ -16,6 +16,9 @@ import type { PendingQuestion } from '../types.js';
 
 const QUESTION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_PENDING_QUESTIONS = 50;
+// Unified control-char regex: C0 (minus TAB, LF, CR), DEL, and C1
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 
 interface QuestionBinding {
   taskId: string;
@@ -195,9 +198,7 @@ class QuestionRegistry {
       if (!customText) {
         return { valid: false, error: 'Custom answer cannot be empty.' };
       }
-      // Strip control characters from custom answer text
-      // eslint-disable-next-line no-control-regex
-      customText = customText.replace(/[\x00\x01-\x08\x0b\x0c\x0e-\x1f\x80-\x9f]/g, '');
+      customText = customText.replace(CONTROL_CHAR_RE, '');
       return { valid: true, answer: customText, wasFreeform: true };
     }
 
@@ -225,9 +226,7 @@ class QuestionRegistry {
       if (!trimmedAnswer) {
         return { valid: false, error: 'Answer cannot be empty.' };
       }
-      // VE-009: Strip control characters for freeform answers
-      // eslint-disable-next-line no-control-regex
-      const sanitized = trimmedAnswer.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+      const sanitized = trimmedAnswer.replace(CONTROL_CHAR_RE, '');
       return { valid: true, answer: sanitized, wasFreeform: true };
     }
 
