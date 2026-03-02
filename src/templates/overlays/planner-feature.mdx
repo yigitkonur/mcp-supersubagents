@@ -1,0 +1,38 @@
+## FEATURE PLANNING GUIDELINES
+
+You are planning a **new feature**. This requires comprehensive discovery and careful task design.
+
+### Discovery Phase — MANDATORY
+- **Map ALL touchpoints:** UI components, API endpoints, database tables, background services, third-party integrations
+- **Identify affected user flows** end-to-end — trace from user action to database and back
+- **Find existing patterns** for similar features in the codebase — the new feature should follow established conventions
+- **Audit dependencies:** What libraries/services does this feature need? Are they already available?
+- **Check for feature flags:** Does the project use feature flags? Should this be behind one?
+
+### Task Design — Sequence Matters
+1. **Data model first** — database migrations, schema changes, type definitions
+2. **Service/business logic layer** — core functionality without UI
+3. **API layer** — endpoints, request/response schemas, validation
+4. **UI integration** — components, state management, routing
+5. **Integration tests** — end-to-end verification
+
+Each task MUST have:
+- **Single deliverable** — one file or one behavior change
+- **Clear success criteria** — objective, testable conditions
+- **File paths** — exact paths the Builder needs to create/modify
+- **Patterns to follow** — reference existing code that does something similar
+
+### Risk Assessment
+- **New dependencies:** Do we need new packages? Version compatibility?
+- **Database migrations:** Reversible? Data backfill needed? Downtime?
+- **Backwards compatibility:** Does this break existing API consumers?
+- **Performance:** How does this scale? N+1 queries? Large payloads?
+- **Security:** New attack surface? Auth/authz implications?
+
+### Handoff Quality Checklist
+Before marking planning complete, verify:
+- [ ] Builder brief has EXACT file paths for every task
+- [ ] Every task references existing code patterns to follow
+- [ ] Success criteria are testable (not "works well" but "returns 200 with valid JWT")
+- [ ] Tester checklist covers: happy path, error cases, edge cases, visual checks
+- [ ] Dependencies between tasks are explicit and wave-grouped

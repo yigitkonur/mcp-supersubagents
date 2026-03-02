@@ -1,0 +1,36 @@
+## BUG FIX PLANNING GUIDELINES
+
+You are planning a **bug fix**. Root cause analysis is paramount — never plan a fix for symptoms.
+
+### Root Cause Analysis — DO THIS FIRST
+- **Reproduce the bug path:** Trace from user input → code execution path → failure point
+- **Identify the ROOT cause**, not just where the error appears — the error location and the bug location are often different
+- **Check:** Is this a single bug or a pattern? Search the codebase for similar code that might have the same issue
+- **Timeline:** When was this introduced? Was there a recent change that caused it? (`git log` the affected files)
+- **Scope:** Who is affected? All users? Specific conditions? Specific environments?
+
+### Fix Strategy — Minimal and Upstream
+- **Prefer minimal upstream fix** over downstream workaround — fix where the data goes wrong, not where the error surfaces
+- **Single-line fix if sufficient** — don't refactor adjacent code just because you're in the file
+- **Consider regressions:** Will this fix break anything else? Check all callers of the affected function
+- **Verify the fix concept** before planning implementation — does the logic actually solve the root cause?
+
+### Mandatory Task Structure
+Every bug fix plan MUST include these tasks:
+
+1. **Root cause documentation** — Write a clear explanation of what went wrong and why
+2. **The fix itself** — Minimal code change that addresses the root cause
+3. **Regression test** — A test that fails before the fix and passes after
+4. **Pattern check** — Search for the same bug pattern elsewhere in the codebase and fix if found
+
+### Task Design
+- Each task: **one file change**, clear before/after behavior
+- Success criteria: "Before fix: [behavior]. After fix: [behavior]"
+- Include the **exact error message, stack trace, or reproduction steps** in the Builder brief
+- Reference the **specific line numbers** where the bug occurs
+
+### Risk Assessment
+- **Regression risk:** What could this fix break? List explicitly
+- **Data impact:** Has bad data been written? Is cleanup needed?
+- **Deployment urgency:** Is this blocking production? Hotfix or normal release?
+- **Rollback plan:** If the fix causes new issues, what's the rollback?

@@ -1,0 +1,115 @@
+# ============================================
+# Dependencies
+# ============================================
+node_modules/
+
+# ============================================
+# Build output
+# ============================================
+build/
+dist/
+*.tsbuildinfo
+
+# ============================================
+# Environment variables
+# ============================================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+!.env.example
+
+# ============================================
+# IDE and editors
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS files
+# ============================================
+.DS_Store
+Thumbs.db
+
+# ============================================
+# Logs
+# ============================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================
+# Test output
+# ============================================
+coverage/
+test-results/
+
+# ============================================
+# Cache
+# ============================================
+.cache/
+.npm/
+.eslintcache
+
+# ============================================
+# Agent workspaces (runtime artifacts)
+# ============================================
+.super-agents/
+.agent-workspace/
+.agents/
+.windsurf/
+
+# ============================================
+# Repo-specific (mcp-supersubagents)
+# ============================================
+# Local SDK checkouts (not published)
+copilot-sdk/
+claude-code-sdk-ts/
+
+# Test files
+test-*.mjs
+test-*.js
+test-brief.md
+
+# Tool artifacts
+.playwright-cli/
+/evidence/
+
+# ============================================
+# Syncthing conflict files
+# ============================================
+*.sync-conflict-*
+
+# ============================================
+# Local dev tooling configs
+# ============================================
+jean.json
+mcp_servers.json
+worktree-init.sh
+
+# ============================================
+# Audit / analysis artifacts (generated, not source)
+# ============================================
+stability-audit/
+deep-dive-audit/
+CLAUDE.md.bak.old
+*.bak.old
+arabic-answer-invocation.txt
+
+# ============================================
+# Local MCP / skills config
+# ============================================
+mcp-config.json
+skills-lock.json
+
+# ============================================
+# Misc runtime artifacts
+# ============================================
+*.tgz
+private/
+lorem.txt
