@@ -36,27 +36,25 @@ Extract from brief:
 
 ## SKILL MOUNT
 
-Before testing, detect what's needed and mount the right domain skill.
+**Before any browser or E2E testing, activate the Playwright CLI skill.** This is mandatory — do not improvise browser automation without it.
 
-| If testing… | Mount skill |
-|---|---|
-| E2E browser flows (Playwright) | `get-skill-details(["currents-dev/playwright-best-practices-skill/playwright-best-practices"])` — Extract: decision tree across 35+ reference docs covering E2E/component/API/visual/accessibility patterns, flaky test resolution (race conditions, state leakage), POM implementation, and the validation loop (`playwright test`, `show-trace`, `--repeat-each=5`) |
-| Playwright testing setup | `get-skill-details(["alinaqi/claude-bootstrap/playwright-testing"])` — Extract: locator priority hierarchy (role > text > testid, never XPath/CSS), global auth state setup via `auth.setup.ts`, web-first auto-waiting assertions, dead link detection patterns, Page Object Model with base classes, and anti-patterns (hardcoded waits, shared state between tests) |
-| Test strategy / coverage | `get-skill-details(["proffesor-for-testing/agentic-qe/test-automation-strategy"])` — Extract: test pyramid ratio (70% unit / 20% integration / 10% E2E), F.I.R.S.T. principles, CI/CD staged pipeline with timeouts (unit 5m, integration 10m, E2E 15m), flaky test quarantine via `describe.skip` with incident refs, and the ice-cream-cone anti-pattern |
-| Test automation frameworks | `get-skill-details(["erichowens/some_claude_skills/test-automation-expert"])` — Extract: framework selection decision tree (Vitest for Vite/ESM, Jest for React, Playwright for E2E, pytest for Python), Arrange-Act-Assert structure, mock-at-boundaries-only rule, coverage targets (branch 75%+, function 90%+, critical paths 100%), and anti-patterns (implementation-detail testing, over-mocking, coverage theater) |
-| Performance / load testing | `get-skill-details(["404kidwiz/claude-supercode-skills/performance-testing"])` — Extract: load/stress/endurance test patterns, tool selection (k6 for JS scripting, JMeter, Gatling, Locust, WRK), metric collection (P50/P90/P95/P99 percentiles, not averages), baseline trend comparison, and anti-patterns (unrealistic workloads, missing think times, single-snapshot analysis) |
-| Visual regression | `get-skill-details(["manutej/luxor-claude-marketplace/playwright-visual-testing"])` — Extract: visual regression workflow (navigate, stabilize animations, snapshot, screenshot, compare against baseline), baseline directory structure (`baselines/`, `current/`, `diffs/`, `reports/`), responsive viewport matrix (375x667, 768x1024, 1920x1080), component state cataloging (default/hover/active/disabled/error), cross-browser matrix, and pre-screenshot stabilization (wait for network idle, disable dynamic content) |
-| Mobile / responsive QA | `get-skill-details(["vasilyu1983/ai-agents-public/qa-testing-mobile"])` — Extract: risk-tiered device matrix derived from analytics (Tier 1/2/3), native-first framework choice (XCUITest + Espresso over cross-platform), flake budget management with quarantine policies, mobile-specific concerns (permissions, background/foreground lifecycle, deep links, offline mode, startup latency, jank), and staged rollout with kill switches |
-| Security testing (OWASP) | `get-skill-details(["proffesor-for-testing/agentic-qe/security-testing"])` — Extract: systematic OWASP Top 10 coverage, access control tests (horizontal + vertical escalation), injection vectors (SQL, XSS, command), multi-layer scanning (SAST via SonarQube/Semgrep, DAST via ZAP/Burp Suite, dependency via npm audit/Snyk, secrets via TruffleHog), rate-limit validation (429 responses), and anti-patterns (security through obscurity, client-side-only validation) |
-| Accessibility (WCAG) | `get-skill-details(["daffy0208/ai-dev-standards/accessibility-engineer"])` — Extract: WCAG 2.1 AA compliance targeting, automated axe-core/jest-axe integration, screen reader testing (NVDA/JAWS/VoiceOver with navigation shortcuts), ARIA patterns (aria-live, aria-expanded, aria-invalid + aria-describedby), keyboard navigation with focus trapping in modals, color contrast ratios (4.5:1 normal, 3:1 large text), and anti-patterns (divs as buttons, skipped heading levels, placeholder-only labels) |
-| Unfamiliar test domain | `search-skills("[domain] testing")` → `get-skill-details` on best match |
+**Step 1 — Activate the skill:**
 
-**How to mount:** Follow this sequence to load domain-specific testing knowledge:
+```
+Skill("playwright-cli")
+```
 
-1. **Fetch:** Call `get-skill-details` with the skill ID from the table above.
-2. **Read:** Parse the returned SKILL.md file completely.
-3. **Extract these categories:** test patterns and methodology, setup commands and configuration, assertion strategies (what to assert and how), anti-patterns and common mistakes, tool-specific config (playwright.config.ts, k6 options, axe rules, etc.).
-4. **Apply:** Use the extracted patterns when writing and executing tests throughout all waves. Do not deviate from skill-recommended practices (e.g., if the skill says "never use XPath selectors," obey that rule).
+This loads the skill's SKILL.md into your conversation context. It covers headless Chromium automation, the observe-act loop, ref-based element targeting from accessibility snapshots, CLI commands, session lifecycle, and critical gotchas (stale refs, `fill` vs `type`, tab management traps).
+
+**Step 2 — Read the relevant reference file:**
+
+The SKILL.md acts as a router — it tells you WHICH reference document to `Read` based on your testing scenario. The detailed guidance lives in `references/` files, not in the SKILL.md itself. After activation, follow the SKILL.md's routing to `Read` the specific reference file by path.
+
+**Step 3 — Apply throughout all waves:**
+
+Every browser interaction must follow the patterns from the loaded reference. Every assertion needs screenshot or eval evidence.
+
+**Additional skills:** If your testing requires specialized domain knowledge (performance, accessibility, security), search for more skills via `search-skills` and load them with `get-skill-details`. Skills stack in context — but each one costs tokens, so only mount what you need.
 
 ---
 

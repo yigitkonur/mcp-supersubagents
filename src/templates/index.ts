@@ -115,12 +115,10 @@ function loadFile(filePath: string): string | null {
  * Template resolution:
  *   base template (super-coder.mdx) + user prompt (injected at {{user_prompt}})
  *
- * Agents load domain-specific context at runtime via search-skills + get-skill-details MCP tools.
- * The specialization parameter is accepted for backward compatibility but ignored.
- *
+ * Agents load domain-specific context at runtime via skill-mounting MCP tools.
  * When MCP_ENABLED_TOOLS is set, TOOLKIT table rows are filtered to only show enabled tools.
  */
-export function applyTemplate(taskType: TaskType, userPrompt: string, _specialization?: string): string {
+export function applyTemplate(taskType: TaskType, userPrompt: string): string {
   const basePath = join(__dirname, `${taskType}.mdx`);
   const base = loadFile(basePath);
   if (!base) return userPrompt;

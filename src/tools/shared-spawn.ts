@@ -6,12 +6,13 @@ import { applyTemplate, isValidTaskType, type TaskType } from '../templates/inde
 import { progressRegistry } from '../services/progress-registry.js';
 import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError } from '../utils/format.js';
-import { resolveModel } from '../models.js';
+import { resolveModel, getPreferredProvider, resolveModelForProvider } from '../models.js';
 import { clientContext } from '../services/client-context.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import {
   validateBrief,
   formatValidationError,
+  formatQualityWarnings,
   assemblePromptWithContext,
   type ContextFile,
 } from '../utils/brief-validator.js';
@@ -31,65 +32,10 @@ export interface SharedSpawnParams {
 export interface SpawnToolConfig {
   toolName: string;
   taskType?: TaskType;
-  specialization?: string;
 }
 
 // Return type shared by all spawn handlers
 export type SpawnHandlerResult = Promise<{ content: Array<{ type: string; text: string }>; isError?: true }>;
-
-/**
- * Configuration for the generic spawn handler factory.
- */
-export interface SpawnHandlerConfig<T> {
-  schema: { parse: (args: unknown) => T };
-  toolName: string;
-  taskType?: TaskType;
-  validationHint: string;
-  getSpecialization?: (parsed: T) => string | undefined;
-  getModel?: (parsed: T) => string | undefined;
-  getTaskType?: (parsed: T) => TaskType | undefined;
-}
-
-/**
- * Generic factory that creates a spawn tool handler.
- * Eliminates identical boilerplate across spawn roles (coder, planner, tester, researcher).
- *
- * Each handler: parse → validate → map to SharedSpawnParams → call handleSharedSpawn.
- */
-export function createSpawnHandler<T extends SharedSpawnParams>(
-  config: SpawnHandlerConfig<T>,
-): (args: unknown, ctx?: ToolContext) => SpawnHandlerResult {
-  return async (args: unknown, ctx?: ToolContext): SpawnHandlerResult => {
-    let parsed: T;
-    try {
-      parsed = config.schema.parse(args);
-    } catch (error) {
-      return mcpValidationError(
-        `❌ **SCHEMA VALIDATION FAILED — ${config.toolName}**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\n${config.validationHint}`
-      );
-    }
-
-    return handleSharedSpawn(
-      {
-        prompt: parsed.prompt,
-        context_files: parsed.context_files,
-        model: config.getModel?.(parsed) ?? parsed.model,
-        cwd: parsed.cwd,
-        timeout: parsed.timeout,
-        depends_on: parsed.depends_on,
-        labels: parsed.labels,
-        reasoning_effort: parsed.reasoning_effort,
-        mode: parsed.mode,
-      },
-      {
-        toolName: config.toolName,
-        taskType: config.getTaskType?.(parsed) ?? config.taskType,
-        specialization: config.getSpecialization?.(parsed),
-      },
-      ctx,
-    );
-  };
-}
 
 /**
  * Shared spawn handler used by all 5 specialized roles.
@@ -106,7 +52,7 @@ export async function handleSharedSpawn(
   // 1. Validate the brief
   const validation = await validateBrief(config.toolName, params.prompt, params.context_files, params.cwd);
   if (!validation.valid) {
-    return mcpValidationError(formatValidationError(config.toolName, validation.errors));
+    return mcpValidationError(formatValidationError(config.toolName, validation.errors, validation.warnings));
   }
 
   // 2. Validate dependencies if provided
@@ -123,13 +69,14 @@ export async function handleSharedSpawn(
   // 3. Assemble prompt with context file contents (uses cached content from validation to avoid TOCTOU)
   const enrichedPrompt = await assemblePromptWithContext(params.prompt, params.context_files, validation.fileContents);
 
-  // 4. Apply matryoshka template (base + specialization overlay)
+  // 4. Apply role template
   const finalPrompt = config.taskType && isValidTaskType(config.taskType)
-    ? applyTemplate(config.taskType, enrichedPrompt, config.specialization)
+    ? applyTemplate(config.taskType, enrichedPrompt)
     : enrichedPrompt;
 
-  // 5. Select provider via registry
-  const selection = providerRegistry.selectProvider();
+  // 5. Resolve model early so we can route to preferred provider
+  const model = resolveModel(params.model, config.taskType);
+  const selection = providerRegistry.selectProvider(getPreferredProvider(model));
   if (!selection) {
     return mcpValidationError(
       '❌ **NO PROVIDERS AVAILABLE:** No AI providers are configured or available.\n\n' +
@@ -137,10 +84,9 @@ export async function handleSharedSpawn(
     );
   }
 
-  // 6. Resolve model and create the task (provider-agnostic)
+  // 6. Create the task (provider-agnostic)
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
   const cwd = params.cwd || clientContext.getDefaultCwd();
-  const model = resolveModel(params.model, config.taskType);
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const mode = params.mode ?? DEFAULT_AGENT_MODE;
   const taskType = config.taskType || 'super-coder';
@@ -179,6 +125,8 @@ export async function handleSharedSpawn(
 
     // 7. Start provider execution asynchronously (return task ID immediately)
     const selectedProvider = selection.provider;
+    // Translate model name for the selected provider's SDK format
+    const providerModel = resolveModelForProvider(model, selectedProvider.id);
     setImmediate(() => {
       // Guard: task may have been cancelled between creation and this callback
       const current = taskManager.getTask(taskId);
@@ -189,7 +137,7 @@ export async function handleSharedSpawn(
         taskId,
         prompt: finalPrompt,
         cwd,
-        model,
+        model: providerModel,
         timeout,
         mode,
         reasoningEffort: params.reasoning_effort,
@@ -235,6 +183,7 @@ export async function handleSharedSpawn(
       });
     });
 
+    const qualityTip = formatQualityWarnings(validation.warnings);
     const parts = [
       `✅ **Task launched** (${config.toolName})`,
       `task_id: \`${taskId}\``,
@@ -246,6 +195,8 @@ export async function handleSharedSpawn(
       task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
       task.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
       `- Read resource: \`task:///${taskId}\``,
+      qualityTip ? '' : null,
+      qualityTip,
     ].filter(Boolean);
     return mcpText(parts.join('\n'));
   } catch (error) {

@@ -15,24 +15,24 @@ const AnswerQuestionSchema = z.object({
   answer: z.string().min(1).max(10000).describe('Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"'),
 });
 
-export const answerQuestionTool = {
-  name: 'answer_question',
-  description: `Submit an answer to a pending question from Copilot.
+export const answerAgentTool = {
+  name: 'answer-agent',
+  description: `Submit an answer to a pending question from an agent. When an agent pauses because it asked a question (via ask_user tool), use this to respond and resume execution.
 
-When a task is paused because Copilot asked a question (via ask_user tool), use this to respond.
+**When to call:** An agent's status shows "input_required" or the \`task:///all\` resource shows a pending question for a task.
 
 **Answer formats:**
-- **Choice by number**: \`"1"\`, \`"2"\`, \`"3"\` - selects the corresponding option
+- **Choice by number**: \`"1"\`, \`"2"\`, \`"3"\` — selects the corresponding option
 - **Choice by text**: Exact text of a choice option
-- **Custom answer**: \`"CUSTOM: your custom text"\` - for freeform responses
+- **Custom answer**: \`"CUSTOM: your custom text"\` — for freeform responses when choices don't fit
 
-**Example:**
+**Examples:**
 \`\`\`
-answer_question { "task_id": "abc123", "answer": "2" }
-answer_question { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
+answer-agent { "task_id": "abc123", "answer": "2" }
+answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
 \`\`\`
 
-Check pending questions via resource \`task:///all\`.`,
+**Find pending questions:** Read MCP Resource \`task:///all\` — tasks with \`has_pending_question: true\` need answers.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -48,7 +48,7 @@ Check pending questions via resource \`task:///all\`.`,
     required: ['task_id', 'answer'],
   },
   annotations: {
-    title: 'Answer Question',
+    title: 'Answer Agent',
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,

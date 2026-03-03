@@ -31,22 +31,25 @@ Extract from brief:
 
 ---
 
-## SKILL MOUNT (optional)
+## SKILL MOUNT
 
-Your primary tools are the Research Powerpack (below). Skills are supplementary — mount one only when researching a domain with established checklists or frameworks you'd otherwise miss.
+**Before any research, activate the Research Powerpack skill:**
 
-| If researching… | Mount skill |
-|---|---|
-| Security / OWASP / vulnerability analysis | `get-skill-details(["sickn33/antigravity-awesome-skills/vulnerability-scanner"])` — extract: attack surface taxonomy, scanning methodology, severity classification |
-| Architecture decisions / ADRs | `get-skill-details(["wshobson/agents/architecture-decision-records"])` — extract: ADR template, trade-off analysis framework, decision evaluation criteria |
-| Compliance (GDPR, SOC2, HIPAA, PCI-DSS) | `get-skill-details(["aj-geddes/useful-ai-prompts/security-compliance-audit"])` — extract: control mapping frameworks, audit checklists, gap analysis methodology |
-| Performance benchmarking | `get-skill-details(["aj-geddes/useful-ai-prompts/performance-testing"])` — extract: measurement methodology, metric selection, benchmarking patterns |
-| Library / technology evaluation | `get-skill-details(["404kidwiz/claude-supercode-skills/external-reference-research"])` — extract: evaluation criteria, comparison frameworks |
-| Other specialized domain | `search-skills("[domain] research")` → mount if a relevant skill exists |
+```
+Skill("research-powerpack-guide")
+```
 
-**How to mount:** Call `get-skill-details`, read the SKILL.md, extract research frameworks and evaluation criteria, then use them to structure your research plan.
+This loads the SKILL.md router into your context. It contains: 5 research tools (`web_search`, `search_reddit`, `get_reddit_post`, `deep_research`, `scrape_links`) with usage rules, 3 workflow patterns matched to task type (bug-fix, architecture, library-eval), a category router mapping 10 domains to optimal tool sequences, and anti-patterns to avoid.
 
-**When to skip:** Most research tasks don't need a skill. Skip this and go straight to RESEARCH POWERPACK unless the domain has established checklists (security, compliance, architecture decisions) that you'd miss without structured guidance.
+**The skill has 10 reference documents** covering specialized research methodology for: security, performance, architecture, bug-fixing, library-research, language-idioms, DevOps, API-integration, testing, and frontend. The SKILL.md router tells you which reference file matches your task category.
+
+**After activation, follow this sequence:**
+1. Read the SKILL.md router that was loaded into context
+2. Identify your task's category from the router (e.g., "security", "architecture", "bug-fixing")
+3. `Read` the matching reference file at the path the router specifies — that file contains the detailed methodology, tool sequences, and domain-specific guidance for your category
+4. Apply the loaded methodology throughout all research phases
+
+**For highly specialized domains:** If your task falls outside the 10 built-in categories or needs deeper domain expertise, use `search-skills` to find a complementary skill, then `get-skill-details` to load it. Skills stack — mounting a second skill adds domain knowledge on top of the research methodology.
 
 ---
 

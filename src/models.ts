@@ -1,37 +1,85 @@
 export const MODELS = {
-  'claude-sonnet-4.6': 'Latest Sonnet 4.6 - best balance of speed and capability (default)',
-  'claude-opus-4.6': 'Most capable - complex reasoning, large codebases',
-  'claude-haiku-4.5': 'Fastest - simple tasks, quick iterations',
+  'claude-sonnet-4.6': 'Claude Sonnet 4.6 — balanced speed and capability (default)',
+  'claude-opus-4.6': 'Claude Opus 4.6 — maximum capability for complex reasoning',
+  'gpt-5.3-codex-xhigh': 'GPT-5.3 Codex — maximum reasoning effort',
+  'gpt-5.3-codex-medium': 'GPT-5.3 Codex — balanced reasoning effort',
 } as const;
 
 export type ModelId = keyof typeof MODELS;
 export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4.6';
 export const OPUS_MODEL: ModelId = 'claude-opus-4.6';
 
-// ENABLE_OPUS controls VISIBILITY in tool descriptions only.
-// Clients that know the word 'opus' or 'claude-opus-4.6' can always use it.
-const ENABLE_OPUS = process.env.ENABLE_OPUS === 'true';
-
-// MODEL_IDS exposed in tool schema enum — opus hidden unless ENABLE_OPUS=true
-export const MODEL_IDS: ModelId[] = ENABLE_OPUS
-  ? ['claude-sonnet-4.6', 'claude-opus-4.6', 'claude-haiku-4.5']
-  : ['claude-sonnet-4.6', 'claude-haiku-4.5'];
-
-// All accepted model values (always includes opus + alias) for backend validation
-export const ALL_ACCEPTED_MODELS: string[] = [
+// All model IDs exposed in tool schema enums — no gating
+export const MODEL_IDS: ModelId[] = [
   'claude-sonnet-4.6',
   'claude-opus-4.6',
-  'claude-haiku-4.5',
-  'opus', // alias for claude-opus-4.6
-  'sonnet', // alias for claude-sonnet-4.6
-  'claude-sonnet-4.5', // backward compat alias
+  'gpt-5.3-codex-xhigh',
+  'gpt-5.3-codex-medium',
 ];
+
+// All accepted model values for backend Zod validation (canonical names only, no aliases)
+export const ALL_ACCEPTED_MODELS: string[] = [...MODEL_IDS];
+
+// ---------------------------------------------------------------------------
+// Model family + provider routing
+// ---------------------------------------------------------------------------
+
+export type ModelFamily = 'claude' | 'codex';
+
+/** Determine the model family from its canonical name. */
+export function getModelFamily(model: string): ModelFamily {
+  return model.startsWith('gpt-5.3-codex') ? 'codex' : 'claude';
+}
+
+/**
+ * Return the preferred provider ID for a given model.
+ * Codex models prefer the codex provider; Claude models use default chain.
+ */
+export function getPreferredProvider(model: string): string | undefined {
+  return getModelFamily(model) === 'codex' ? 'codex' : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Per-provider model name translation
+// ---------------------------------------------------------------------------
+
+/**
+ * Different SDKs need different model name formats for the same canonical model.
+ * This table maps canonical model → per-provider format.
+ *
+ * - codex SDK:       "gpt-5.3-codex xhigh"    (space, no parens)
+ * - copilot SDK:     "gpt-5.3-codex (xhigh)"  (parens)
+ * - claude-cli:      falls back to Claude equivalent
+ */
+const MODEL_PROVIDER_MAP: Record<string, Record<string, string>> = {
+  'gpt-5.3-codex-xhigh': {
+    codex:        'gpt-5.3-codex xhigh',
+    copilot:      'gpt-5.3-codex (xhigh)',
+    'claude-cli': 'claude-opus-4.6',       // xhigh fallback → opus
+  },
+  'gpt-5.3-codex-medium': {
+    codex:        'gpt-5.3-codex medium',
+    copilot:      'gpt-5.3-codex (medium)',
+    'claude-cli': 'claude-sonnet-4.6',     // medium fallback → sonnet
+  },
+};
+
+/**
+ * Translate a canonical model name to the format expected by a specific provider.
+ * Returns the canonical name unchanged if no translation is defined.
+ */
+export function resolveModelForProvider(model: string, providerId: string): string {
+  return MODEL_PROVIDER_MAP[model]?.[providerId] ?? model;
+}
+
+// ---------------------------------------------------------------------------
+// Model resolution (user input → canonical ModelId)
+// ---------------------------------------------------------------------------
 
 /**
  * Validate and sanitize model selection.
  * - super-planner always resolves to opus (no user override).
- * - 'opus' is an alias for 'claude-opus-4.6'.
- * - 'claude-opus-4.6' and 'opus' are ALWAYS allowed regardless of ENABLE_OPUS.
+ * - Unknown models default to claude-sonnet-4.6.
  */
 export function resolveModel(requested?: string, taskType?: string): ModelId {
   // super-planner is always opus — user cannot override
@@ -39,12 +87,10 @@ export function resolveModel(requested?: string, taskType?: string): ModelId {
 
   if (!requested) return DEFAULT_MODEL;
 
-  // 'opus' alias and 'claude-opus-4.6' always bypass ENABLE_OPUS
-  if (requested === 'opus' || requested === 'claude-opus-4.6') return OPUS_MODEL;
+  // Direct match against known models
+  if ((Object.keys(MODELS) as ModelId[]).includes(requested as ModelId)) {
+    return requested as ModelId;
+  }
 
-  // 'sonnet' alias + backward compat for old name
-  if (requested === 'sonnet' || requested === 'claude-sonnet-4.5') return DEFAULT_MODEL;
-
-  if ((Object.keys(MODELS) as ModelId[]).includes(requested as ModelId)) return requested as ModelId;
   return DEFAULT_MODEL;
 }

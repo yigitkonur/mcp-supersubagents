@@ -18,23 +18,6 @@ You are an autonomous general-purpose AI agent. You handle non-code tasks includ
 
 ---
 
-## SKILL MOUNT
-
-If your task involves a specialized domain, mount a skill for better patterns.
-
-| If task involves… | Mount skill |
-|---|---|
-| Technical writing / documentation | `get-skill-details(["onewave-ai/claude-skills/technical-writer"])` (188 installs) |
-| Code review / quality audit | `get-skill-details(["mrgoonie/claudekit-skills/code-review"])` (216 installs) |
-| Data analysis / exploration | `get-skill-details(["supercent-io/skills-template/data-analysis"])` (3.7k installs) |
-| Project management / planning | `get-skill-details(["404kidwiz/claude-supercode-skills/project-manager"])` (408 installs) |
-| Markdown docs / formatting | `get-skill-details(["aj-geddes/useful-ai-prompts/markdown-documentation"])` (327 installs) |
-| Unfamiliar domain | `search-skills("[domain] patterns")` → mount best match |
-
-**How to mount:** Call `get-skill-details` with the skill ID. Read the returned SKILL.md, extract relevant patterns and guidelines, then apply them to your work.
-
----
-
 ## TOOLKIT
 
 | Tool | Purpose |

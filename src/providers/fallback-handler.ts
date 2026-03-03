@@ -6,6 +6,9 @@
  *
  * When a provider fails, triggerFallback() finds the next available provider
  * in the chain and re-spawns the task through it.
+ *
+ * Multi-hop: supports codex → copilot → claude (or any chain length).
+ * Uses task.fallbackCount as a counter-based guard.
  */
 
 import type { FallbackRequest, ProviderSpawnOptions } from './types.js';
@@ -14,10 +17,11 @@ import { taskManager } from '../services/task-manager.js';
 import { createTaskHandle } from './task-handle-impl.js';
 import { isTerminalStatus, TaskStatus, DEFAULT_AGENT_MODE, type Provider } from '../types.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { resolveModelForProvider, DEFAULT_MODEL } from '../models.js';
 
 /**
  * Trigger fallback to the next available provider in the chain.
- * Uses task.fallbackAttempted as a single-flight guard.
+ * Uses task.fallbackCount counter — allows multiple hops up to chain.length - 1.
  *
  * Returns true if fallback was started, false if no fallback available.
  */
@@ -29,9 +33,10 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     return false;
   }
 
-  // Single-flight guard — only one fallback attempt per task lifetime
-  if (task.fallbackAttempted) {
-    console.error(`[fallback-handler] Task ${taskId}: fallback already attempted, skipping`);
+  // Counter-based guard — allow multiple hops but not infinite
+  const maxHops = providerRegistry.getChain().length - 1;
+  if ((task.fallbackCount ?? 0) >= maxHops) {
+    console.error(`[fallback-handler] Task ${taskId}: fallback limit reached (${task.fallbackCount}/${maxHops}), skipping`);
     return false;
   }
 
@@ -48,9 +53,9 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     return false;
   }
 
-  // Set the single-flight guard
+  // Increment fallback counter
   taskManager.updateTask(taskId, {
-    fallbackAttempted: true,
+    fallbackCount: (freshTask.fallbackCount ?? 0) + 1,
     switchAttempted: true,
     provider: selection.provider.id as Provider,
   });
@@ -71,14 +76,18 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
   }
 
   console.error(
-    `[fallback-handler] Task ${taskId}: '${failedProviderId}' → '${selection.provider.id}' (reason: ${reason})`
+    `[fallback-handler] Task ${taskId}: '${failedProviderId}' → '${selection.provider.id}' (reason: ${reason}, hop: ${(freshTask.fallbackCount ?? 0) + 1}/${maxHops})`
   );
+
+  // Translate model for the fallback provider
+  const taskModel = freshTask.model ?? DEFAULT_MODEL;
+  const translatedModel = resolveModelForProvider(taskModel, selection.provider.id);
 
   const spawnOptions: ProviderSpawnOptions = {
     taskId,
     prompt: fallbackPrompt,
     cwd: cwd ?? freshTask.cwd ?? process.cwd(),
-    model: freshTask.model ?? 'sonnet',
+    model: translatedModel,
     timeout: timeoutRemaining,
     mode: freshTask.mode ?? DEFAULT_AGENT_MODE,
     taskType: freshTask.taskType ?? 'super-coder',

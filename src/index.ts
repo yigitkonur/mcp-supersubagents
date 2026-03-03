@@ -11,10 +11,14 @@ import {
   McpError, ErrorCode,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { spawnAgentTool, handleSpawnAgent } from './tools/spawn-agent.js';
-import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
-import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
-import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
+import { launchSuperCoderTool, handleLaunchSuperCoder } from './tools/launch-super-coder.js';
+import { launchSuperPlannerTool, handleLaunchSuperPlanner } from './tools/launch-super-planner.js';
+import { launchSuperTesterTool, handleLaunchSuperTester } from './tools/launch-super-tester.js';
+import { launchSuperResearcherTool, handleLaunchSuperResearcher } from './tools/launch-super-researcher.js';
+import { launchClassicAgentTool, handleLaunchClassicAgent } from './tools/launch-classic-agent.js';
+import { cancelAgentTool, handleCancelTask } from './tools/cancel-task.js';
+import { messageAgentTool, handleSendMessage } from './tools/send-message.js';
+import { answerAgentTool, handleAnswerQuestion } from './tools/answer-question.js';
 import { taskManager } from './services/task-manager.js';
 import { TERMINAL_STATUSES, DEFAULT_AGENT_MODE } from './types.js';
 import { clientContext } from './services/client-context.js';
@@ -145,13 +149,13 @@ taskManager.onRetry(async (task) => {
 
   try {
     // Create a new task with the same parameters, carrying forward retry info
-    const newTask = taskManager.createTask(task.prompt, task.cwd || process.cwd(), task.model || 'sonnet', {
+    const newTask = taskManager.createTask(task.prompt, task.cwd || process.cwd(), task.model || 'claude-sonnet-4.6', {
       provider: provider.id as Provider,
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
       mode: task.mode ?? DEFAULT_AGENT_MODE,
       labels: task.labels,
       retryInfo: task.retryInfo ? { ...task.retryInfo } : undefined,
-      fallbackAttempted: task.fallbackAttempted,
+      fallbackCount: task.fallbackCount,
       switchAttempted: task.switchAttempted,
       taskType: task.taskType,
     });
@@ -163,7 +167,7 @@ taskManager.onRetry(async (task) => {
         taskId: newTask.id,
         prompt: task.prompt,
         cwd: task.cwd || process.cwd(),
-        model: task.model || 'sonnet',
+        model: task.model || 'claude-sonnet-4.6',
         timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
         mode: task.mode ?? DEFAULT_AGENT_MODE,
       }, handle).catch((err) => {
@@ -222,7 +226,7 @@ taskManager.onExecute(async (task) => {
       taskId: task.id,
       prompt: task.prompt,
       cwd: task.cwd || process.cwd(),
-      model: task.model || 'sonnet',
+      model: task.model || 'claude-sonnet-4.6',
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
       mode: task.mode ?? DEFAULT_AGENT_MODE,
     }, handle);
@@ -385,12 +389,16 @@ server.oninitialized = async () => {
 
 // --- Tool handlers ---
 
-// 4 tools: spawn_agent + send_message + cancel + answer
+// 8 tools: 5 launch-* + message-agent + cancel-agent + answer-agent
 const tools = [
-  spawnAgentTool,
-  sendMessageTool,
-  cancelTaskTool,
-  answerQuestionTool,
+  launchSuperCoderTool,
+  launchSuperPlannerTool,
+  launchSuperTesterTool,
+  launchSuperResearcherTool,
+  launchClassicAgentTool,
+  messageAgentTool,
+  cancelAgentTool,
+  answerAgentTool,
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -413,11 +421,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     };
 
     switch (name) {
-      case 'spawn_agent': return handleSpawnAgent(args, ctx);
-      case 'send_message': return handleSendMessage(args, ctx);
-      case 'cancel_task': return handleCancelTask(args);
-      case 'answer_question': return handleAnswerQuestion(args);
-      default: return mcpValidationError(`Unknown tool \`${name}\`. Available: spawn_agent, send_message, cancel_task, answer_question.`);
+      case 'launch-super-coder': return handleLaunchSuperCoder(args, ctx);
+      case 'launch-super-planner': return handleLaunchSuperPlanner(args, ctx);
+      case 'launch-super-tester': return handleLaunchSuperTester(args, ctx);
+      case 'launch-super-researcher': return handleLaunchSuperResearcher(args, ctx);
+      case 'launch-classic-agent': return handleLaunchClassicAgent(args, ctx);
+      case 'message-agent': return handleSendMessage(args, ctx);
+      case 'cancel-agent': return handleCancelTask(args);
+      case 'answer-agent': return handleAnswerQuestion(args);
+      default: return mcpValidationError(`Unknown tool \`${name}\`. Available: launch-super-coder, launch-super-planner, launch-super-tester, launch-super-researcher, launch-classic-agent, message-agent, cancel-agent, answer-agent.`);
     }
   } catch (err) {
     return mcpValidationError(`Internal error: ${err instanceof Error ? err.message : String(err)}`);

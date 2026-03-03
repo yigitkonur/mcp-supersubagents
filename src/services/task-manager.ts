@@ -1048,7 +1048,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackAttempted?: boolean; switchAttempted?: boolean; timeout?: number; mode?: import('../types.js').AgentMode; taskType?: string }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackCount?: number; switchAttempted?: boolean; timeout?: number; mode?: import('../types.js').AgentMode; taskType?: string }): TaskState {
     if (this.isClearing) {
       throw new Error('Cannot create tasks while clearing workspace');
     }
@@ -1100,7 +1100,7 @@ class TaskManager {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
       provider: options?.provider,
-      fallbackAttempted: options?.fallbackAttempted,
+      fallbackCount: options?.fallbackCount,
       switchAttempted: options?.switchAttempted,
       timeout: options?.timeout,
       mode: options?.mode,

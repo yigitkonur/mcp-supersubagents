@@ -264,7 +264,7 @@ export interface TaskState {
   timeoutContext?: TimeoutContext;
   labels?: string[];
   provider?: Provider;
-  fallbackAttempted?: boolean;
+  fallbackCount?: number;
   switchAttempted?: boolean;
   // SDK Enhancement Fields
   /** Structured failure context from SDK events */
@@ -298,7 +298,7 @@ export interface SpawnOptions {
   dependsOn?: string[];
   labels?: string[];
   provider?: Provider;
-  fallbackAttempted?: boolean;
+  fallbackCount?: number;
   switchAttempted?: boolean;
   /** Reasoning effort level for the session */
   reasoningEffort?: ReasoningEffort;

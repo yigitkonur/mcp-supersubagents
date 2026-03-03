@@ -17,7 +17,14 @@ export interface ValidationError {
 export interface ValidationResult {
   valid: boolean;
   errors: ValidationError[];
+  warnings?: ValidationError[];
   fileContents?: Map<string, string>;
+}
+
+interface PromptQualityCheck {
+  pattern: RegExp;
+  label: string;
+  hint: string;
 }
 
 interface ToolValidationRules {
@@ -30,6 +37,7 @@ interface ToolValidationRules {
   maxTotalSizeBytes: number;
   briefTemplate: string;
   workflowHint: string;
+  promptQualityChecks?: PromptQualityCheck[];
 }
 
 // --- Per-tool validation rules ---
@@ -38,7 +46,7 @@ const MAX_FILE_SIZE = 200 * 1024;   // 200KB per file
 const MAX_TOTAL_SIZE = 500 * 1024;  // 500KB total
 
 const CODER_RULES: ToolValidationRules = {
-  toolName: 'spawn_agent(role: "coder")',
+  toolName: 'launch-super-coder',
   minPromptLength: 1000,
   requireContextFiles: true,
   minContextFiles: 1,
@@ -57,13 +65,13 @@ const CODER_RULES: ToolValidationRules = {
     '⚠️ YOU MUST CREATE .md FILES BEFORE SPAWNING A CODER:',
     '',
     'Option A — Use a planner agent:',
-    '  1. spawn_agent(role: "planner", prompt: "...") → wait for completion',
+    '  1. launch-super-planner(prompt: "...") → wait for completion',
     '  2. Planner writes .md files to .agent-workspace/plans/[topic]/',
-    '  3. spawn_agent(role: "coder", context_files: [{ path: ".../builder-briefing.md" }])',
+    '  3. launch-super-coder(context_files: [{ path: ".../builder-briefing.md" }])',
     '',
     'Option B — Write a spec yourself:',
     '  1. Create a .md file with the design/plan/spec',
-    '  2. spawn_agent(role: "coder", context_files: [{ path: "/abs/path/to/spec.md" }])',
+    '  2. launch-super-coder(context_files: [{ path: "/abs/path/to/spec.md" }])',
     '',
     '💡 If multiple agents need the same context, attach the same .md files to each one.',
     '',
@@ -71,10 +79,15 @@ const CODER_RULES: ToolValidationRules = {
     '• Planner output: .agent-workspace/plans/[topic]/05-handoff/builder-briefing.md',
     '• Researcher output: .agent-workspace/researches/[topic]/HANDOFF.md',
   ].join('\n'),
+  promptQualityChecks: [
+    { pattern: /\/[\w./-]+\.\w+/, label: 'file paths', hint: 'Include absolute file paths the agent should modify' },
+    { pattern: /success|criteria|verif|done when|accept/i, label: 'success criteria', hint: 'Add explicit success criteria so the agent knows when it\'s done' },
+    { pattern: /constraint|don't|do not|avoid|never|boundary|forbidden/i, label: 'constraints', hint: 'Adding constraints prevents the agent from going off-track' },
+  ],
 };
 
 const PLANNER_RULES: ToolValidationRules = {
-  toolName: 'spawn_agent(role: "planner")',
+  toolName: 'launch-super-planner',
   minPromptLength: 300,
   requireContextFiles: false,
   minContextFiles: 0,
@@ -90,12 +103,16 @@ const PLANNER_RULES: ToolValidationRules = {
   ].join('\n'),
   workflowHint: [
     '📎 TIP: The planner creates files at .agent-workspace/plans/[topic]/',
-    'Use those files as context_files when spawning spawn_agent(role: "coder") next.',
+    'Use those files as context_files when spawning launch-super-coder next.',
   ].join('\n'),
+  promptQualityChecks: [
+    { pattern: /problem|goal|need|solve|issue|challenge/i, label: 'problem statement', hint: 'State the problem clearly — what needs solving, not just what to build' },
+    { pattern: /scope|in.scope|out.of.scope|boundary|limit/i, label: 'scope definition', hint: 'Define what\'s in/out of scope to focus the plan' },
+  ],
 };
 
 const TESTER_RULES: ToolValidationRules = {
-  toolName: 'spawn_agent(role: "tester")',
+  toolName: 'launch-super-tester',
   minPromptLength: 300,
   requireContextFiles: true,
   minContextFiles: 1,
@@ -115,10 +132,14 @@ const TESTER_RULES: ToolValidationRules = {
     '• Coder handoff: .agent-workspace/implementation/[topic]/HANDOFF.md',
     '• Planner test checklist: .agent-workspace/plans/[topic]/05-handoff/tester-checklist.md',
   ].join('\n'),
+  promptQualityChecks: [
+    { pattern: /success|criteria|pass|expect|should|working/i, label: 'success criteria', hint: 'Specify what "working" means in testable terms' },
+    { pattern: /\/[\w./-]+\.\w+/, label: 'file paths', hint: 'Include file paths of what was changed so the tester knows where to focus' },
+  ],
 };
 
 const RESEARCHER_RULES: ToolValidationRules = {
-  toolName: 'spawn_agent(role: "researcher")',
+  toolName: 'launch-super-researcher',
   minPromptLength: 200,
   requireContextFiles: false,
   minContextFiles: 0,
@@ -134,12 +155,16 @@ const RESEARCHER_RULES: ToolValidationRules = {
   ].join('\n'),
   workflowHint: [
     '📎 TIP: Research output goes to .agent-workspace/researches/[topic]/HANDOFF.md',
-    'Reference this file when spawning spawn_agent(role: "planner") or spawn_agent(role: "coder") next.',
+    'Reference this file when spawning launch-super-planner or launch-super-coder next.',
   ].join('\n'),
+  promptQualityChecks: [
+    { pattern: /\?/, label: 'explicit questions', hint: 'Include explicit questions (with ?) so the researcher has clear targets' },
+    { pattern: /planner|coder|builder|human|handoff|deliver/i, label: 'handoff target', hint: 'Specify who reads the output so findings are structured for the right audience' },
+  ],
 };
 
 const GENERAL_RULES: ToolValidationRules = {
-  toolName: 'spawn_agent(role: "general")',
+  toolName: 'launch-classic-agent',
   minPromptLength: 200,
   requireContextFiles: false,
   minContextFiles: 0,
@@ -157,12 +182,6 @@ const GENERAL_RULES: ToolValidationRules = {
 };
 
 export const VALIDATION_RULES: Record<string, ToolValidationRules> = {
-  'spawn_coder': CODER_RULES,
-  'spawn_planner': PLANNER_RULES,
-  'spawn_tester': TESTER_RULES,
-  'spawn_researcher': RESEARCHER_RULES,
-  'spawn_general': GENERAL_RULES,
-  // spawn_agent delegates to these by role name
   'coder': CODER_RULES,
   'planner': PLANNER_RULES,
   'tester': TESTER_RULES,
@@ -200,7 +219,7 @@ export async function validateBrief(
       code: 'MISSING_CONTEXT_FILES',
       message: `MISSING CONTEXT FILES: ${rules.toolName} REQUIRES at least ${rules.minContextFiles} file(s)`,
       detail: rules.requireMdExtension
-        ? 'The coder agent runs in complete isolation — context_files are the ONLY way to give it specifications and plans.\n\nHOW TO FIX:\n1. Spawn a planner agent first → it produces .md plan files.\n2. Wait for it to complete (use depends_on to chain tasks).\n3. Pass the planner\'s output .md files as context_files to the coder.\n\nExample:\n  spawn_agent(role: "planner", prompt: "...plan the feature...")   → produces plan.md\n  spawn_agent(role: "coder",  prompt: "...", context_files: [{ path: "/project/.agent-workspace/plans/.../builder-briefing.md" }], depends_on: ["planner-task-id"])\n\nEach file must be an absolute path ending in .md.'
+        ? 'The coder agent runs in complete isolation — context_files are the ONLY way to give it specifications and plans.\n\nHOW TO FIX:\n1. Launch a planner agent first → it produces .md plan files.\n2. Wait for it to complete (use depends_on to chain tasks).\n3. Pass the planner\'s output .md files as context_files to the coder.\n\nExample:\n  launch-super-planner(prompt: "...plan the feature...")   → produces plan.md\n  launch-super-coder(prompt: "...", context_files: [{ path: "/project/.agent-workspace/plans/.../builder-briefing.md" }], depends_on: ["planner-task-id"])\n\nEach file must be an absolute path ending in .md.'
         : 'The tester agent runs in complete isolation — context_files are the ONLY way to tell it what files to test.\n\nHOW TO FIX: Attach the source files or handoff documents the tester needs to verify.\nExample: context_files: [{ path: "/project/src/auth.ts", description: "Auth module to test" }]\nEach file must have an absolute path.',
     });
   }
@@ -324,12 +343,26 @@ export async function validateBrief(
     });
   }
 
-  return { valid: errors.length === 0, errors, fileContents };
+  // Prompt quality checks (soft warnings — never block spawning)
+  const warnings: ValidationError[] = [];
+  if (rules.promptQualityChecks) {
+    for (const check of rules.promptQualityChecks) {
+      if (!check.pattern.test(prompt)) {
+        warnings.push({
+          code: 'QUALITY_WARNING',
+          message: `Missing: ${check.label}`,
+          detail: check.hint,
+        });
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings: warnings.length > 0 ? warnings : undefined, fileContents };
 }
 
 // --- Error message formatting ---
 
-export function formatValidationError(toolName: string, errors: ValidationError[]): string {
+export function formatValidationError(toolName: string, errors: ValidationError[], warnings?: ValidationError[]): string {
   const rules = VALIDATION_RULES[toolName];
   if (!rules) return errors.map(e => e.message).join('\n');
 
@@ -356,7 +389,26 @@ export function formatValidationError(toolName: string, errors: ValidationError[
   parts.push('');
   parts.push(rules.workflowHint);
 
+  // Append quality warnings when present alongside hard errors
+  if (warnings && warnings.length > 0) {
+    parts.push('');
+    parts.push('💡 **PROMPT QUALITY TIPS (not blocking — but these improve agent results):**');
+    for (const warn of warnings) {
+      parts.push(`• ${warn.message} — ${warn.detail}`);
+    }
+  }
+
   return parts.join('\n');
+}
+
+/**
+ * Format quality warnings as a one-line summary for success responses.
+ * Returns null if no warnings.
+ */
+export function formatQualityWarnings(warnings?: ValidationError[]): string | null {
+  if (!warnings || warnings.length === 0) return null;
+  const labels = warnings.map(w => w.message.replace(/^Missing: /, '')).join(', ');
+  return `💡 **Prompt tips:** Consider adding: ${labels} — these improve agent results.`;
 }
 
 // --- Context file content assembly ---

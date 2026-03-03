@@ -134,13 +134,11 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
 async function spawnAndWait(client, cwd, index, prompt, taskTimeoutMs, waitTimeoutMs) {
 
   const spawnResult = await client.callTool({
-    name: 'spawn_agent',
+    name: 'launch-super-researcher',
     arguments: {
-      role: 'researcher',
       prompt,
       cwd,
       timeout: taskTimeoutMs,
-      model: 'claude-haiku-4.5',
       labels: ['mcp-smoke', `case-${index}`],
     },
   });
@@ -203,8 +201,8 @@ async function main() {
 
     const tools = await client.listTools();
     assert(Array.isArray(tools.tools), 'tools/list did not return a tools array');
-    assert(tools.tools.some((t) => t.name === 'spawn_agent'), 'spawn_agent tool not found');
-    assert(tools.tools.some((t) => t.name === 'cancel_task'), 'cancel_task tool not found');
+    assert(tools.tools.some((t) => t.name === 'launch-super-coder'), 'launch-super-coder tool not found');
+    assert(tools.tools.some((t) => t.name === 'cancel-agent'), 'cancel-agent tool not found');
     log(`tools/list ok (${tools.tools.length} tools)`);
 
     const resources = await client.listResources();
@@ -217,7 +215,7 @@ async function main() {
 
     // Start from a clean workspace state.
     await client.callTool({
-      name: 'cancel_task',
+      name: 'cancel-agent',
       arguments: { task_id: 'all', clear: true, confirm: true },
     });
     log('cleared previous tasks');

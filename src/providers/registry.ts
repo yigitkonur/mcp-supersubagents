@@ -74,9 +74,29 @@ class ProviderRegistry {
 
   /**
    * Select the primary provider for a new task.
-   * Walks the chain, skipping fallback-only entries, returns the first available.
+   *
+   * If preferredProviderId is given, try that provider first (even if fallbackOnly)
+   * before walking the rest of the chain. This enables model-aware routing:
+   * codex models prefer the codex provider.
    */
-  selectProvider(): ProviderSelection | null {
+  selectProvider(preferredProviderId?: string): ProviderSelection | null {
+    // Try preferred provider first (e.g., codex for GPT models)
+    if (preferredProviderId) {
+      const idx = this.chain.findIndex(e => e.id === preferredProviderId);
+      if (idx >= 0) {
+        const provider = this.providers.get(preferredProviderId);
+        if (provider) {
+          const availability = provider.checkAvailability();
+          if (availability.available) {
+            return { provider, chainIndex: idx };
+          }
+          console.error(
+            `[provider-registry] Preferred provider '${preferredProviderId}' unavailable: ${availability.reason ?? 'unknown'}`
+          );
+        }
+      }
+    }
+
     for (let i = 0; i < this.chain.length; i++) {
       const entry = this.chain[i];
       if (entry.fallbackOnly) continue;

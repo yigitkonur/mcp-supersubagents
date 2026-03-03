@@ -23,20 +23,22 @@ const SendMessageSchema = z.object({
   cwd: z.string().optional(),
 });
 
-export const sendMessageTool = {
-  name: 'send_message',
-  description: `Send a message to an existing task session to continue the conversation.
+export const messageAgentTool = {
+  name: 'message-agent',
+  description: `Send a follow-up message to an existing agent session. Resumes the session and delivers your message — the agent continues working from where it left off.
 
-**Use this to:**
-- Continue a completed task with follow-up ("now also add tests")
-- Resume a failed/rate-limited task with "continue"
-- Add to context without starting fresh
+**When to call:**
+- Continue a completed agent with follow-up instructions ("now also add tests")
+- Resume a failed or rate-limited agent with "continue"
+- Add context to an existing session without spawning a new agent
 
-**Default message:** "continue" (picks up where it left off)
+**Default message:** "continue" (picks up where the agent left off)
+
+**How it works:** The agent's session is resumed with your message injected as a new user turn. The agent processes the message and continues autonomously.
 
 **Examples:**
 - \`{ "task_id": "abc123" }\` — Resume with "continue"
-- \`{ "task_id": "abc123", "message": "now add unit tests" }\` — Follow-up instruction
+- \`{ "task_id": "abc123", "message": "now add unit tests for the auth module" }\` — Follow-up instruction
 
 **Find task_id:** Read MCP Resource \`task:///all\` for task list with IDs and \`can_send_message\` flag.`,
   inputSchema: {
@@ -62,7 +64,7 @@ export const sendMessageTool = {
     required: ['task_id'],
   },
   annotations: {
-    title: 'Send Message',
+    title: 'Message Agent',
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,
@@ -97,7 +99,7 @@ export async function handleSendMessage(
   if (!task.sessionId) {
     return mcpError(
       'Task has no session ID',
-      'This task cannot receive messages. Use `spawn_agent` to create a new task.'
+      'This task cannot receive messages. Use a launch-* tool to create a new task.'
     );
   }
 
@@ -106,7 +108,7 @@ export async function handleSendMessage(
   if (!capabilities?.supportsSessionResume) {
     return mcpError(
       `This task ran on ${task.provider ?? 'an unknown provider'} which does not support session resume`,
-      'Use `spawn_agent` to start a new task with the original prompt.'
+      'Use a launch-* tool to start a new task with the original prompt.'
     );
   }
 
@@ -116,7 +118,7 @@ export async function handleSendMessage(
   if (!sdkClientManager.getSession(task.sessionId)) {
     return mcpError(
       `Session "${task.sessionId}" is no longer active`,
-      'The session was destroyed (unbind, sweep, or rotation). Use `spawn_agent` to start a new task.'
+      'The session was destroyed (unbind, sweep, or rotation). Use a launch-* tool to start a new task.'
     );
   }
 
@@ -133,7 +135,7 @@ export async function handleSendMessage(
     if (task.status === TaskStatus.RUNNING) {
       return mcpError(
         'Task is still running',
-        'Wait for the task to complete, or use `cancel_task` first.'
+        'Wait for the task to complete, or use `cancel-agent` first.'
       );
     }
     return mcpError(
@@ -181,14 +183,14 @@ export async function handleSendMessage(
     if (!provider) {
       return mcpError(
         `Provider "${task.provider}" is not registered`,
-        'Use `spawn_agent` to start a new task.'
+        'Use a launch-* tool to start a new task.'
       );
     }
 
     if (!provider.sendMessage) {
       return mcpError(
         `Provider "${task.provider}" does not support sendMessage`,
-        'Use `spawn_agent` to start a new task with the original prompt.'
+        'Use a launch-* tool to start a new task with the original prompt.'
       );
     }
 
@@ -196,7 +198,7 @@ export async function handleSendMessage(
       taskId,
       prompt: message,
       cwd,
-      model: task.model ?? 'sonnet',
+      model: task.model ?? 'claude-sonnet-4.6',
       timeout,
       mode: task.mode ?? DEFAULT_AGENT_MODE,
     });
@@ -227,7 +229,7 @@ export async function handleSendMessage(
   } catch (error) {
     return mcpError(
       error instanceof Error ? error.message : 'Failed to send message',
-      'Check that the task session is still valid. Try creating a new task with `spawn_agent` instead.'
+      'Check that the task session is still valid. Try creating a new task with a launch-* tool instead.'
     );
   } finally {
     resumeInProgress.delete(taskId);

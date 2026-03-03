@@ -141,7 +141,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         codexPathOverride: CODEX_PATH,
       });
 
-      const codexModel = model === 'sonnet' || model === 'opus' ? CODEX_MODEL : (model || CODEX_MODEL);
+      const codexModel = model || CODEX_MODEL;
 
       const thread = codex.startThread({
         model: codexModel,

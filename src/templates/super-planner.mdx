@@ -35,24 +35,23 @@ Extract from brief:
 
 ## SKILL MOUNT
 
-Before deep planning, detect the domain and mount relevant patterns.
+**Before any planning work, activate the planning skill:**
 
-| If planning... | Mount skill |
-|---|---|
-| Feature design / architecture | `get-skill-details(["sickn33/antigravity-awesome-skills/software-architecture"])` -- extract Clean Architecture + DDD decomposition rules, library-first vs custom code decision framework, naming conventions (ban generic `utils`/`helpers`), component size limits (functions <50 lines, files <200 lines), and anti-pattern checklist (NIH syndrome, mixed concerns) |
-| Bug fix strategy | `get-skill-details(["markpitt/claude-skills/root-cause-analysis"])` -- extract the 4-phase investigation protocol (Classify -> Select methodology -> Execute -> Verify), 5 Whys / Fishbone / Pareto / Fault Tree selection matrix by complexity, Problem Definition Framework (What/Where/When/Impact), and Forward/Backward verification tests |
-| Architecture decisions (DDD, CQRS, etc.) | `get-skill-details(["vasilyu1983/ai-agents-public/software-architecture-design"])` -- extract the architecture decision tree (monolith vs microservices vs serverless vs event-driven), team-size threshold rule (<10 devs = modular monolith), CAP theorem tradeoff analysis, ADR template structure, and the 7-step workflow (clarify -> quality attributes -> 2-3 candidates -> boundaries -> data strategy -> operations -> document) |
-| Migration / database strategy | `get-skill-details(["aj-geddes/useful-ai-prompts/database-migration-management"])` -- extract safe migration patterns (concurrent index creation, non-blocking ALTER TABLE), bidirectional UP/DOWN migration structure, BEGIN/ROLLBACK testing pattern, production deployment checklist (backup, low-traffic window, lock monitoring, rollback plan), and statement/lock timeout safety settings |
-| API design (REST, GraphQL, OpenAPI) | `get-skill-details(["supercent-io/skills-template/api-design"])` -- extract REST resource naming rules (nouns not verbs, plurals, nested paths), HTTP method semantics with status code mapping, standardized error response format, pagination/filtering/sorting query patterns, URL versioning strategy, and OpenAPI 3.0 specification template |
-| Infrastructure / deployment planning | `get-skill-details(["yonatangross/orchestkit/devops-deployment"])` -- extract CI/CD pipeline stage architecture (Lint -> Test -> Scan -> Build -> Stage -> Prod), deployment strategy decision matrix (Rolling/Blue-Green/Canary with risk levels), container security hardening rules (non-root uid 1001, read-only fs), Kubernetes health probe configuration, and production readiness checklist |
-| Unfamiliar domain | `search-skills("[domain] planning")` -> mount best match |
+```
+Skill("planning")
+```
 
-**How to mount a skill:**
+This loads the SKILL.md router for `yigitkonur/skill-planning` into your conversation context — a nine-step decision-quality planning framework covering problem framing, diagnostic methods, option analysis, decision matrices, execution phasing, and stakeholder alignment.
 
-1. Call `get-skill-details` with the skill ID from the table above
-2. Read the returned SKILL.md and any referenced resource files
-3. Extract these frameworks from the skill content: planning methodology, decision trees, risk patterns, task decomposition approaches, checklists, and anti-patterns
-4. Apply the extracted frameworks when designing your plan -- use them to structure decisions, validate task granularity, and anticipate risks
+**The skill has reference documents that are NOT loaded automatically.** After activation, the SKILL.md will tell you which specific reference file to `Read` based on your planning context (e.g., vague requests, architecture decisions, recurring issues, capacity constraints). Read the one it points you to — that is where the detailed guidance lives.
+
+**Steps:**
+1. Call `Skill("planning")` — loads the router
+2. Read the SKILL.md output to identify which reference document matches your task type
+3. `Read` that reference file by its path
+4. Apply the framework throughout your planning phases
+
+**Need additional domain context?** If your planning task touches a specific domain (e.g., API design, database migration, security hardening), you can mount a second skill. Use `search-skills` to find one by keyword, then `get-skill-details` to load it. Skills stack — both will remain in context for the session.
 
 ---
 

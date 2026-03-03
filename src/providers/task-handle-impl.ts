@@ -162,7 +162,7 @@ export class TaskHandleImpl implements TaskHandle {
   }
 
   getModel(): string {
-    return taskManager.getTask(this.taskId)?.model ?? 'sonnet';
+    return taskManager.getTask(this.taskId)?.model ?? 'claude-sonnet-4.6';
   }
 
   getMode(): string {

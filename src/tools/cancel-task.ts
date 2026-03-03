@@ -23,17 +23,26 @@ const CancelTaskSchema = z.object({
   confirm: z.boolean().optional().describe('Required when clear=true'),
 });
 
-export const cancelTaskTool = {
-  name: 'cancel_task',
-  description: `Cancel or clear tasks. Accepts single ID, array of IDs, or "all" to clear workspace.
+export const cancelAgentTool = {
+  name: 'cancel-agent',
+  description: `Cancel running agents or clear all agents from the workspace.
+
+**When to call:**
+- Stop an agent that's stuck, taking too long, or working on the wrong thing
+- Batch-cancel multiple agents at once
+- Clear the entire workspace to start fresh
+
+**What happens:**
+- Running/pending/waiting agents: process is killed (SIGTERM → SIGKILL), status → CANCELLED
+- Completed/failed agents: removed from memory immediately
+- Clear all: kills all active agents and removes all task state + persistence files
 
 **Examples:**
 - Cancel one: \`{ "task_id": "abc123" }\`
 - Cancel many: \`{ "task_id": ["abc", "def", "ghi"] }\`
 - Clear all: \`{ "task_id": "all", "clear": true, "confirm": true }\`
 
-Running/pending/waiting/rate-limited tasks are killed (SIGTERM). Completed/failed tasks are removed from memory.
-Use MCP Resources to check task status: read \`task:///all\` or \`task:///{id}\`.`,
+**Find task_id:** Read MCP Resource \`task:///all\` for task list with IDs and status.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -57,7 +66,7 @@ Use MCP Resources to check task status: read \`task:///all\` or \`task:///{id}\`
     required: ['task_id'],
   },
   annotations: {
-    title: 'Cancel Task',
+    title: 'Cancel Agent',
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: true,
