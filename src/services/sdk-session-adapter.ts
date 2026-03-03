@@ -117,6 +117,7 @@ interface SessionBinding {
   rotationAttempts: number;
   maxRotationAttempts: number;
   rotationInProgress: boolean;
+  errorHandlingInProgress: boolean; // CC-017: Guard against session.idle racing with handleSessionError
   proactiveRotationAttempted?: boolean; // FB-012: Prevent repeated proactive rotations without consuming rotationAttempts
   rateLimitInfo?: {
     statusCode: number;
@@ -212,6 +213,7 @@ class SDKSessionAdapter {
       rotationAttempts: 0,
       maxRotationAttempts: 10,
       rotationInProgress: false,
+      errorHandlingInProgress: false,
       isUnbound: false,
       pendingPrompt,
       // Initialize metrics tracking
@@ -226,9 +228,16 @@ class SDKSessionAdapter {
       lastMetricsUpdateAt: 0,
     };
 
-    // Subscribe to all session events using SDK's typed event system
+    // CC-017: Serialize event processing to prevent races between session.error
+    // and session.idle. Without serialization, handleSessionError can yield at
+    // an await (e.g., triggerClaudeFallback) and handleSessionIdle runs during
+    // that yield, marking the task COMPLETED before the error handler finishes.
+    let eventChain: Promise<void> = Promise.resolve();
+
     const unsubscribe = session.on((event: SessionEvent) => {
-      this.handleEvent(taskId, event, binding).catch((err) => {
+      eventChain = eventChain.then(() =>
+        this.handleEvent(taskId, event, binding)
+      ).catch((err) => {
         console.error(`[sdk-session-adapter] Error handling event ${event.type} for task ${taskId}:`, err);
       });
     });
@@ -438,9 +447,12 @@ class SDKSessionAdapter {
    * Handle session.idle event - indicates completion
    */
   private handleSessionIdle(taskId: string, _event: SessionIdleEvent, binding: SessionBinding): void {
-    // CC-003: Ignore session.idle during rotation to prevent premature COMPLETED
-    if (binding.rotationInProgress) {
-      console.error(`[sdk-session-adapter] Ignoring session.idle for ${taskId} — rotation in progress`);
+    // CC-003 + CC-017: Ignore session.idle during rotation or error handling
+    // to prevent premature COMPLETED. The errorHandlingInProgress guard prevents
+    // session.idle from racing with handleSessionError (which may be awaiting
+    // triggerClaudeFallback or other async operations).
+    if (binding.rotationInProgress || binding.errorHandlingInProgress) {
+      console.error(`[sdk-session-adapter] Ignoring session.idle for ${taskId} — ${binding.rotationInProgress ? 'rotation' : 'error handling'} in progress`);
       return;
     }
     if (!binding.isCompleted) {
@@ -481,6 +493,11 @@ class SDKSessionAdapter {
     event: SessionErrorEvent,
     binding: SessionBinding
   ): Promise<void> {
+    // CC-017: Set errorHandlingInProgress before any await to prevent
+    // session.idle from racing and marking the task COMPLETED prematurely.
+    binding.errorHandlingInProgress = true;
+
+    try {
     // Flush any buffered output before handling the error
     if (binding.outputBuffer.length) {
       taskManager.appendOutput(taskId, binding.outputBuffer.join(''));
@@ -491,7 +508,12 @@ class SDKSessionAdapter {
       binding.reasoningBuffer.length = 0;
     }
 
-    const { errorType, message, statusCode, providerCallId, stack } = event.data;
+    const { errorType, message, statusCode: rawStatusCode, providerCallId, stack } = event.data;
+
+    // CC-017: Extract embedded status code from error message when SDK doesn't provide one.
+    // The Copilot SDK wraps HTTP errors as generic errors with statusCode: undefined,
+    // embedding the code only in the message string (e.g., "Failed to list models: 400").
+    const statusCode = rawStatusCode ?? this.extractEmbeddedStatusCode(message);
 
     taskManager.appendOutput(taskId, `[error] ${errorType}: ${message} (status: ${statusCode || 'unknown'})`);
 
@@ -580,8 +602,14 @@ class SDKSessionAdapter {
         this.unbind(taskId);
         return;
       }
+      // CC-017: Fallback failed to start — mark task as failed instead of falling through silently
+      this.markAsFailed(taskId, binding, message, statusCode, failureContext);
     } else {
       this.markAsFailed(taskId, binding, message, statusCode, failureContext);
+    }
+    } finally {
+      // CC-017: Always clear the guard so subsequent events are not blocked
+      binding.errorHandlingInProgress = false;
     }
   }
 
@@ -808,6 +836,7 @@ class SDKSessionAdapter {
       rotationAttempts: oldBinding.rotationAttempts,
       maxRotationAttempts: oldBinding.maxRotationAttempts,
       rotationInProgress: false,
+      errorHandlingInProgress: false,
       isUnbound: false,
       proactiveRotationAttempted: oldBinding.proactiveRotationAttempted,
       pendingPrompt: oldBinding.pendingPrompt,
@@ -823,9 +852,14 @@ class SDKSessionAdapter {
       lastMetricsUpdateAt: oldBinding.lastMetricsUpdateAt,
     };
 
-    // Subscribe to new session events
+    // CC-017: Serialize event processing (same pattern as bind()) to prevent
+    // session.error / session.idle races after rotation.
+    let eventChain: Promise<void> = Promise.resolve();
+
     const unsubscribe = newSession.on((event: SessionEvent) => {
-      this.handleEvent(taskId, event, newBinding).catch((err) => {
+      eventChain = eventChain.then(() =>
+        this.handleEvent(taskId, event, newBinding)
+      ).catch((err) => {
         console.error(`[sdk-session-adapter] Error handling event ${event.type} for task ${taskId}:`, err);
       });
     });
@@ -935,6 +969,21 @@ class SDKSessionAdapter {
 
       console.error(`[sdk-session-adapter] Task ${taskId} failed: ${message}`);
     }
+  }
+
+  /**
+   * CC-017: Extract HTTP status code from error message when the SDK doesn't provide
+   * a structured statusCode. The Copilot SDK wraps HTTP errors as generic errors,
+   * embedding the code only in the message (e.g., "Failed to list models: 400").
+   */
+  private extractEmbeddedStatusCode(message: string): number | undefined {
+    // Match patterns like ": 400", ": 429", ": 500" at the end or mid-string
+    const match = message.match(/:\s*(\d{3})\b/);
+    if (match) {
+      const code = parseInt(match[1], 10);
+      if (code >= 400 && code < 600) return code;
+    }
+    return undefined;
   }
 
   /**
