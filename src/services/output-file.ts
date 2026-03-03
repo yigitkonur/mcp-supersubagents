@@ -146,6 +146,17 @@ export async function createOutputFile(cwd: string, taskId: string): Promise<str
 }
 
 /**
+ * Format a local timestamp as [HH:MM:SS] for output file lines.
+ */
+function formatTimestamp(): string {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  return `[${hh}:${mm}:${ss}]`;
+}
+
+/**
  * Append a line to the task's output file (async, uses persistent handle)
  */
 export async function appendToOutputFile(cwd: string, taskId: string, line: string): Promise<boolean> {
@@ -170,7 +181,7 @@ export async function appendToOutputFile(cwd: string, taskId: string, line: stri
         return false;
       }
 
-      await handle.write(line + '\n');
+      await handle.write(`${formatTimestamp()} ${line}\n`);
       handleLastWriteTime.set(key, Date.now());
       return true;
     });

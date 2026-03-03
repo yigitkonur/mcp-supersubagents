@@ -307,6 +307,25 @@ export async function runClaudeCodeSession(
   let resultError: string | undefined;
   let inTextBlock = false; // Track whether we're inside a text content block
 
+  // Streaming buffers: collect deltas and flush as complete lines on block boundaries
+  // to avoid writing hundreds of single-word lines to the output file.
+  const textBuffer: string[] = [];
+  const reasoningBuffer: string[] = [];
+
+  function flushTextBuffer(): void {
+    if (textBuffer.length > 0) {
+      taskManager.appendOutput(taskId, textBuffer.join(''));
+      textBuffer.length = 0;
+    }
+  }
+
+  function flushReasoningBuffer(): void {
+    if (reasoningBuffer.length > 0) {
+      taskManager.appendOutputFileOnly(taskId, `[reasoning] ${reasoningBuffer.join('')}`);
+      reasoningBuffer.length = 0;
+    }
+  }
+
   const settings = createModelSettings(cwd, options);
   let reader: any;
 
@@ -341,6 +360,8 @@ export async function runClaudeCodeSession(
 
       switch (part.type) {
         case 'text-start':
+          // Flush any pending reasoning before starting a new text block
+          flushReasoningBuffer();
           // text-start is a content block boundary, not a turn boundary.
           // Only emit a turn marker if this is the first text block or
           // a new text block after a tool execution (i.e., a new agent turn).
@@ -352,10 +373,11 @@ export async function runClaudeCodeSession(
           break;
 
         case 'text-delta':
-          taskManager.appendOutput(taskId, String((part as any).delta));
+          textBuffer.push(String((part as any).delta));
           break;
 
         case 'text-end':
+          flushTextBuffer();
           inTextBlock = false;
           break;
 
@@ -364,14 +386,17 @@ export async function runClaudeCodeSession(
 
         case 'reasoning-delta':
           // Reasoning → file only (saves tokens for caller)
-          taskManager.appendOutputFileOnly(taskId, `[reasoning] ${part.delta}`);
+          reasoningBuffer.push(String(part.delta));
           break;
 
         case 'reasoning-end':
+          flushReasoningBuffer();
           break;
 
         // V3 tool-input-* events: emitted by ai-sdk-provider-claude-code BEFORE tool-call
         case 'tool-input-start': {
+          flushTextBuffer(); // Flush any pending text before tool execution
+          flushReasoningBuffer();
           inTextBlock = false; // Tool execution ends the current text block
           const inputToolName = (part as Record<string, unknown>).toolName as string || 'unknown';
           const inputToolId = (part as Record<string, unknown>).id as string || '';
@@ -472,6 +497,8 @@ export async function runClaudeCodeSession(
         }
 
         case 'error':
+          flushTextBuffer();
+          flushReasoningBuffer();
           resultError = String((part as any).error ?? 'unknown stream error');
           taskManager.appendOutput(taskId, `[error] ${resultError}`);
           break;
@@ -527,6 +554,10 @@ export async function runClaudeCodeSession(
           break;
       }
     }
+
+    // Flush any remaining buffered content after stream ends
+    flushTextBuffer();
+    flushReasoningBuffer();
 
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
@@ -592,6 +623,10 @@ export async function runClaudeCodeSession(
       session: undefined,
     });
   } catch (error: unknown) {
+    // Flush any buffered content before handling the error
+    flushTextBuffer();
+    flushReasoningBuffer();
+
     const freshTask = taskManager.getTask(taskId);
     if (!freshTask || isTerminalStatus(freshTask.status)) {
       return;
