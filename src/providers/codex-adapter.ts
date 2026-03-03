@@ -131,11 +131,11 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
     const { Codex } = await import('@openai/codex-sdk');
     const { model } = options;
 
-    handle.markRunning();
-    handle.setProvider('codex');
-
     // Execute through resilience policy (bulkhead + circuit breaker)
     await policy.execute(async () => {
+      handle.markRunning();
+      handle.setProvider('codex');
+
       const codex = new Codex({
         apiKey: CODEX_API_KEY,
         codexPathOverride: CODEX_PATH,
@@ -177,7 +177,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
             if (event.usage) {
               totalTokens.input += event.usage.input_tokens;
               totalTokens.output += event.usage.output_tokens;
-              handle.writeOutput(`[usage] in=${event.usage.input_tokens} out=${event.usage.output_tokens}`);
+              handle.writeOutputFileOnly(`[usage] in=${event.usage.input_tokens} out=${event.usage.output_tokens}`);
             }
             break;
 
@@ -190,7 +190,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
               case 'agent_message':
                 break;
               case 'reasoning':
-                handle.writeOutput(`[reasoning] ${event.item.text.slice(0, 200)}`);
+                handle.writeOutputFileOnly(`[reasoning] ${event.item.text.slice(0, 200)}`);
                 break;
               case 'command_execution':
                 handle.writeOutput(`[tool] ${event.item.command}`);

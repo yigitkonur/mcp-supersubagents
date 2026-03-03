@@ -81,7 +81,7 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     model: freshTask.model ?? 'sonnet',
     timeout: timeoutRemaining,
     mode: freshTask.mode ?? DEFAULT_AGENT_MODE,
-    taskType: 'super-coder',
+    taskType: freshTask.taskType ?? 'super-coder',
   };
 
   // Spawn via the fallback provider

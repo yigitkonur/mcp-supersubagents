@@ -701,9 +701,9 @@ class SDKSessionAdapter {
       }
 
       if (!rotationResult.success) {
-        if (isFallbackEnabled()) {
-          // All accounts exhausted - fallback to Claude Agent SDK
-          taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
+        if (rotationResult.allExhausted && isFallbackEnabled()) {
+          // All accounts exhausted - fallback to next provider in chain
+          taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to fallback provider...`);
 
           // Get task and calculate remaining timeout
           const taskForFallback = taskManager.getTask(taskId);
@@ -721,7 +721,7 @@ class SDKSessionAdapter {
           if (binding.isUnbound) return false;
           const taskAfterFallback = taskManager.getTask(taskId);
           if (!taskAfterFallback || isTerminalStatus(taskAfterFallback.status)) {
-            console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterFallback?.status ?? 'deleted'} during Claude fallback`);
+            console.error(`[sdk-session-adapter] Task ${taskId} became ${taskAfterFallback?.status ?? 'deleted'} during fallback`);
             return false;
           }
 

@@ -11,29 +11,8 @@ import type { SessionMetrics as HandleSessionMetrics } from './task-handle.js';
 import type { TaskState, SessionMetrics as CoreSessionMetrics } from '../types.js';
 import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE } from '../types.js';
 import type { Provider } from '../types.js';
-
-// ---------------------------------------------------------------------------
-// Lazy-loaded singletons (breaks circular deps)
-// ---------------------------------------------------------------------------
-
-let _taskManager: any;
-let _processRegistry: any;
-
-function getTaskManager() {
-  if (!_taskManager) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _taskManager = require('../services/task-manager.js').taskManager;
-  }
-  return _taskManager;
-}
-
-function getProcessRegistry() {
-  if (!_processRegistry) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _processRegistry = require('../services/process-registry.js').processRegistry;
-  }
-  return _processRegistry;
-}
+import { taskManager } from '../services/task-manager.js';
+import { processRegistry } from '../services/process-registry.js';
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -54,7 +33,7 @@ export class TaskHandleImpl implements TaskHandle {
     if (sessionId) {
       updates.sessionId = sessionId;
     }
-    getTaskManager().updateTask(this.taskId, updates);
+    taskManager.updateTask(this.taskId, updates);
   }
 
   markCompleted(metrics?: HandleSessionMetrics): void {
@@ -77,11 +56,11 @@ export class TaskHandleImpl implements TaskHandle {
         totalTokens: metrics.totalTokens ?? { input: 0, output: 0 },
       };
     }
-    getTaskManager().updateTask(this.taskId, updates);
+    taskManager.updateTask(this.taskId, updates);
   }
 
   markFailed(error: string, exitCode?: number): void {
-    getTaskManager().updateTask(this.taskId, {
+    taskManager.updateTask(this.taskId, {
       status: TaskStatus.FAILED,
       endTime: new Date().toISOString(),
       error,
@@ -91,7 +70,7 @@ export class TaskHandleImpl implements TaskHandle {
   }
 
   markCancelled(reason: string): void {
-    getTaskManager().updateTask(this.taskId, {
+    taskManager.updateTask(this.taskId, {
       status: TaskStatus.CANCELLED,
       endTime: new Date().toISOString(),
       error: reason,
@@ -102,18 +81,22 @@ export class TaskHandleImpl implements TaskHandle {
   // --- Output ---
 
   writeOutput(line: string): void {
-    getTaskManager().appendOutput(this.taskId, line);
+    taskManager.appendOutput(this.taskId, line);
+  }
+
+  writeOutputFileOnly(line: string): void {
+    taskManager.appendOutputFileOnly(this.taskId, line);
   }
 
   writeSystemOutput(prefix: string, message: string): void {
-    getTaskManager().appendOutput(this.taskId, `[${prefix}] ${message}`);
+    taskManager.appendOutput(this.taskId, `[${prefix}] ${message}`);
   }
 
   // --- Lifecycle ---
 
   registerAbort(controller: AbortController): void {
     this.registeredAbortController = controller;
-    getProcessRegistry().register({
+    processRegistry.register({
       taskId: this.taskId,
       abortController: controller,
       registeredAt: Date.now(),
@@ -131,11 +114,11 @@ export class TaskHandleImpl implements TaskHandle {
 
   unregisterAbort(): void {
     this.registeredAbortController = null;
-    getProcessRegistry().unregister(this.taskId);
+    processRegistry.unregister(this.taskId);
   }
 
   isTerminal(): boolean {
-    const task = getTaskManager().getTask(this.taskId);
+    const task = taskManager.getTask(this.taskId);
     return !task || isTerminalStatus(task.status);
   }
 
@@ -153,37 +136,37 @@ export class TaskHandleImpl implements TaskHandle {
   // --- Provider state ---
 
   setProviderState(state: Record<string, unknown> | undefined): void {
-    getTaskManager().updateTask(this.taskId, { providerState: state }, { persist: false });
+    taskManager.updateTask(this.taskId, { providerState: state }, { persist: false });
   }
 
   setSessionId(id: string): void {
-    getTaskManager().updateTask(this.taskId, { sessionId: id } as Partial<TaskState>);
+    taskManager.updateTask(this.taskId, { sessionId: id } as Partial<TaskState>);
   }
 
   setProvider(provider: string): void {
-    getTaskManager().updateTask(this.taskId, { provider: provider as Provider });
+    taskManager.updateTask(this.taskId, { provider: provider as Provider });
   }
 
   // --- Read-only accessors ---
 
   getPrompt(): string {
-    return getTaskManager().getTask(this.taskId)?.prompt ?? '';
+    return taskManager.getTask(this.taskId)?.prompt ?? '';
   }
 
   getCwd(): string {
-    return getTaskManager().getTask(this.taskId)?.cwd ?? process.cwd();
+    return taskManager.getTask(this.taskId)?.cwd ?? process.cwd();
   }
 
   getTimeout(): number {
-    return getTaskManager().getTask(this.taskId)?.timeout ?? 1_800_000;
+    return taskManager.getTask(this.taskId)?.timeout ?? 1_800_000;
   }
 
   getModel(): string {
-    return getTaskManager().getTask(this.taskId)?.model ?? 'sonnet';
+    return taskManager.getTask(this.taskId)?.model ?? 'sonnet';
   }
 
   getMode(): string {
-    return getTaskManager().getTask(this.taskId)?.mode ?? DEFAULT_AGENT_MODE;
+    return taskManager.getTask(this.taskId)?.mode ?? DEFAULT_AGENT_MODE;
   }
 }
 

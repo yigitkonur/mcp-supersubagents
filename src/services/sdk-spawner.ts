@@ -211,6 +211,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     switchAttempted: options.switchAttempted,
     timeout: options.timeout,
     mode: resolveMode(options),
+    taskType: options.taskType,
   });
 
   // If task is waiting for dependencies, don't start execution yet
@@ -680,9 +681,9 @@ async function handleRateLimit(
       sdkSessionAdapter.unbind(taskId);
       console.error(`[sdk-spawner] Task ${taskId} failed fast: ${actionableMessage}`);
       return;
-    } else if (isFallbackEnabled()) {
-      // All accounts exhausted - fallback to Claude Agent SDK
-      console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
+    } else if (rotationResult.allExhausted && isFallbackEnabled()) {
+      // All accounts exhausted - fallback to next provider in chain
+      console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back via provider chain`);
 
       const started = await triggerFallback({
         taskId,

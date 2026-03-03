@@ -150,6 +150,10 @@ taskManager.onRetry(async (task) => {
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
       mode: task.mode ?? DEFAULT_AGENT_MODE,
       labels: task.labels,
+      retryInfo: task.retryInfo ? { ...task.retryInfo } : undefined,
+      fallbackAttempted: task.fallbackAttempted,
+      switchAttempted: task.switchAttempted,
+      taskType: task.taskType,
     });
 
     // Spawn via the provider asynchronously

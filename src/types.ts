@@ -253,6 +253,8 @@ export interface TaskState {
   error?: string;
   cwd?: string;
   model?: string;
+  /** Original task template/role type (super-coder, super-planner, etc.) */
+  taskType?: string;
   isResume?: boolean;
   retryInfo?: RetryInfo;
   dependsOn?: string[];

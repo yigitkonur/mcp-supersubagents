@@ -58,6 +58,9 @@ export interface TaskHandle {
   /** Append a line to the task output buffer (shown to MCP clients). */
   writeOutput(line: string): void;
 
+  /** Append a line to output file only (excluded from in-memory MCP output buffer). */
+  writeOutputFileOnly(line: string): void;
+
   /**
    * Append a system-prefixed output line: `[prefix] message`.
    * Convenience wrapper over writeOutput for structured logging.

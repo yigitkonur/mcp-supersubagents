@@ -18,6 +18,8 @@ import type {
   AvailabilityResult,
 } from './types.js';
 import type { TaskHandle } from './task-handle.js';
+import { accountManager } from '../services/account-manager.js';
+import { getSDKStats } from '../services/sdk-spawner.js';
 
 const CAPABILITIES: ProviderCapabilities = {
   supportsSessionResume: true,
@@ -32,21 +34,14 @@ export class CopilotProviderAdapter implements ProviderAdapter {
   readonly displayName = 'GitHub Copilot SDK';
 
   checkAvailability(): AvailabilityResult {
-    // Lazy import to avoid circular dependencies at module load time
-    try {
-      // accountManager is a singleton that's initialized in index.ts before providers
-      const { accountManager } = require('../services/account-manager.js');
-      const token = accountManager.getCurrentToken();
-      if (!token) {
-        return {
-          available: false,
-          reason: 'No PAT tokens configured or all tokens in cooldown',
-        };
-      }
-      return { available: true };
-    } catch {
-      return { available: false, reason: 'Account manager not initialized' };
+    const token = accountManager.getCurrentToken();
+    if (!token) {
+      return {
+        available: false,
+        reason: 'No PAT tokens configured or all tokens in cooldown',
+      };
     }
+    return { available: true };
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -100,11 +95,6 @@ export class CopilotProviderAdapter implements ProviderAdapter {
   }
 
   getStats(): Record<string, unknown> {
-    try {
-      const { getSDKStats } = require('../services/sdk-spawner.js');
-      return getSDKStats();
-    } catch {
-      return { error: 'SDK stats unavailable' };
-    }
+    return getSDKStats();
   }
 }

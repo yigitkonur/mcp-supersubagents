@@ -143,6 +143,7 @@ export async function handleSharedSpawn(
   const model = resolveModel(params.model, config.taskType);
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const mode = params.mode ?? DEFAULT_AGENT_MODE;
+  const taskType = config.taskType || 'super-coder';
 
   try {
     const task = taskManager.createTask(finalPrompt, cwd, model, {
@@ -151,6 +152,7 @@ export async function handleSharedSpawn(
       provider: selection.provider.id as Provider,
       timeout,
       mode,
+      taskType,
     });
 
     const taskId = task.id;
@@ -192,7 +194,7 @@ export async function handleSharedSpawn(
         mode,
         reasoningEffort: params.reasoning_effort,
         labels: labels.length > 0 ? labels : undefined,
-        taskType: config.taskType || 'super-coder',
+        taskType,
       }, handle).catch((err) => {
         console.error(`[shared-spawn] Provider '${selectedProvider.id}' failed for task ${taskId}:`, err);
         // Attempt fallback to next provider in chain
@@ -205,8 +207,29 @@ export async function handleSharedSpawn(
             errorMessage: err instanceof Error ? err.message : String(err),
             cwd,
             promptOverride: finalPrompt,
+          }).then((fell) => {
+            if (!fell) {
+              const t = taskManager.getTask(taskId);
+              if (t && !isTerminalStatus(t.status)) {
+                taskManager.updateTask(taskId, {
+                  status: TaskStatus.FAILED,
+                  error: `Provider '${selectedProvider.id}' failed: ${err instanceof Error ? err.message : String(err)}`,
+                  endTime: new Date().toISOString(),
+                  exitCode: 1,
+                });
+              }
+            }
           }).catch((fallbackErr) => {
             console.error(`[shared-spawn] Fallback also failed for task ${taskId}:`, fallbackErr);
+            const t = taskManager.getTask(taskId);
+            if (t && !isTerminalStatus(t.status)) {
+              taskManager.updateTask(taskId, {
+                status: TaskStatus.FAILED,
+                error: `Fallback failed for provider '${selectedProvider.id}': ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
+                endTime: new Date().toISOString(),
+                exitCode: 1,
+              });
+            }
           });
         }
       });
