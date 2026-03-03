@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-An MCP server that spawns and manages parallel AI sub-agents. The primary execution backend is the GitHub Copilot SDK (PTY-based, streaming events); when all Copilot accounts are rate-limited, the server automatically falls back to the Claude Agent SDK (`claude` CLI). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
+An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): GitHub Copilot SDK (primary), OpenAI Codex SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `copilot,codex,!claude-cli`). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
 
 ## Build & Run
 
@@ -34,14 +34,21 @@ Binary names: `mcp-supersubagents`, `copilot-mcp-server`, `super-subagents`.
 3. `GH_PAT_TOKEN` — comma-separated fallback
 4. `GITHUB_TOKEN` / `GH_TOKEN` — single token
 
-If no PAT is configured, tasks go directly to the Claude Agent SDK fallback.
+If no PAT is configured, the server tries the next provider in the chain (Codex if `OPENAI_API_KEY` is set, then Claude).
+
+### Provider chain
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PROVIDER_CHAIN` | `copilot,codex,!claude-cli` | Comma-separated provider IDs in selection order. Prefix `!` = fallback-only (skipped during primary selection, used only when earlier providers fail). |
 
 ### Feature flags
 
 | Variable | Default | Effect |
 |---|---|---|
 | `ENABLE_OPUS` | `false` | Show claude-opus-4.6 in tool schema enum (opus always usable via alias) |
-| `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable fallback to Claude Agent SDK when all PATs exhausted |
+| `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable Claude Agent SDK in the provider chain |
+| `DISABLE_CODEX_FALLBACK` | `false` | Disable Codex SDK in the provider chain |
 
 ### Timeouts (all in ms, defined in `src/config/timeouts.ts`)
 
@@ -61,6 +68,17 @@ If no PAT is configured, tasks go directly to the Claude Agent SDK fallback.
 | `COPILOT_PATH` | `/opt/homebrew/bin/copilot` | Path to Copilot CLI binary |
 | `DEBUG_SDK_EVENTS` | `false` | Log all SDK events to stderr |
 | `MCP_ENABLED_TOOLS` | (unset = all) | Comma-separated tool names to keep in template TOOLKIT tables |
+
+### Codex SDK
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` or `CODEX_API_KEY` | (required for Codex) | API key for Codex SDK |
+| `CODEX_PATH` | auto-detect | Override Codex CLI binary path |
+| `CODEX_MODEL` | `o4-mini` | Default model for Codex tasks |
+| `CODEX_SANDBOX_MODE` | `workspace-write` | Sandbox: `read-only`, `workspace-write`, `danger-full-access` |
+| `CODEX_APPROVAL_POLICY` | `never` | Approval: `never`, `on-request`, `on-failure`, `untrusted` |
+| `MAX_CONCURRENT_CODEX_SESSIONS` | `5` | Max simultaneous Codex sessions |
 
 ### Claude fallback
 
@@ -84,36 +102,46 @@ class TaskManager { ... }
 export const taskManager = new TaskManager();
 ```
 
-Singletons: `taskManager`, `accountManager`, `sdkClientManager`, `sdkSessionAdapter`, `processRegistry`, `questionRegistry`, `progressRegistry`, `subscriptionRegistry`, `clientContext`.
+Singletons: `taskManager`, `accountManager`, `sdkClientManager`, `sdkSessionAdapter`, `processRegistry`, `questionRegistry`, `progressRegistry`, `subscriptionRegistry`, `clientContext`, `providerRegistry`.
 
 Services import each other's singletons directly. Circular dependencies are broken with lazy `await import()` inside methods (e.g., `task-manager.ts` imports `claude-code-runner.ts` lazily).
+
+### Provider Abstraction Layer (`src/providers/`)
+
+All AI backends implement the `ProviderAdapter` interface (`types.ts`). The `ProviderRegistry` singleton (`registry.ts`) manages registration, chain-based selection, and fallback routing.
+
+| File | Purpose |
+|---|---|
+| `types.ts` | `ProviderAdapter`, `ProviderCapabilities`, `ProviderSpawnOptions`, `FallbackRequest`, `ChainEntry` |
+| `registry.ts` | `providerRegistry` singleton — `register()`, `configureChain()`, `selectProvider()`, `selectFallback()` |
+| `copilot-adapter.ts` | Wraps Copilot SDK (`sdk-spawner.ts`, `sdk-session-adapter.ts`, `sdk-client-manager.ts`) |
+| `copilot-session-runner.ts` | Bridge: delegates `spawn()` to `executeWaitingTask()` in sdk-spawner |
+| `claude-adapter.ts` | Wraps `claude-code-runner.ts` |
+| `codex-adapter.ts` | Full OpenAI Codex SDK integration (`@openai/codex-sdk`) |
+| `fallback-handler.ts` | Generic fallback: `triggerFallback()` walks chain for next available provider |
+| `index.ts` | Public API re-exports |
+
+Task creation is provider-agnostic (in `shared-spawn.ts`). Providers receive a `taskId` and handle only the RUNNING→COMPLETED|FAILED transitions.
 
 ### The Spawn Flow
 
 ```
 MCP client calls spawn_agent
   → spawn-agent.ts: dispatch by role (coder/planner/tester/researcher)
-  → shared-spawn.ts createSpawnHandler():
+  → shared-spawn.ts handleSharedSpawn():
     1. Zod schema.parse(args)
     2. validateBrief() — prompt length, context file existence/size
     3. assemblePromptWithContext() — reads context files, injects into prompt
     4. applyTemplate() — matryoshka: base.mdx + overlay.mdx + user prompt
-    5. spawnCopilotTask() — creates TaskState, resolves deps
-  → sdk-spawner.ts:
-    1. taskManager.createTask() — PENDING or WAITING if has depends_on
-    2. resolveMode() — explicit mode > enableFleet legacy > default ('fleet')
-    3. setImmediate → runSDKSession() (returns task ID immediately)
-    4. sdkClientManager.createSession() → session
-    5. sdkSessionAdapter.bind(taskId, session) — subscribe to events
-    6. session.rpc.mode.set({ mode: 'autopilot' }) — all modes auto-run
-    7. if mode=fleet: session.rpc.fleet.start() — parallel sub-agents
-    8. Append mode suffix prompt (fleet/plan behavioral instructions)
-    9. session.send(finalPrompt) — fire-and-forget (NOT sendAndWait)
-  → sdk-session-adapter.ts:
-    - Streams SessionEvent → taskManager.appendOutput/updateTask
-    - On session.idle → COMPLETED
-    - On session.error (429/5xx) → attempt rotation via callback
-    - On all rotations exhausted → triggerClaudeFallback()
+    5. providerRegistry.selectProvider() — pick first available in chain
+    6. taskManager.createTask() — PENDING or WAITING (provider-agnostic)
+    7. setImmediate → provider.spawn() (returns task ID immediately)
+  → Provider-specific execution:
+    Copilot: copilot-session-runner.ts → executeWaitingTask() → runSDKSession()
+    Codex:   codex-adapter.ts → Codex SDK thread.runStreamed()
+    Claude:  claude-adapter.ts → runClaudeCodeSession()
+  → On provider failure:
+    triggerFallback() → providerRegistry.selectFallback() → next provider
 ```
 
 ### Mode Mapping (`mode` param, default: `fleet`)
@@ -151,17 +179,27 @@ Internal 8-state → MCP 5-state mapping handled by `task-status-mapper.ts`.
 ### Provider Fallback Chain
 
 ```
-Task created → check PAT tokens
-  ├─ Tokens available → Copilot SDK Session (primary)
-  │   ├─ 429/5xx → rotate PAT token (up to 10 attempts per session)
-  │   │   ├─ Rotation success → new session, rebind metrics, send handoff prompt
-  │   │   └─ All exhausted → Claude Agent SDK fallback
-  │   └─ Quota <1% → proactive rotation before hard rate limit
-  ├─ No tokens → Claude Agent SDK fallback (immediate)
-  └─ DISABLE_CLAUDE_CODE_FALLBACK=true + all exhausted → FAILED
+Task created → providerRegistry.selectProvider() walks PROVIDER_CHAIN
+  Default chain: copilot → codex → !claude-cli
+
+  copilot selected:
+    ├─ 429/5xx → rotate PAT token (up to 10 attempts per session)
+    │   ├─ Rotation success → new session, rebind metrics, send handoff prompt
+    │   └─ All exhausted → triggerFallback() → next in chain (codex or claude)
+    └─ Quota <1% → proactive rotation before hard rate limit
+
+  codex selected:
+    ├─ Success → COMPLETED
+    └─ Error → triggerFallback() → next in chain (claude)
+
+  claude-cli selected:
+    ├─ Success → COMPLETED
+    └─ Error → FAILED (end of chain)
+
+  No providers available → spawn fails immediately
 ```
 
-`task.fallbackAttempted` is a single-flight guard — `triggerClaudeFallback` is a no-op if already true.
+`task.fallbackAttempted` is a single-flight guard — `triggerFallback` is a no-op if already true.
 
 ### Token Rotation
 
@@ -170,7 +208,7 @@ account-manager.ts (round-robin):
   Token A → Token B → Token C → Token A → ...
   On failure: mark token with failedAt, 60s cooldown
   Auto-heal: stale failures >5min cleared
-  All exhausted → trigger Claude fallback (if enabled)
+  All exhausted → triggerFallback() → next provider in chain
 ```
 
 Rotation can happen mid-session. The spawner destroys the old session, creates a new one, and `sdk-session-adapter.ts` rebinds via `rebindWithNewSession()` — preserving turn count, token totals, tool metrics, and output buffer.
@@ -289,6 +327,7 @@ File limits: max 20 files, 200KB each, 500KB total. Files must be absolute paths
 | Stale file handle age | 5 minutes | Output file handles closed |
 | PTY FD recycle threshold | 80 ptmx FDs | Triggers CopilotClient recycling |
 | Max concurrent Claude fallbacks | 3 | Queue-based throttling |
+| Max concurrent Codex sessions | 5 | Concurrency counter in codex-adapter |
 
 ---
 
@@ -309,7 +348,7 @@ File limits: max 20 files, 200KB each, 500KB total. Files must be absolute paths
 - **Circular deps use lazy imports** — New inter-service imports must check for cycles and use `await import()` inside methods if needed.
 - **PAT tokens must never appear in logs** — Only the masked form (`getMaskedCurrentToken()`) is safe. Review any code touching `exportCooldownState()` or token iteration.
 - **Specialization parameter lacks path validation** — It is used in `join(__dirname, 'overlays', ...)` for template loading. Any modification must prevent path traversal (`..`, `/`, `\`).
-- **`mode` controls both providers** — The `mode` enum (`fleet` | `plan` | `autopilot`, default: `fleet`) maps to both Copilot SDK and Claude Code fallback. On Copilot: always `rpc.mode.set('autopilot')` + optional `rpc.fleet.start()` for fleet mode. On Claude: always `bypassPermissions` + mode-specific suffix prompt. Both always auto-run — `plan` mode doesn't block for approval. See mode mapping table below.
+- **`mode` controls all providers** — The `mode` enum (`fleet` | `plan` | `autopilot`, default: `fleet`) maps to all three providers. On Copilot: always `rpc.mode.set('autopilot')` + optional `rpc.fleet.start()` for fleet mode. On Claude: always `bypassPermissions` + mode-specific suffix prompt. Both always auto-run — `plan` mode doesn't block for approval. See mode mapping table below.
 - **Autopilot RPC for all modes** — Copilot's native `plan` mode blocks for human approval via `ask_user`, which deadlocks headless execution. The spawner always sets `rpc.mode.set('autopilot')` and uses suffix prompts for behavioral differentiation. The systemMessage fallback is kept for older CLI versions. After token rotation, autopilot and fleet (if applicable) are re-applied on the new session.
 - **`approveAll` from SDK** — The permission handler uses the SDK-exported `approveAll` helper for the default `allow_all` mode. Only the `safe` mode (`COPILOT_PERMISSION_MODE=safe`) uses a custom handler.
 - **Claude fallback uses `bypassPermissions`** — Changed from `plan` for parity with Copilot's `approveAll` handler. Override with `CLAUDE_FALLBACK_PERMISSION_MODE=plan` if needed. Mode suffix prompts are appended to the fallback prompt for fleet/plan behavioral differentiation.
@@ -332,6 +371,7 @@ Resource notifications are debounced to max 1/sec per task. Output filtered for 
 
 ## Additional Documentation
 
+- `docs/provider-abstraction/` — 8-part documentation of the provider abstraction layer, adapters, and migration guide
 - `docs/ARCHITECTURE.md` — detailed system architecture with state diagrams and protocol flow
 - `README.md` — user guide, quick start, tool reference, workflows, troubleshooting
 - `REVIEW.md` — code review guidelines, security checklist, conventions, anti-patterns

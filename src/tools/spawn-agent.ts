@@ -48,16 +48,21 @@ const SpawnAgentSchema = z.object({
 
 export const spawnAgentTool = {
   name: 'spawn_agent',
-  description: `Spawn an autonomous AI agent. Runs isolated — prompt + context_files are its ONLY context.
+  description: `Spawn an autonomous AI agent. Each agent runs in COMPLETE ISOLATION — the prompt + context_files are its ONLY context. It cannot see your conversation, other agents' output, or any prior state.
+
+**⚠️ CRITICAL: context_files are how agents receive information.**
+- coder and tester REQUIRE context_files — the call WILL BE REJECTED without them.
+- coder ONLY accepts .md files (Markdown plans/specs). You MUST create these first (via planner/researcher agents or manually), then pass their output files here.
+- Files common to multiple agents (e.g., a shared spec or research doc) should be attached to EACH agent that needs them — agents cannot see each other's files.
 
 **Roles:**
-- coder: Implementation. Min 1000-char prompt + min 1 .md context file. Include: OBJECTIVE, FILES, CRITERIA, CONSTRAINTS, PATTERNS.
-- planner: Architecture/planning. Min 300-char prompt. Always uses opus. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
-- tester: QA/testing. Min 300-char prompt + min 1 context file. Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
-- researcher: Investigation. Min 200-char prompt. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
+- coder: Implementation. REQUIRES min 1000-char prompt + min 1 .md context file. You MUST first create .md plan/spec files (via planner or manually), then pass them as context_files. Include: OBJECTIVE, FILES, CRITERIA, CONSTRAINTS, PATTERNS.
+- planner: Architecture/planning. Min 300-char prompt. Always uses opus. Produces .md plan files that the coder consumes. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
+- tester: QA/testing. REQUIRES min 300-char prompt + min 1 context file (any type). Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
+- researcher: Investigation. Min 200-char prompt. Produces .md research files that planner/coder consume. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
 - general: General-purpose non-code tasks. Min 200-char prompt. Include: OBJECTIVE, CONTEXT, DELIVERABLES.
 
-**Workflow:** researcher -> planner -> coder -> tester. Chain with depends_on.
+**Workflow:** researcher → planner → coder → tester. Chain with depends_on. Each upstream agent produces files that downstream agents consume via context_files.
 **Status:** Read resource \`task:///all\` or \`task:///{id}\`.`,
 
   inputSchema: {
@@ -70,23 +75,23 @@ export const spawnAgentTool = {
       },
       prompt: {
         type: 'string',
-        description: 'Complete self-contained instructions for the agent. Min length varies by role.',
+        description: 'Complete self-contained instructions for the agent. This is the agent\'s ONLY instruction — it must be detailed enough to work autonomously. Min length varies by role (coder: 1000 chars, planner: 300, tester: 300, researcher: 200, general: 200).',
       },
       context_files: {
         type: 'array',
         items: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'Absolute file path.' },
-            description: { type: 'string', description: 'What this file contains.' },
+            path: { type: 'string', description: 'Absolute file path (must start with /).' },
+            description: { type: 'string', description: 'What this file contains and why the agent needs it.' },
           },
           required: ['path'],
         },
-        description: 'Context files. Required for coder (min 1 .md) and tester (min 1). Max 20 files, 200KB each, 500KB total.',
+        description: 'MANDATORY for coder and tester — call will fail without them. For coder: must be .md files (Markdown plans, specs, research docs). Create these files FIRST (via planner/researcher agents or manually), then reference them here. Pass the SAME shared files to every agent that needs them. Max 20 files, 200KB each, 500KB total. Each file needs an absolute path.',
       },
       specialization: {
         type: 'string',
-        description: 'Role-specific specialization. coder: typescript/python/react/etc. planner: feature/bugfix/migration/etc. tester: playwright/rest/suite/etc. researcher: security/library/performance/etc. general: writing/analysis/documentation/etc.',
+        description: '(Deprecated — agents now load domain skills at runtime via search-skills + get-skill-details. This parameter is accepted but ignored.)',
       },
       model: {
         type: 'string',

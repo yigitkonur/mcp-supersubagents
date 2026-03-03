@@ -16,21 +16,28 @@ import { cancelTaskTool, handleCancelTask } from './tools/cancel-task.js';
 import { sendMessageTool, handleSendMessage } from './tools/send-message.js';
 import { answerQuestionTool, handleAnswerQuestion } from './tools/answer-question.js';
 import { taskManager } from './services/task-manager.js';
-import { TERMINAL_STATUSES } from './types.js';
+import { TERMINAL_STATUSES, DEFAULT_AGENT_MODE } from './types.js';
 import { clientContext } from './services/client-context.js';
-import { checkSDKAvailable, shutdownSDK, getSDKStats } from './services/sdk-spawner.js';
+import { checkSDKAvailable, getSDKStats } from './services/sdk-spawner.js';
 import { sdkClientManager } from './services/sdk-client-manager.js';
 import { accountManager } from './services/account-manager.js';
 import { buildMCPTask } from './services/task-status-mapper.js';
 import { progressRegistry } from './services/progress-registry.js';
 import { subscriptionRegistry, taskIdToUri, uriToTaskId } from './services/subscription-registry.js';
 import { questionRegistry } from './services/question-registry.js';
-import { abortAllFallbackSessions } from './services/claude-code-runner.js';
 import { processRegistry } from './services/process-registry.js';
 import { mcpText, mcpValidationError } from './utils/format.js';
-import { TaskStatus } from './types.js';
-import type { ToolContext } from './types.js';
+import { extractToolNameFromDetail } from './utils/tool-summarizer.js';
+import { TaskStatus, isTerminalStatus } from './types.js';
+import type { ToolContext, Provider } from './types.js';
 import { createRequire } from 'module';
+import { providerRegistry, parseChainString } from './providers/index.js';
+import { triggerFallback } from './providers/fallback-handler.js';
+import { createTaskHandle } from './providers/task-handle-impl.js';
+import { CopilotProviderAdapter } from './providers/copilot-adapter.js';
+import { ClaudeProviderAdapter } from './providers/claude-adapter.js';
+import { CodexProviderAdapter } from './providers/codex-adapter.js';
+import { TASK_TIMEOUT_DEFAULT_MS } from './config/timeouts.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json');
@@ -126,41 +133,117 @@ function installStdIoSafetyGuards(): void {
   process.stderr.on('error', (err) => exitOnBrokenPipe('stderr', err));
 }
 
-// Register retry callback for rate-limited tasks (using SDK spawner)
+// Register retry callback for rate-limited tasks — routes through provider registry
 taskManager.onRetry(async (task) => {
-  const { spawnCopilotTask } = await import('./services/sdk-spawner.js');
-
   console.error(`[index] Retrying task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
 
+  const provider = providerRegistry.getProvider(task.provider ?? 'copilot');
+  if (!provider) {
+    console.error(`[index] No provider '${task.provider}' for retry of task ${task.id}`);
+    return undefined;
+  }
+
   try {
-    // Spawn a new SDK session with the same parameters, carrying forward retry info
-    const newTaskId = await spawnCopilotTask({
-      prompt: task.prompt,
-      cwd: task.cwd,
-      model: task.model,
-      retryInfo: task.retryInfo,
-      fallbackAttempted: false,
+    // Create a new task with the same parameters, carrying forward retry info
+    const newTask = taskManager.createTask(task.prompt, task.cwd || process.cwd(), task.model || 'sonnet', {
+      provider: provider.id as Provider,
+      timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
+      mode: task.mode ?? DEFAULT_AGENT_MODE,
+      labels: task.labels,
     });
-    return newTaskId;
+
+    // Spawn via the provider asynchronously
+    setImmediate(() => {
+      const handle = createTaskHandle(newTask.id);
+      provider.spawn({
+        taskId: newTask.id,
+        prompt: task.prompt,
+        cwd: task.cwd || process.cwd(),
+        model: task.model || 'sonnet',
+        timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
+        mode: task.mode ?? DEFAULT_AGENT_MODE,
+      }, handle).catch((err) => {
+        console.error(`[index] Retry spawn failed for ${newTask.id}:`, err);
+        const current = taskManager.getTask(newTask.id);
+        if (current && !isTerminalStatus(current.status)) {
+          triggerFallback({
+            taskId: newTask.id,
+            failedProviderId: provider.id,
+            reason: `${provider.id}_retry_spawn_error`,
+            errorMessage: err instanceof Error ? err.message : String(err),
+            cwd: task.cwd || process.cwd(),
+            promptOverride: task.prompt,
+          }).then((fell) => {
+            if (!fell) {
+              const t = taskManager.getTask(newTask.id);
+              if (t && !isTerminalStatus(t.status)) {
+                taskManager.updateTask(newTask.id, {
+                  status: TaskStatus.FAILED,
+                  error: `Retry spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+                  endTime: new Date().toISOString(),
+                  exitCode: 1,
+                });
+              }
+            }
+          }).catch(() => { /* fallback handler logs internally */ });
+        }
+      });
+    });
+
+    return newTask.id;
   } catch (err) {
     console.error(`[index] Failed to retry task ${task.id}:`, err);
     return undefined;
   }
 });
 
-// Register execute callback for waiting tasks (dependencies satisfied)
+// Register execute callback for waiting tasks (dependencies satisfied) — routes through provider
 taskManager.onExecute(async (task) => {
+  const provider = providerRegistry.getProvider(task.provider ?? 'copilot');
   try {
-    const { executeWaitingTask } = await import('./services/sdk-spawner.js');
+    if (!provider) {
+      console.error(`[index] No provider '${task.provider}' for execute of task ${task.id}`);
+      taskManager.updateTask(task.id, {
+        status: TaskStatus.FAILED,
+        error: `Provider '${task.provider ?? 'copilot'}' not available`,
+        endTime: new Date().toISOString(),
+        exitCode: 1,
+      });
+      return;
+    }
 
     console.error(`[index] Executing waiting task ${task.id}: "${task.prompt.slice(0, 50)}..."`);
-    await executeWaitingTask(task);
+    const handle = createTaskHandle(task.id);
+    await provider.spawn({
+      taskId: task.id,
+      prompt: task.prompt,
+      cwd: task.cwd || process.cwd(),
+      model: task.model || 'sonnet',
+      timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
+      mode: task.mode ?? DEFAULT_AGENT_MODE,
+    }, handle);
   } catch (err) {
     console.error(`[mcp-server] Execute failed for ${task.id}:`, err);
-    taskManager.updateTask(task.id, {
-      status: TaskStatus.FAILED,
-      error: `Execution startup failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
+    const provId = provider?.id ?? task.provider ?? 'copilot';
+    const fell = await triggerFallback({
+      taskId: task.id,
+      failedProviderId: provId,
+      reason: `${provId}_execute_error`,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      cwd: task.cwd || process.cwd(),
+      promptOverride: task.prompt,
+    }).catch(() => false);
+    if (!fell) {
+      const current = taskManager.getTask(task.id);
+      if (current && !isTerminalStatus(current.status)) {
+        taskManager.updateTask(task.id, {
+          status: TaskStatus.FAILED,
+          error: `Execution startup failed: ${err instanceof Error ? err.message : String(err)}`,
+          endTime: new Date().toISOString(),
+          exitCode: 1,
+        });
+      }
+    }
   }
 });
 
@@ -495,9 +578,9 @@ function filterOutputForResource(output: string[]): string[] {
 
 // Helper: Parse output to execution log entries
 function parseOutputToExecutionLog(output: string[]) {
-  const entries: Array<{ turn: number; tools: Array<{ name: string; duration?: string }> }> = [];
+  const entries: Array<{ turn: number; tools: Array<{ name: string; duration?: string; detail?: string }> }> = [];
   let currentTurn = 0;
-  let currentEntry: { turn: number; tools: Array<{ name: string; duration?: string }> } | null = null;
+  let currentEntry: typeof entries[number] | null = null;
 
   for (const line of output) {
     // New format: "--- Turn N ---"
@@ -514,24 +597,44 @@ function parseOutputToExecutionLog(output: string[]) {
       currentEntry = { turn: currentTurn, tools: [] };
       continue;
     }
-    // New compact format: "[tool] toolName (Nms)"
-    const compactMatch = line.match(/^\[tool\] (\S+) \((\d+)ms\)$/);
-    if (compactMatch && currentEntry) {
-      currentEntry.tools.push({ name: compactMatch[1], duration: `${compactMatch[2]}ms` });
+
+    // Failed tool: "[tool] Failed: ToolName - error" or "[tool] Failed: ToolName — error"
+    if (line.startsWith('[tool] Failed:') && currentEntry) {
+      const match = line.match(/^\[tool\] Failed: (\S+)/);
+      if (match) {
+        currentEntry.tools.push({ name: match[1], detail: 'failed' });
+      }
       continue;
     }
+
+    // Compressed format: "[tool] <detail> (Nms)" or "[tool] <detail> (N.Ns)"
+    // Matches both "read …/file.ts:1-50 (2.2s)" and "Read (450ms)"
+    const compressedMatch = line.match(/^\[tool\] (.+) \((\d+(?:\.\d+)?(?:ms|s))\)$/);
+    if (compressedMatch && currentEntry) {
+      const detail = compressedMatch[1];
+      const duration = compressedMatch[2];
+      const name = extractToolNameFromDetail(detail);
+      currentEntry.tools.push({ name, duration, detail });
+      continue;
+    }
+
+    // Legacy: "[tool] Starting: ToolName"
     if (line.includes('[tool] Starting:')) {
       const match = line.match(/\[tool\] Starting: (\S+)/);
       if (match && currentEntry) {
         currentEntry.tools.push({ name: match[1] });
       }
+      continue;
     }
+
+    // Legacy: "[tool] Completed: ToolName (Nms)"
     if (line.includes('[tool] Completed:')) {
       const match = line.match(/\[tool\] Completed: (\S+) \((\d+)ms\)/);
       if (match && currentEntry && currentEntry.tools.length > 0) {
         const lastTool = currentEntry.tools[currentEntry.tools.length - 1];
         if (lastTool) lastTool.duration = `${match[2]}ms`;
       }
+      continue;
     }
   }
   if (currentEntry) entries.push(currentEntry);
@@ -842,6 +945,15 @@ async function main() {
   // Initialize account manager early to read PAT tokens from env
   accountManager.initialize();
   
+  // Register providers and configure chain
+  providerRegistry.register(new CopilotProviderAdapter());
+  providerRegistry.register(new CodexProviderAdapter());
+  providerRegistry.register(new ClaudeProviderAdapter());
+
+  const chainStr = process.env.PROVIDER_CHAIN || 'copilot,codex,!claude-cli';
+  providerRegistry.configureChain(parseChainString(chainStr));
+  console.error(`[index] Provider chain: ${chainStr}`);
+  
   // Check SDK availability
   const sdkAvailable = await checkSDKAvailable().catch(() => false);
   if (!sdkAvailable) {
@@ -891,11 +1003,11 @@ async function main() {
     }
     statusUpdateTimers.clear();
     try {
-      abortAllFallbackSessions(`Server shutdown${signal ? ` (${signal})` : ''}`);
+      // Shutdown all providers (replaces individual abortAllFallbackSessions + shutdownSDK)
+      await providerRegistry.shutdownAll();
     } catch {}
     try {
       await taskManager.shutdown();
-      await shutdownSDK();
     } catch (err) {
       console.error('Shutdown error:', err);
     }
@@ -981,13 +1093,27 @@ async function main() {
     }
   });
 
-  // Periodic session leak detection (every 5 min)
+  // Periodic session leak detection + orphan resource sweep (every 5 min)
   monitorTimer = setInterval(() => {
     const stats = getSDKStats();
     if (stats.bindings > 0 || stats.sessions > 0) {
       console.error(
         `[session-monitor] Active: ${stats.bindings} bindings, ${stats.sessions} sessions, ${stats.clients} clients`
       );
+    }
+
+    // Sweep orphaned process entries where task is terminal
+    let orphansFound = 0;
+    for (const tracked of processRegistry.getAll()) {
+      const task = taskManager.getTask(tracked.taskId);
+      if (!task || isTerminalStatus(task.status)) {
+        console.error(`[resource-sweep] Cleaning orphaned process entry for terminal task ${tracked.taskId}`);
+        processRegistry.unregister(tracked.taskId);
+        orphansFound++;
+      }
+    }
+    if (orphansFound > 0) {
+      console.error(`[resource-sweep] Cleaned ${orphansFound} orphaned process entries`);
     }
   }, 5 * 60_000);
   monitorTimer.unref();

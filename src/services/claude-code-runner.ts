@@ -240,7 +240,7 @@ export async function runClaudeCodeSession(
         message: 'Claude Agent SDK provider (ai-sdk-provider-claude-code) could not be loaded',
         recoverable: false,
       },
-      session: undefined,
+      providerState: undefined,
     });
     return;
   }
@@ -641,7 +641,7 @@ export async function runClaudeCodeSession(
         },
         sessionMetrics,
         sessionId,
-        session: undefined,
+        providerState: undefined,
       });
       return;
     }
@@ -661,7 +661,7 @@ export async function runClaudeCodeSession(
       exitCode: 0,
       sessionMetrics,
       sessionId,
-      session: undefined,
+      providerState: undefined,
     });
   } catch (error: unknown) {
     // Flush any buffered content before handling the error
@@ -681,7 +681,7 @@ export async function runClaudeCodeSession(
           endTime: nowIso(),
           error: reason || 'Task cancelled',
           exitCode: 130,
-          session: undefined,
+          providerState: undefined,
         });
       } else {
         taskManager.updateTask(taskId, {
@@ -690,7 +690,7 @@ export async function runClaudeCodeSession(
           error: `Task timed out after ${effectiveTimeout}ms`,
           timeoutReason: 'hard_timeout',
           exitCode: 124,
-          session: undefined,
+          providerState: undefined,
         });
       }
       return;
@@ -714,7 +714,7 @@ export async function runClaudeCodeSession(
         stack: error instanceof Error ? error.stack : undefined,
         recoverable: false,
       },
-      session: undefined,
+      providerState: undefined,
     });
   } finally {
     clearTimeout(timeoutHandle);

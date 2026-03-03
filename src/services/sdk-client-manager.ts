@@ -685,7 +685,7 @@ class SDKClientManager {
               inactiveMs,
               detectedBy: 'zombie_sweep',
             },
-            session: undefined,
+            providerState: undefined,
           });
           destroyed++;
         }

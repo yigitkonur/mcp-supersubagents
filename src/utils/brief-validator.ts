@@ -54,12 +54,20 @@ const CODER_RULES: ToolValidationRules = {
     '📝 CONTEXT: [Background — why this matters, dependencies, architectural decisions]',
   ].join('\n'),
   workflowHint: [
-    '🔄 RECOMMENDED WORKFLOW:',
-    '1. spawn_agent(role: "planner") → creates plan at .agent-workspace/plans/[topic]/',
-    '2. spawn_agent(role: "coder") → reference plan files in context_files',
-    '3. spawn_agent(role: "tester") → verify the implementation',
+    '⚠️ YOU MUST CREATE .md FILES BEFORE SPAWNING A CODER:',
     '',
-    '📎 REFERENCE FILES FROM OTHER AGENTS:',
+    'Option A — Use a planner agent:',
+    '  1. spawn_agent(role: "planner", prompt: "...") → wait for completion',
+    '  2. Planner writes .md files to .agent-workspace/plans/[topic]/',
+    '  3. spawn_agent(role: "coder", context_files: [{ path: ".../builder-briefing.md" }])',
+    '',
+    'Option B — Write a spec yourself:',
+    '  1. Create a .md file with the design/plan/spec',
+    '  2. spawn_agent(role: "coder", context_files: [{ path: "/abs/path/to/spec.md" }])',
+    '',
+    '💡 If multiple agents need the same context, attach the same .md files to each one.',
+    '',
+    '📎 Common handoff files:',
     '• Planner output: .agent-workspace/plans/[topic]/05-handoff/builder-briefing.md',
     '• Researcher output: .agent-workspace/researches/[topic]/HANDOFF.md',
   ].join('\n'),
@@ -181,7 +189,7 @@ export async function validateBrief(
     errors.push({
       code: 'PROMPT_TOO_SHORT',
       message: `PROMPT TOO SHORT: ${prompt.length} characters (MINIMUM: ${rules.minPromptLength})`,
-      detail: `Your prompt MUST include these sections:\n${rules.briefTemplate}`,
+      detail: `The prompt is the agent's ONLY instruction — it must be detailed enough to work autonomously.\n\nYour prompt MUST include these sections:\n${rules.briefTemplate}`,
     });
   }
 
@@ -192,8 +200,8 @@ export async function validateBrief(
       code: 'MISSING_CONTEXT_FILES',
       message: `MISSING CONTEXT FILES: ${rules.toolName} REQUIRES at least ${rules.minContextFiles} file(s)`,
       detail: rules.requireMdExtension
-        ? 'Attach Markdown files (.md) — plan documents, specifications, or research findings.\nEach file must have an absolute path ending with .md'
-        : 'Attach relevant files — code, handoff documents, or specifications.\nEach file must have an absolute path.',
+        ? 'The coder agent runs in complete isolation — context_files are the ONLY way to give it specifications and plans.\n\nHOW TO FIX:\n1. Spawn a planner agent first → it produces .md plan files.\n2. Wait for it to complete (use depends_on to chain tasks).\n3. Pass the planner\'s output .md files as context_files to the coder.\n\nExample:\n  spawn_agent(role: "planner", prompt: "...plan the feature...")   → produces plan.md\n  spawn_agent(role: "coder",  prompt: "...", context_files: [{ path: "/project/.agent-workspace/plans/.../builder-briefing.md" }], depends_on: ["planner-task-id"])\n\nEach file must be an absolute path ending in .md.'
+        : 'The tester agent runs in complete isolation — context_files are the ONLY way to tell it what files to test.\n\nHOW TO FIX: Attach the source files or handoff documents the tester needs to verify.\nExample: context_files: [{ path: "/project/src/auth.ts", description: "Auth module to test" }]\nEach file must have an absolute path.',
     });
   }
 
@@ -214,8 +222,8 @@ export async function validateBrief(
     if (rules.requireMdExtension && extname(file.path).toLowerCase() !== '.md') {
       errors.push({
         code: 'NOT_MARKDOWN',
-        message: `NOT A MARKDOWN FILE: "${file.path}" — ${rules.toolName} requires .md files`,
-        detail: 'Context files for the coder MUST be Markdown (.md) plan/specification documents.',
+        message: `NOT A MARKDOWN FILE: "${file.path}" — coder agents ONLY accept .md (Markdown) files`,
+        detail: `The coder agent cannot use "${file.path}" because it is not a .md file.\n\nHOW TO FIX:\n1. First, spawn a planner or researcher agent to produce .md specification/plan files.\n2. Wait for that agent to complete (use depends_on or check task:///all).\n3. Then spawn the coder with those .md output files in context_files.\n\nAlternatively, write a .md spec file yourself and pass its absolute path.\n\nWRONG:  context_files: [{ path: "/project/src/" }]           ← directory, not a file\nWRONG:  context_files: [{ path: "/project/index.html" }]     ← not a .md file\nRIGHT:  context_files: [{ path: "/project/plan.md" }]        ← .md specification\nRIGHT:  context_files: [{ path: "/project/.agent-workspace/plans/feature/05-handoff/builder-briefing.md" }]`,
       });
       continue;
     }
