@@ -16,6 +16,7 @@ import { taskManager } from './task-manager.js';
 import { processRegistry } from './process-registry.js';
 import { TaskStatus, ToolMetrics, isTerminalStatus, DEFAULT_AGENT_MODE, type FallbackReason, type AgentMode } from '../types.js';
 import { getModeSuffixPrompt } from '../config/mode-prompts.js';
+import { extractToolContext, extractResultInfo, formatToolComplete, type ToolCallContext } from '../utils/tool-summarizer.js';
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MODEL = 'sonnet';
@@ -297,6 +298,7 @@ export async function runClaudeCodeSession(
 
   const toolMetrics: Record<string, ToolMetrics> = {};
   const toolStartTimes = new Map<string, number>();
+  const toolCallContexts = new Map<string, ToolCallContext>();
 
   let turnCount = 0;
   let sessionId: string | undefined = options.resumeSessionId;
@@ -430,6 +432,7 @@ export async function runClaudeCodeSession(
 
         case 'tool-call': {
           const toolName = (part as any).toolName || 'unknown';
+          const toolCallId = (part as any).toolCallId || '';
           // Only create metrics if tool-input-start didn't already (backward compat)
           if (!toolMetrics[toolName]) {
             toolMetrics[toolName] = {
@@ -441,19 +444,32 @@ export async function runClaudeCodeSession(
             };
           }
           // Only increment if tool-input-start didn't already track this call
-          if (!toolStartTimes.has((part as any).toolCallId)) {
+          if (!toolStartTimes.has(toolCallId)) {
             toolMetrics[toolName].executionCount += 1;
-            toolStartTimes.set((part as any).toolCallId, Date.now());
+            toolStartTimes.set(toolCallId, Date.now());
             taskManager.appendOutput(taskId, `[tool] Starting: ${toolName}`);
           }
+          // Parse tool args for rich completion summaries
+          try {
+            const rawInput = (part as any).input;
+            const parsedArgs = typeof rawInput === 'string' ? JSON.parse(rawInput)
+              : (rawInput && typeof rawInput === 'object') ? rawInput : undefined;
+            if (parsedArgs) {
+              toolCallContexts.set(toolCallId, extractToolContext(toolName, parsedArgs));
+            }
+          } catch { /* ignore JSON parse failures */ }
           break;
         }
 
         case 'tool-result': {
           const toolName = (part as any).toolName || 'unknown';
-          const start = toolStartTimes.get((part as any).toolCallId);
+          const toolCallId = (part as any).toolCallId || '';
+          const start = toolStartTimes.get(toolCallId);
           const duration = start ? Date.now() - start : 0;
-          toolStartTimes.delete((part as any).toolCallId);
+          toolStartTimes.delete(toolCallId);
+
+          const ctx = toolCallContexts.get(toolCallId);
+          toolCallContexts.delete(toolCallId);
 
           const metrics = toolMetrics[toolName] || {
             toolName,
@@ -463,14 +479,30 @@ export async function runClaudeCodeSession(
             totalDurationMs: 0,
           };
 
+          const isError = !!(part as any).isError;
           metrics.totalDurationMs += duration;
           metrics.lastExecutedAt = nowIso();
-          if ((part as any).isError) {
+
+          if (isError) {
             metrics.failureCount += 1;
-            taskManager.appendOutput(taskId, `[tool] Failed: ${toolName}`);
           } else {
             metrics.successCount += 1;
-            taskManager.appendOutput(taskId, `[tool] Completed: ${toolName} (${duration}ms)`);
+          }
+
+          // Generate compact summary using tool context + result info
+          if (ctx) {
+            const resultInfo = extractResultInfo(toolName, (part as any).result);
+            const summary = formatToolComplete(ctx, {
+              duration,
+              success: !isError,
+              error: isError ? String((part as any).result ?? 'Tool error') : undefined,
+              ...resultInfo,
+            });
+            taskManager.appendOutput(taskId, `[tool] ${summary}`);
+          } else {
+            // Fallback: no context saved (tool-call event was missed)
+            taskManager.appendOutput(taskId,
+              isError ? `[tool] Failed: ${toolName}` : `[tool] Completed: ${toolName} (${duration}ms)`);
           }
           toolMetrics[toolName] = metrics;
           break;
@@ -535,6 +567,12 @@ export async function runClaudeCodeSession(
             const start = toolCallId ? toolStartTimes.get(toolCallId) : undefined;
             const duration = start ? Date.now() - start : 0;
 
+            const ctx = toolCallId ? toolCallContexts.get(toolCallId) : undefined;
+            if (toolCallId) {
+              toolStartTimes.delete(toolCallId);
+              toolCallContexts.delete(toolCallId);
+            }
+
             const metrics = toolMetrics[toolName] || {
               toolName,
               executionCount: 0,
@@ -547,7 +585,10 @@ export async function runClaudeCodeSession(
             metrics.lastExecutedAt = nowIso();
             toolMetrics[toolName] = metrics;
 
-            taskManager.appendOutput(taskId, `[tool] Failed: ${toolName} - ${err}`);
+            const summary = ctx
+              ? formatToolComplete(ctx, { duration, success: false, error: err })
+              : `Failed: ${toolName} — ${err}`;
+            taskManager.appendOutput(taskId, `[tool] ${summary}`);
           } else if (DEBUG) {
             console.error(`[claude-code-runner] Unhandled stream part type: ${(part as { type?: string }).type}`);
           }

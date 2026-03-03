@@ -31,6 +31,7 @@ import {
 import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
 import { triggerClaudeFallback } from './fallback-orchestrator.js';
 import { processRegistry } from './process-registry.js';
+import { extractToolContext, extractResultInfo, formatToolStart, formatToolComplete, type ToolCallContext } from '../utils/tool-summarizer.js';
 
 // Extract specific event types from the union for type-safe handling
 type SessionErrorEvent = Extract<SessionEvent, { type: 'session.error' }>;
@@ -132,6 +133,7 @@ interface SessionBinding {
   toolMetrics: Map<string, ToolMetrics>;
   toolStartTimes: Map<string, number>;
   toolCallIdToName: Map<string, string>; // METRIC-1: Track toolCallId → toolName for accurate completion matching
+  toolCallContexts: Map<string, ToolCallContext>; // Tool call context for rich output summaries
   activeSubagents: Map<string, SubagentInfo>;
   completedSubagents: SubagentInfo[];
   quotas: Map<string, QuotaInfo>;
@@ -222,6 +224,7 @@ class SDKSessionAdapter {
       toolMetrics: new Map(),
       toolStartTimes: new Map(),
       toolCallIdToName: new Map(),
+      toolCallContexts: new Map(),
       activeSubagents: new Map(),
       completedSubagents: [],
       quotas: new Map(),
@@ -846,6 +849,7 @@ class SDKSessionAdapter {
       toolMetrics: oldBinding.toolMetrics,
       toolStartTimes: oldBinding.toolStartTimes,
       toolCallIdToName: oldBinding.toolCallIdToName,
+      toolCallContexts: oldBinding.toolCallContexts,
       activeSubagents: oldBinding.activeSubagents,
       completedSubagents: oldBinding.completedSubagents,
       quotas: oldBinding.quotas,
@@ -1185,10 +1189,15 @@ class SDKSessionAdapter {
    */
   private handleToolStart(taskId: string, event: ToolExecutionStartEvent, binding: SessionBinding): void {
     const { toolName, toolCallId, mcpServerName, mcpToolName } = event.data;
-    
+
     // Track start time and toolCallId → toolName mapping for accurate completion matching (METRIC-1 fix)
     binding.toolStartTimes.set(toolCallId, Date.now());
     binding.toolCallIdToName.set(toolCallId, toolName);
+
+    // Extract tool context from arguments for rich output summaries
+    const toolArgs = (event.data as any).arguments;
+    const ctx = extractToolContext(toolName, toolArgs);
+    binding.toolCallContexts.set(toolCallId, ctx);
 
     // Evict oldest entries to prevent unbounded growth
     if (binding.toolCallIdToName.size > MAX_TOOL_ID_MAP) {
@@ -1199,6 +1208,7 @@ class SDKSessionAdapter {
         if (k) {
           binding.toolCallIdToName.delete(k);
           binding.toolStartTimes.delete(k);
+          binding.toolCallContexts.delete(k);
         }
       }
     }
@@ -1227,8 +1237,8 @@ class SDKSessionAdapter {
     }
 
     const serverInfo = mcpServerName ? ` (MCP: ${mcpServerName})` : '';
-    // Tool start → file only; the completion line (with duration) will appear in-memory
-    taskManager.appendOutputFileOnly(taskId, `[tool] Starting: ${toolName}${serverInfo}`);
+    // Tool start → file only; the completion line (with summary) will appear in-memory
+    taskManager.appendOutputFileOnly(taskId, `[tool] ${formatToolStart(ctx)}${serverInfo}`);
   }
 
   /**
@@ -1241,10 +1251,12 @@ class SDKSessionAdapter {
     const startTime = binding.toolStartTimes.get(toolCallId);
     const duration = startTime ? Date.now() - startTime : 0;
     const toolName = binding.toolCallIdToName.get(toolCallId);
-    
+    const ctx = binding.toolCallContexts.get(toolCallId);
+
     // Clean up tracking maps
     binding.toolStartTimes.delete(toolCallId);
     binding.toolCallIdToName.delete(toolCallId);
+    binding.toolCallContexts.delete(toolCallId);
 
     // Find and update metrics using the tracked toolName (deterministic matching)
     const metrics = toolName ? binding.toolMetrics.get(toolName) : undefined;
@@ -1252,20 +1264,23 @@ class SDKSessionAdapter {
       metrics.executionCount++;
       metrics.totalDurationMs += duration;
       metrics.lastExecutedAt = new Date().toISOString();
-      
+
       if (success) {
         metrics.successCount++;
-        // Trivial tools (<100ms): compact single line to in-memory, verbose to file
-        if (duration < 100) {
-          taskManager.appendOutput(taskId, `[tool] ${metrics.toolName} (${duration}ms)`);
-        } else {
-          taskManager.appendOutput(taskId, `[tool] ${metrics.toolName} (${duration}ms)`);
-        }
       } else {
         metrics.failureCount++;
-        const errorMsg = event.data.error?.message || 'Unknown error';
-        taskManager.appendOutput(taskId, `[tool] Failed: ${metrics.toolName} - ${errorMsg}`);
       }
+
+      // Generate compact summary line using tool context + result info
+      const errorMsg = success ? undefined : (event.data.error?.message || 'Unknown error');
+      const sdkResult = (event.data as any).result;
+      const resultInfo = extractResultInfo(metrics.toolName, sdkResult);
+      const summary = ctx
+        ? formatToolComplete(ctx, { duration, success, error: errorMsg, ...resultInfo })
+        : success
+          ? `${metrics.toolName} (${duration}ms)`
+          : `Failed: ${metrics.toolName} - ${errorMsg}`;
+      taskManager.appendOutput(taskId, `[tool] ${summary}`);
     } else {
       // Fallback: log completion without metrics update if toolName not found
       taskManager.appendOutput(taskId, `[tool] Completed: unknown (${duration}ms, callId: ${toolCallId})`);
@@ -1533,6 +1548,7 @@ class SDKSessionAdapter {
     binding.toolMetrics.clear();
     binding.toolStartTimes.clear();
     binding.toolCallIdToName.clear();
+    binding.toolCallContexts.clear();
     binding.activeSubagents.clear();
     binding.completedSubagents.length = 0;
     binding.outputBuffer.length = 0;
