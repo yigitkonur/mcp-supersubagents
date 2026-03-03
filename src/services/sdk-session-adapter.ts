@@ -28,8 +28,7 @@ import {
   type SubagentInfo,
   type SessionMetrics,
 } from '../types.js';
-import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
-import { triggerClaudeFallback } from './fallback-orchestrator.js';
+import { triggerFallback, isFallbackEnabled } from '../providers/fallback-handler.js';
 import { processRegistry } from './process-registry.js';
 import { extractToolContext, extractResultInfo, formatToolStart, formatToolComplete, type ToolCallContext } from '../utils/tool-summarizer.js';
 
@@ -139,6 +138,11 @@ interface SessionBinding {
   quotas: Map<string, QuotaInfo>;
   lastMetricsUpdateAt: number;
   isUnbound: boolean; // Guard against double-unbind/double-destroy races
+  // SDK field verification flags (one-time runtime check)
+  _sdkArgsChecked: boolean;
+  _sdkResultChecked: boolean;
+  // Sub-agent tools from subagent.selected events
+  subagentTools: Map<string, string[]>;
 }
 
 class SDKSessionAdapter {
@@ -229,11 +233,14 @@ class SDKSessionAdapter {
       completedSubagents: [],
       quotas: new Map(),
       lastMetricsUpdateAt: 0,
+      _sdkArgsChecked: false,
+      _sdkResultChecked: false,
+      subagentTools: new Map(),
     };
 
     // CC-017: Serialize event processing to prevent races between session.error
     // and session.idle. Without serialization, handleSessionError can yield at
-    // an await (e.g., triggerClaudeFallback) and handleSessionIdle runs during
+    // an await (e.g., triggerFallback) and handleSessionIdle runs during
     // that yield, marking the task COMPLETED before the error handler finishes.
     let eventChain: Promise<void> = Promise.resolve();
 
@@ -252,7 +259,7 @@ class SDKSessionAdapter {
     taskManager.updateTask(taskId, {
       status: TaskStatus.RUNNING,
       sessionId: session.sessionId,
-      session,
+      providerState: session as any,
       sessionMetrics: {
         quotas: {},
         toolMetrics: {},
@@ -366,6 +373,10 @@ class SDKSessionAdapter {
         this.handleToolComplete(taskId, event as ToolExecutionCompleteEvent, binding);
         break;
 
+      case 'subagent.selected':
+        this.handleSubagentSelected(taskId, event, binding);
+        break;
+
       case 'subagent.started':
         this.handleSubagentStarted(taskId, event as SubagentStartedEvent, binding);
         break;
@@ -453,7 +464,7 @@ class SDKSessionAdapter {
     // CC-003 + CC-017: Ignore session.idle during rotation or error handling
     // to prevent premature COMPLETED. The errorHandlingInProgress guard prevents
     // session.idle from racing with handleSessionError (which may be awaiting
-    // triggerClaudeFallback or other async operations).
+    // triggerFallback or other async operations).
     if (binding.rotationInProgress || binding.errorHandlingInProgress) {
       console.error(`[sdk-session-adapter] Ignoring session.idle for ${taskId} — ${binding.rotationInProgress ? 'rotation' : 'error handling'} in progress`);
       return;
@@ -477,7 +488,7 @@ class SDKSessionAdapter {
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
-        session: undefined,
+        providerState: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -579,10 +590,11 @@ class SDKSessionAdapter {
     // Handle based on error type
     if (isRateLimit) {
       if (isFallbackEnabled()) {
-        const started = await triggerClaudeFallback(taskId, {
+        const started = await triggerFallback({
+          taskId,
+          failedProviderId: 'copilot',
           reason: 'copilot_rate_limited',
           errorMessage: message,
-          session: binding.session,
         });
         if (binding.isUnbound) return; // CC-002: Recheck after await
         if (started) {
@@ -595,10 +607,11 @@ class SDKSessionAdapter {
       // Non-rotatable error (CLI crash, auth error, etc.) — fallback to Claude Agent SDK
       console.error(`[sdk-session-adapter] Task ${taskId} hit non-rotatable error, falling back to Claude Agent SDK`);
 
-      const started = await triggerClaudeFallback(taskId, {
+      const started = await triggerFallback({
+        taskId,
+        failedProviderId: 'copilot',
         reason: 'copilot_non_rotatable_error',
         errorMessage: message,
-        session: binding.session,
       });
       if (binding.isUnbound) return; // CC-002: Recheck after await
       if (started) {
@@ -688,7 +701,7 @@ class SDKSessionAdapter {
       }
 
       if (!rotationResult.success) {
-        if (shouldFallbackToClaudeCode(rotationResult)) {
+        if (isFallbackEnabled()) {
           // All accounts exhausted - fallback to Claude Agent SDK
           taskManager.appendOutput(taskId, `[rotation] All accounts exhausted. Switching to Claude Agent SDK...`);
 
@@ -696,14 +709,15 @@ class SDKSessionAdapter {
           const taskForFallback = taskManager.getTask(taskId);
           if (!taskForFallback) return false;
 
-          const started = await triggerClaudeFallback(taskId, {
+          const started = await triggerFallback({
+            taskId,
+            failedProviderId: 'copilot',
             reason: 'copilot_accounts_exhausted',
             errorMessage: 'All Copilot accounts exhausted',
-            session: binding.session,
             cwd: taskCwd,
           });
 
-          // CC-002 + RC-14: Check isUnbound and terminal state after triggerClaudeFallback await
+          // CC-002 + RC-14: Check isUnbound and terminal state after triggerFallback await
           if (binding.isUnbound) return false;
           const taskAfterFallback = taskManager.getTask(taskId);
           if (!taskAfterFallback || isTerminalStatus(taskAfterFallback.status)) {
@@ -854,6 +868,9 @@ class SDKSessionAdapter {
       completedSubagents: oldBinding.completedSubagents,
       quotas: oldBinding.quotas,
       lastMetricsUpdateAt: oldBinding.lastMetricsUpdateAt,
+      _sdkArgsChecked: oldBinding._sdkArgsChecked,
+      _sdkResultChecked: oldBinding._sdkResultChecked,
+      subagentTools: oldBinding.subagentTools,
     };
 
     // CC-017: Serialize event processing (same pattern as bind()) to prevent
@@ -874,7 +891,7 @@ class SDKSessionAdapter {
     // Update task with new session reference
     taskManager.updateTask(taskId, {
       sessionId: newSession.sessionId,
-      session: newSession,
+      providerState: newSession as any,
     });
 
     taskManager.appendOutput(taskId, `[rotation] Successfully resumed with new session`);
@@ -940,7 +957,7 @@ class SDKSessionAdapter {
       error: message,
       retryInfo,
       failureContext,
-      session: undefined,
+      providerState: undefined,
     });
 
     // Destroy session to release PTY FDs
@@ -965,7 +982,7 @@ class SDKSessionAdapter {
         error: `${message}${statusCode ? ` (status: ${statusCode})` : ''}`,
         exitCode: 1,
         failureContext,
-        session: undefined,
+        providerState: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1040,10 +1057,11 @@ class SDKSessionAdapter {
           return;
         }
         if (isFallbackEnabled()) {
-          const started = await triggerClaudeFallback(taskId, {
+          const started = await triggerFallback({
+            taskId,
+            failedProviderId: 'copilot',
             reason: 'copilot_rate_limited',
             errorMessage: 'Rate limit detected in response (max rotations exhausted)',
-            session: binding.session,
           });
           if (started) {
             this.unbind(taskId);
@@ -1074,10 +1092,11 @@ class SDKSessionAdapter {
           return;
         }
         if (isFallbackEnabled()) {
-          const started = await triggerClaudeFallback(taskId, {
+          const started = await triggerFallback({
+            taskId,
+            failedProviderId: 'copilot',
             reason: 'copilot_rate_limited',
             errorMessage: 'Rate limit detected in response (rotation failed)',
-            session: binding.session,
           });
           if (started) {
             this.unbind(taskId);
@@ -1196,6 +1215,17 @@ class SDKSessionAdapter {
 
     // Extract tool context from arguments for rich output summaries
     const toolArgs = (event.data as any).arguments;
+
+    // One-time runtime check: verify if SDK actually provides tool arguments
+    if (!binding._sdkArgsChecked) {
+      binding._sdkArgsChecked = true;
+      if (toolArgs != null && typeof toolArgs === 'object') {
+        console.error(`[sdk-session-adapter] SDK provides tool arguments ✓`);
+      } else {
+        console.error(`[sdk-session-adapter] SDK does NOT provide tool arguments — summaries will be generic`);
+      }
+    }
+
     const ctx = extractToolContext(toolName, toolArgs);
     binding.toolCallContexts.set(toolCallId, ctx);
 
@@ -1274,6 +1304,17 @@ class SDKSessionAdapter {
       // Generate compact summary line using tool context + result info
       const errorMsg = success ? undefined : (event.data.error?.message || 'Unknown error');
       const sdkResult = (event.data as any).result;
+
+      // One-time runtime check: verify if SDK actually provides tool results
+      if (!binding._sdkResultChecked) {
+        binding._sdkResultChecked = true;
+        if (sdkResult != null) {
+          console.error(`[sdk-session-adapter] SDK provides tool results ✓`);
+        } else {
+          console.error(`[sdk-session-adapter] SDK does NOT provide tool results — result info will be absent`);
+        }
+      }
+
       const resultInfo = extractResultInfo(metrics.toolName, sdkResult);
       const summary = ctx
         ? formatToolComplete(ctx, { duration, success, error: errorMsg, ...resultInfo })
@@ -1290,10 +1331,35 @@ class SDKSessionAdapter {
   }
 
   /**
+   * Handle subagent.selected event — captures available tools per sub-agent
+   * before it starts. The SDK fires this when a sub-agent is selected but
+   * before subagent.started. We store the tool list and log it to the output file.
+   */
+  private handleSubagentSelected(taskId: string, event: any, binding: SessionBinding): void {
+    const { agentName, agentDisplayName, tools } = event.data ?? {};
+    const toolList = Array.isArray(tools) ? tools : [];
+
+    // Store tools list for display when the sub-agent starts
+    if (agentName) {
+      binding.subagentTools.set(agentName, toolList);
+    }
+
+    if (toolList.length > 0) {
+      const toolPreview = toolList.slice(0, 8).join(', ');
+      const overflow = toolList.length > 8 ? ` (+${toolList.length - 8} more)` : '';
+      taskManager.appendOutputFileOnly(taskId,
+        `[subagent] Selected: ${agentDisplayName ?? agentName} — tools: ${toolPreview}${overflow}`);
+    }
+  }
+
+  /**
    * Handle subagent.started event
    */
   private handleSubagentStarted(taskId: string, event: SubagentStartedEvent, binding: SessionBinding): void {
     const { agentName, agentDisplayName, agentDescription, toolCallId } = event.data;
+
+    // Retrieve tool list from prior subagent.selected event
+    const tools = binding.subagentTools.get(agentName);
 
     const subagentInfo: SubagentInfo = {
       agentName,
@@ -1302,10 +1368,15 @@ class SDKSessionAdapter {
       toolCallId,
       status: 'running',
       startedAt: new Date().toISOString(),
+      tools: tools,
     };
 
     binding.activeSubagents.set(toolCallId, subagentInfo);
-    taskManager.appendOutput(taskId, `[subagent] Started: ${agentDisplayName}`);
+
+    // Enrich output: include description snippet and tool count
+    const toolCount = tools?.length ? ` (${tools.length} tools)` : '';
+    const desc = agentDescription ? ` — ${agentDescription.slice(0, 80)}` : '';
+    taskManager.appendOutput(taskId, `[subagent] Started: ${agentDisplayName}${desc}${toolCount}`);
     this.updateSessionMetrics(taskId, binding);
   }
 
@@ -1314,7 +1385,7 @@ class SDKSessionAdapter {
    */
   private handleSubagentCompleted(taskId: string, event: SubagentCompletedEvent, binding: SessionBinding): void {
     const { agentName, toolCallId } = event.data;
-    
+
     const subagent = binding.activeSubagents.get(toolCallId);
     if (subagent) {
       subagent.status = 'completed';
@@ -1326,7 +1397,12 @@ class SDKSessionAdapter {
       binding.activeSubagents.delete(toolCallId);
     }
 
-    taskManager.appendOutput(taskId, `[subagent] Completed: ${agentName}`);
+    // Use display name consistently + compute duration
+    const displayName = subagent?.agentDisplayName ?? agentName;
+    const duration = subagent?.startedAt
+      ? ` (${((Date.now() - new Date(subagent.startedAt).getTime()) / 1000).toFixed(1)}s)`
+      : '';
+    taskManager.appendOutput(taskId, `[subagent] Completed: ${displayName}${duration}`);
     this.updateSessionMetrics(taskId, binding);
   }
 
@@ -1348,7 +1424,10 @@ class SDKSessionAdapter {
       binding.activeSubagents.delete(toolCallId);
     }
 
-    taskManager.appendOutput(taskId, `[subagent] Failed: ${agentName} - ${error}`);
+    // Use display name consistently + truncate long errors
+    const displayName = subagent?.agentDisplayName ?? agentName;
+    const shortError = error.length > 80 ? error.slice(0, 80) + '…' : error;
+    taskManager.appendOutput(taskId, `[subagent] Failed: ${displayName} — ${shortError}`);
     this.updateSessionMetrics(taskId, binding);
   }
 
@@ -1429,7 +1508,7 @@ class SDKSessionAdapter {
         endTime: new Date().toISOString(),
         error: event.data.errorReason || 'Session shutdown with error',
         exitCode: 1,
-        session: undefined,
+        providerState: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1444,7 +1523,7 @@ class SDKSessionAdapter {
         status: TaskStatus.COMPLETED,
         endTime: new Date().toISOString(),
         exitCode: 0,
-        session: undefined,
+        providerState: undefined,
       });
       this.unbind(taskId);
     }
@@ -1477,7 +1556,7 @@ class SDKSessionAdapter {
         status: TaskStatus.CANCELLED,
         endTime: new Date().toISOString(),
         exitCode: 0,
-        session: undefined,
+        providerState: undefined,
       });
 
       // Destroy session to release PTY FDs
@@ -1549,6 +1628,7 @@ class SDKSessionAdapter {
     binding.toolStartTimes.clear();
     binding.toolCallIdToName.clear();
     binding.toolCallContexts.clear();
+    binding.subagentTools.clear();
     binding.activeSubagents.clear();
     binding.completedSubagents.length = 0;
     binding.outputBuffer.length = 0;
@@ -1621,7 +1701,7 @@ class SDKSessionAdapter {
           timeoutMs,
           detectedBy: 'sdk_adapter',
         },
-        session: undefined,
+        providerState: undefined,
       });
 
       // Abort the session, then destroy to release PTY FDs

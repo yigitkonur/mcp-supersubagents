@@ -154,7 +154,7 @@ export { TERMINAL_STATUSES } from '../types.js';
  * Note: With SDK, session liveness is managed by the SDK itself via events
  */
 export function isSessionActive(task: TaskState): boolean {
-  return task.session !== undefined && task.status === TaskStatus.RUNNING;
+  return task.providerState !== undefined && task.status === TaskStatus.RUNNING;
 }
 
 
@@ -673,10 +673,11 @@ class TaskManager {
       await this.cleanupSdkBindings();
 
       for (const task of this.tasks.values()) {
-        if (!task.session) continue;
+        const session = task.providerState as { abort?: () => Promise<void> } | undefined;
+        if (!session?.abort) continue;
         try {
           await Promise.race([
-            task.session.abort(),
+            session.abort(),
             new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
           ]);
         } catch {
@@ -852,7 +853,7 @@ class TaskManager {
             const elapsedMs = task.startTime ? now - new Date(task.startTime).getTime() : 0;
             const taskId = task.id;
             const timeoutMs = task.timeout;
-            const session = task.session;
+            const session = task.providerState as { abort?: () => Promise<void> } | undefined;
             this.timingOutTasks.add(taskId);
             console.error(`[task-manager] Health check: hard timeout reached for task ${taskId} after ${elapsedMs}ms`);
 
@@ -865,7 +866,7 @@ class TaskManager {
                   /* swallow */
                 }
 
-                if (!killed && session) {
+                if (!killed && session?.abort) {
                   try {
                     await Promise.race([
                       session.abort(),
@@ -895,7 +896,7 @@ class TaskManager {
                     elapsedMs,
                     detectedBy: 'health_check',
                   },
-                  session: undefined,
+                  providerState: undefined,
                 });
               } finally {
                 this.timingOutTasks.delete(taskId);
@@ -1158,8 +1159,8 @@ class TaskManager {
 
     const statusChanged = updates.status !== undefined && updates.status !== previousStatus;
     if (statusChanged && TERMINAL_STATUSES.has(task.status)) {
-      // Clear session reference on terminal status (SDK adapter handles actual cleanup)
-      task.session = undefined;
+      // Clear provider state reference on terminal status (adapter handles actual cleanup)
+      task.providerState = undefined;
       if (!task.endTime) {
         task.endTime = new Date().toISOString();
       }
@@ -1168,9 +1169,9 @@ class TaskManager {
         finalizeOutputFile(task.cwd, task.id, task.status, task.error).catch(() => {});
       }
     }
-    // Also clear session reference on RATE_LIMITED transition (session is no longer valid)
+    // Also clear provider state on RATE_LIMITED transition (session is no longer valid)
     if (task.status === TaskStatus.RATE_LIMITED && statusChanged) {
-      task.session = undefined;
+      task.providerState = undefined;
     }
     // No need to re-set in Map — object reference is unchanged
     const shouldPersist = options?.persist !== false || updates.status !== undefined;
@@ -1333,7 +1334,7 @@ class TaskManager {
       this.updateTask(task.id, {
         status: TaskStatus.CANCELLED,
         endTime: new Date().toISOString(),
-        session: undefined,
+        providerState: undefined,
       });
       // Best-effort cleanup in case any process/session is still registered
       processRegistry.killTask(task.id).catch(() => {});
@@ -1345,10 +1346,11 @@ class TaskManager {
 
     // Use process registry for proper escalation
     const killed = await processRegistry.killTask(task.id);
-    if (!killed && task.session) {
+    const cancelSession = task.providerState as { abort?: () => Promise<void> } | undefined;
+    if (!killed && cancelSession?.abort) {
       try {
         await Promise.race([
-          task.session.abort(),
+          cancelSession.abort(),
           new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
         ]);
       } catch {
@@ -1374,7 +1376,7 @@ class TaskManager {
       status: TaskStatus.CANCELLED,
       endTime: new Date().toISOString(),
       error: alreadyDead ? 'Session had already ended before cancellation' : undefined,
-      session: undefined,
+      providerState: undefined,
     });
     const result = getCancellationResult();
     if (result.success && result.alreadyDead === undefined && alreadyDead) {

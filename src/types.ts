@@ -1,7 +1,6 @@
-import type { CopilotSession } from '@github/copilot-sdk';
 import type { ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 
-export type Provider = 'copilot' | 'claude-cli';
+export type Provider = 'copilot' | 'claude-cli' | 'codex';
 
 /** Execution mode controlling agent behavior on both providers */
 export type AgentMode = 'fleet' | 'plan' | 'autopilot';
@@ -11,12 +10,8 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'fleet';
 export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
-export type FallbackReason =
-  | 'copilot_startup_no_accounts'
-  | 'copilot_accounts_exhausted'
-  | 'copilot_rate_limited'
-  | 'copilot_non_rotatable_error'
-  | 'copilot_unhandled_error';
+/** Open string type — any provider can define its own fallback reasons */
+export type FallbackReason = string;
 
 export enum TaskStatus {
   PENDING = 'pending',
@@ -248,7 +243,8 @@ export interface TaskState {
   prompt: string;
   output: string[];
   sessionId?: string;
-  session?: CopilotSession;
+  /** Opaque per-provider state (non-serializable, stripped during persistence) */
+  providerState?: Record<string, unknown>;
   startTime: string;
   lastOutputAt?: string;
   lastHeartbeatAt?: string;

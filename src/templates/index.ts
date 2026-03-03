@@ -112,49 +112,20 @@ function loadFile(filePath: string): string | null {
 }
 
 /**
- * Matryoshka template resolution:
- *   base template (super-coder.mdx)
- *     + specialization overlay (overlays/coder-typescript.mdx)
- *       + user prompt (injected at {{user_prompt}})
+ * Template resolution:
+ *   base template (super-coder.mdx) + user prompt (injected at {{user_prompt}})
  *
- * The overlay is inserted before the "## BEGIN" section of the base template.
- * If no overlay or no BEGIN section, overlay is appended before user prompt injection.
+ * Agents load domain-specific context at runtime via search-skills + get-skill-details MCP tools.
+ * The specialization parameter is accepted for backward compatibility but ignored.
  *
  * When MCP_ENABLED_TOOLS is set, TOOLKIT table rows are filtered to only show enabled tools.
  */
-export function applyTemplate(taskType: TaskType, userPrompt: string, specialization?: string): string {
+export function applyTemplate(taskType: TaskType, userPrompt: string, _specialization?: string): string {
   const basePath = join(__dirname, `${taskType}.mdx`);
   const base = loadFile(basePath);
   if (!base) return userPrompt;
 
-  // Load specialization overlay if requested
-  let overlay = '';
-  let safeSpecialization = specialization;
-  if (safeSpecialization && (/[\/\\]|\.\./.test(safeSpecialization))) {
-    console.error(`[templates] Invalid specialization rejected: ${safeSpecialization}`);
-    safeSpecialization = undefined;
-  }
-  if (safeSpecialization) {
-    // Map task type to overlay prefix: super-coder -> coder, super-planner -> planner
-    const overlayPrefix = taskType.replace('super-', '');
-    const overlayPath = join(__dirname, 'overlays', `${overlayPrefix}-${safeSpecialization}.mdx`);
-    // Fallback: try bare {specialization}.mdx (cross-role overlays like arabic-answer)
-    overlay = loadFile(overlayPath) || loadFile(join(__dirname, 'overlays', `${safeSpecialization}.mdx`)) || '';
-  }
-
-  // Combine base + overlay
   let combined = base;
-  if (overlay) {
-    // Insert overlay before the ## BEGIN section for natural reading order
-    if (combined.includes('## BEGIN')) {
-      combined = combined.replace('## BEGIN', `${overlay}\n\n---\n\n## BEGIN`);
-    } else {
-      // Fallback: append overlay before user prompt position
-      combined = combined.includes('{{user_prompt}}')
-        ? combined.replace('{{user_prompt}}', `\n\n${overlay}\n\n---\n\n{{user_prompt}}`)
-        : `${combined}\n\n---\n\n${overlay}`;
-    }
-  }
 
   // Apply tool filtering if MCP_ENABLED_TOOLS is set
   const enabledTools = getEnabledTools();

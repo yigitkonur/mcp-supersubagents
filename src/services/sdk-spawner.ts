@@ -22,9 +22,8 @@ import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import { getModeSuffixPrompt } from '../config/mode-prompts.js';
-import { shouldFallbackToClaudeCode, isFallbackEnabled } from './exhaustion-fallback.js';
+import { triggerFallback, isFallbackEnabled } from '../providers/fallback-handler.js';
 import { abortClaudeCodeSession } from './claude-code-runner.js';
-import { triggerClaudeFallback } from './fallback-orchestrator.js';
 import { accountManager } from './account-manager.js';
 import { processRegistry } from './process-registry.js';
 
@@ -111,7 +110,7 @@ function ensureRotationCallbackRegistered(): void {
           endTime: new Date().toISOString(),
           error: actionableMessage,
           exitCode: 1,
-          session: undefined,
+          providerState: undefined,
         });
         sdkSessionAdapter.unbind(taskId);
         console.error(`[sdk-spawner] Task ${taskId} failed fast during rotation callback: ${actionableMessage}`);
@@ -244,7 +243,9 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
       const current = taskManager.getTask(taskId);
       if (!current || isTerminalStatus(current.status)) return;
 
-      triggerClaudeFallback(taskId, {
+      triggerFallback({
+        taskId,
+        failedProviderId: 'copilot',
         reason: 'copilot_startup_no_accounts',
         promptOverride: prompt,
         cwd,
@@ -269,7 +270,9 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
         if (isFallbackEnabled()) {
           console.error(`[sdk-spawner] Task ${taskId} unhandled error, falling back to Claude Agent SDK`);
           sdkSessionAdapter.unbind(taskId);
-          triggerClaudeFallback(taskId, {
+          triggerFallback({
+            taskId,
+            failedProviderId: 'copilot',
             reason: 'copilot_unhandled_error',
             errorMessage: err instanceof Error ? err.message : String(err),
             promptOverride: prompt,
@@ -282,7 +285,7 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
             status: TaskStatus.FAILED,
             endTime: new Date().toISOString(),
             error: err instanceof Error ? err.message : String(err),
-            session: undefined,
+            providerState: undefined,
           });
         }
       }
@@ -334,7 +337,9 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
         if (isFallbackEnabled()) {
           console.error(`[sdk-spawner] Task ${taskId} unhandled error, falling back to Claude Agent SDK`);
           sdkSessionAdapter.unbind(taskId);
-          triggerClaudeFallback(taskId, {
+          triggerFallback({
+            taskId,
+            failedProviderId: 'copilot',
             reason: 'copilot_unhandled_error',
             errorMessage: err instanceof Error ? err.message : String(err),
             promptOverride: prompt,
@@ -347,7 +352,7 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
             status: TaskStatus.FAILED,
             endTime: new Date().toISOString(),
             error: err instanceof Error ? err.message : String(err),
-            session: undefined,
+            providerState: undefined,
           });
         }
       }
@@ -427,7 +432,7 @@ async function runSDKSession(
     // Store reference immediately to prevent orphan if bind() throws
     taskManager.updateTask(taskId, {
       sessionId: session.sessionId,
-      session,
+      providerState: session as any,
     });
 
     processRegistry.register({
@@ -552,12 +557,12 @@ async function handleSessionError(
   if (isFallbackEnabled()) {
     console.error(`[sdk-spawner] Task ${taskId} hit non-rotatable error, falling back to Claude Agent SDK`);
 
-    const session = sdkSessionAdapter.getSession(taskId);
     sdkSessionAdapter.unbind(taskId);
-    const started = await triggerClaudeFallback(taskId, {
+    const started = await triggerFallback({
+      taskId,
+      failedProviderId: 'copilot',
       reason: 'copilot_non_rotatable_error',
       errorMessage,
-      session,
       cwd,
       awaitCompletion: true,
     });
@@ -573,7 +578,7 @@ async function handleSessionError(
     endTime: new Date().toISOString(),
     error: errorMessage,
     exitCode: 1,
-    session: undefined,
+    providerState: undefined,
   });
 
   sdkSessionAdapter.unbind(taskId);
@@ -670,20 +675,20 @@ async function handleRateLimit(
         endTime: new Date().toISOString(),
         error: actionableMessage,
         exitCode: 1,
-        session: undefined,
+        providerState: undefined,
       });
       sdkSessionAdapter.unbind(taskId);
       console.error(`[sdk-spawner] Task ${taskId} failed fast: ${actionableMessage}`);
       return;
-    } else if (shouldFallbackToClaudeCode(rotationResult)) {
+    } else if (isFallbackEnabled()) {
       // All accounts exhausted - fallback to Claude Agent SDK
       console.error(`[sdk-spawner] All Copilot accounts exhausted for task ${taskId}, falling back to Claude Agent SDK`);
 
-      const session = sdkSessionAdapter.getSession(taskId);
-      const started = await triggerClaudeFallback(taskId, {
+      const started = await triggerFallback({
+        taskId,
+        failedProviderId: 'copilot',
         reason: 'copilot_accounts_exhausted',
         errorMessage: 'All Copilot accounts exhausted',
-        session,
         cwd,
         awaitCompletion: true,
       });
@@ -696,11 +701,11 @@ async function handleRateLimit(
 
   // Copilot rate-limited and rotation path did not yield a runnable session.
   if (isFallbackEnabled()) {
-    const session = sdkSessionAdapter.getSession(taskId);
-    const started = await triggerClaudeFallback(taskId, {
+    const started = await triggerFallback({
+      taskId,
+      failedProviderId: 'copilot',
       reason: 'copilot_rate_limited',
       errorMessage,
-      session,
       cwd,
       awaitCompletion: true,
     });
@@ -718,7 +723,7 @@ async function handleRateLimit(
     endTime: new Date().toISOString(),
     error: errorMessage,
     retryInfo,
-    session: undefined,
+    providerState: undefined,
   });
 
   sdkSessionAdapter.unbind(taskId);

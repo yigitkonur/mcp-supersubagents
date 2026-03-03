@@ -26,6 +26,9 @@ export interface ToolCallContext {
   description?: string;
   subagentType?: string;
   instruction?: string;
+  mcpServer?: string;     // Extracted from mcp__<server>__<tool> pattern
+  mcpTool?: string;       // Tool name within MCP namespace
+  mcpHint?: string;       // First string arg as hint for MCP tools
 }
 
 export interface ToolResultInfo {
@@ -99,6 +102,22 @@ export function extractToolContext(toolName: string, rawArgs: unknown): ToolCall
     if (typeof a.subagent_type === 'string') ctx.subagentType = a.subagent_type;
   } else if (norm === 'notebookedit') {
     if (typeof a.edit_mode === 'string') ctx.instruction = a.edit_mode;
+  }
+
+  // MCP namespaced tools: mcp__<server>__<tool>
+  if (toolName.startsWith('mcp__') && !ctx.filePath && !ctx.command) {
+    const parts = toolName.split('__');
+    if (parts.length >= 3) {
+      ctx.mcpServer = parts[1];
+      ctx.mcpTool = parts.slice(2).join('_');
+      // Extract first short string arg as a display hint
+      for (const v of Object.values(a)) {
+        if (typeof v === 'string' && v.length > 0 && v.length <= 100) {
+          ctx.mcpHint = v;
+          break;
+        }
+      }
+    }
   }
 
   return ctx;
@@ -199,6 +218,11 @@ export function formatToolStart(ctx: ToolCallContext): string {
     const desc = ctx.description ? `"${truncate(ctx.description, 35)}"` : '';
     return type ? `Starting: spawn ${type} ${desc}`.trim() : `Starting: Task ${desc}`.trim();
   }
+  // MCP namespaced tools
+  if (ctx.mcpServer && ctx.mcpTool) {
+    const hint = ctx.mcpHint ? ` ("${truncate(ctx.mcpHint, 30)}")` : '';
+    return `Starting: MCP:${ctx.mcpServer} ${ctx.mcpTool}${hint}`;
+  }
   return `Starting: ${ctx.toolName}`;
 }
 
@@ -291,6 +315,47 @@ export function formatToolComplete(ctx: ToolCallContext, info: ToolResultInfo): 
     return `task-output${dur}`;
   }
 
+  // ── MCP namespaced ──
+  if (ctx.mcpServer && ctx.mcpTool) {
+    const hint = ctx.mcpHint ? ` ("${truncate(ctx.mcpHint, 30)}")` : '';
+    return `MCP:${ctx.mcpServer} ${ctx.mcpTool}${hint}${dur}`;
+  }
+
   // ── Default ──
   return `${ctx.toolName}${dur}`;
+}
+
+// ── Execution Log Helper ──────────────────────────────────────
+
+/**
+ * Extract a display tool name from a compressed detail string.
+ * Used by execution log parsers to recover a tool category.
+ *
+ *   "read …/sdk-session-adapter.ts:195-255"  -> "Read"
+ *   "$ npm test → exit 0"                     -> "Bash"
+ *   "edit …/app.ts (+3/-2)"                   -> "Edit"
+ *   "MCP:github list_issues"                  -> "MCP:github"
+ *   "Read"                                    -> "Read" (legacy)
+ */
+export function extractToolNameFromDetail(detail: string): string {
+  if (detail.startsWith('read '))    return 'Read';
+  if (detail.startsWith('write '))   return 'Write';
+  if (detail.startsWith('edit '))    return 'Edit';
+  if (detail.startsWith('morph-edit ')) return 'Edit';
+  if (detail.startsWith('notebook ')) return 'NotebookEdit';
+  if (detail.startsWith('$ '))       return 'Bash';
+  if (detail.startsWith('grep'))     return 'Grep';
+  if (detail.startsWith('glob'))     return 'Glob';
+  if (detail.startsWith('search'))   return 'WebSearch';
+  if (detail.startsWith('fetch'))    return 'WebFetch';
+  if (detail.startsWith('spawn '))   return 'Task';
+  if (detail.startsWith('Task'))     return 'Task';
+  if (detail.startsWith('task-output')) return 'TaskOutput';
+  if (detail.startsWith('MCP:')) {
+    const spaceIdx = detail.indexOf(' ');
+    return spaceIdx > 0 ? detail.slice(0, spaceIdx) : detail;
+  }
+  // Generic: first word
+  const firstSpace = detail.indexOf(' ');
+  return firstSpace > 0 ? detail.slice(0, firstSpace) : detail;
 }

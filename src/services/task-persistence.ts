@@ -71,7 +71,7 @@ async function ensureStorageDir(): Promise<boolean> {
  */
 interface PersistedData {
   version: 2;
-  tasks: Array<Omit<TaskState, 'session'>>;
+  tasks: Array<Omit<TaskState, 'providerState'>>;
   cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>;
 }
 
@@ -79,7 +79,7 @@ function serializeTasks(tasks: TaskState[], cooldowns?: Array<{ index: number; f
   // PR-010: Safe per-task serialization — exclude tasks that fail to serialize
   const safeTasks = tasks.filter(task => {
     try {
-      const { session, ...rest } = task;
+      const { providerState, ...rest } = task;
       JSON.stringify(rest);
       return true;
     } catch {
@@ -89,8 +89,8 @@ function serializeTasks(tasks: TaskState[], cooldowns?: Array<{ index: number; f
   });
 
   const serializable = safeTasks.map(task => {
-    // Exclude session reference as it's non-serializable
-    const { session, ...rest } = task;
+    // Exclude providerState as it's non-serializable (opaque per-provider data)
+    const { providerState, ...rest } = task;
     return rest;
   });
   const data: PersistedData = {

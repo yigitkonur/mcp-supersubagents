@@ -1,9 +1,14 @@
-import { spawnCopilotTask } from '../services/sdk-spawner.js';
+import { providerRegistry } from '../providers/registry.js';
+import { triggerFallback } from '../providers/fallback-handler.js';
+import { createTaskHandle } from '../providers/task-handle-impl.js';
 import { taskManager } from '../services/task-manager.js';
 import { applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, type ToolContext, type AgentMode, type ReasoningEffort } from '../types.js';
+import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError } from '../utils/format.js';
+import { resolveModel } from '../models.js';
+import { clientContext } from '../services/client-context.js';
+import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import {
   validateBrief,
   formatValidationError,
@@ -88,7 +93,10 @@ export function createSpawnHandler<T extends SharedSpawnParams>(
 
 /**
  * Shared spawn handler used by all 5 specialized roles.
- * Performs: brief validation → context file assembly → template application → task spawn.
+ * Performs: brief validation → context file assembly → template application → provider selection → task spawn.
+ *
+ * Task creation is provider-agnostic. The selected provider only handles
+ * session execution (PENDING → RUNNING → COMPLETED|FAILED).
  */
 export async function handleSharedSpawn(
   params: SharedSpawnParams,
@@ -120,28 +128,37 @@ export async function handleSharedSpawn(
     ? applyTemplate(config.taskType, enrichedPrompt, config.specialization)
     : enrichedPrompt;
 
-  // 5. Spawn the task
+  // 5. Select provider via registry
+  const selection = providerRegistry.selectProvider();
+  if (!selection) {
+    return mcpValidationError(
+      '❌ **NO PROVIDERS AVAILABLE:** No AI providers are configured or available.\n\n' +
+      'Configure PAT tokens (GITHUB_PAT_TOKENS), OpenAI API key (OPENAI_API_KEY), or ensure Claude Agent SDK is enabled.'
+    );
+  }
+
+  // 6. Resolve model and create the task (provider-agnostic)
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
+  const cwd = params.cwd || clientContext.getDefaultCwd();
+  const model = resolveModel(params.model, config.taskType);
+  const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
+  const mode = params.mode ?? DEFAULT_AGENT_MODE;
 
   try {
-    const taskId = await spawnCopilotTask({
-      prompt: finalPrompt,
-      timeout: params.timeout,
-      cwd: params.cwd,
-      model: params.model,
+    const task = taskManager.createTask(finalPrompt, cwd, model, {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
-      taskType: config.taskType || 'super-coder',
-      reasoningEffort: params.reasoning_effort,
-      mode: params.mode,
+      provider: selection.provider.id as Provider,
+      timeout,
+      mode,
     });
 
-    const task = taskManager.getTask(taskId);
-    const isWaiting = task?.status === TaskStatus.WAITING;
+    const taskId = task.id;
+    const isWaiting = task.status === TaskStatus.WAITING;
 
     if (ctx?.progressToken != null) {
       progressRegistry.register(taskId, ctx.progressToken, ctx.sendNotification);
-      progressRegistry.sendProgress(taskId, `Task created: ${taskId}, status: ${task?.status || 'pending'}`);
+      progressRegistry.sendProgress(taskId, `Task created: ${taskId}, status: ${task.status}`);
     }
 
     if (isWaiting) {
@@ -149,7 +166,7 @@ export async function handleSharedSpawn(
       const parts = [
         `✅ **Task queued (waiting for dependencies)**`,
         `task_id: \`${taskId}\``,
-        task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+        task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
         '',
         `**Waiting on:** ${depsList}`,
         '',
@@ -158,16 +175,53 @@ export async function handleSharedSpawn(
       return mcpText(parts.join('\n'));
     }
 
+    // 7. Start provider execution asynchronously (return task ID immediately)
+    const selectedProvider = selection.provider;
+    setImmediate(() => {
+      // Guard: task may have been cancelled between creation and this callback
+      const current = taskManager.getTask(taskId);
+      if (!current || isTerminalStatus(current.status)) return;
+
+      const handle = createTaskHandle(taskId);
+      selectedProvider.spawn({
+        taskId,
+        prompt: finalPrompt,
+        cwd,
+        model,
+        timeout,
+        mode,
+        reasoningEffort: params.reasoning_effort,
+        labels: labels.length > 0 ? labels : undefined,
+        taskType: config.taskType || 'super-coder',
+      }, handle).catch((err) => {
+        console.error(`[shared-spawn] Provider '${selectedProvider.id}' failed for task ${taskId}:`, err);
+        // Attempt fallback to next provider in chain
+        const currentTask = taskManager.getTask(taskId);
+        if (currentTask && !isTerminalStatus(currentTask.status)) {
+          triggerFallback({
+            taskId,
+            failedProviderId: selectedProvider.id,
+            reason: `${selectedProvider.id}_spawn_error`,
+            errorMessage: err instanceof Error ? err.message : String(err),
+            cwd,
+            promptOverride: finalPrompt,
+          }).catch((fallbackErr) => {
+            console.error(`[shared-spawn] Fallback also failed for task ${taskId}:`, fallbackErr);
+          });
+        }
+      });
+    });
+
     const parts = [
       `✅ **Task launched** (${config.toolName})`,
       `task_id: \`${taskId}\``,
-      task?.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
       'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
       '',
       '**Optional progress check:**',
-      task?.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      task?.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
+      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
+      task.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
       `- Read resource: \`task:///${taskId}\``,
     ].filter(Boolean);
     return mcpText(parts.join('\n'));

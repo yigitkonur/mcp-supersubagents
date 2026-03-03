@@ -8,13 +8,12 @@
 
 import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
-import { spawnCopilotTask } from '../services/sdk-spawner.js';
+import { providerRegistry } from '../providers/registry.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { sdkClientManager } from '../services/sdk-client-manager.js';
-import { TaskStatus } from '../types.js';
+import { TaskStatus, DEFAULT_AGENT_MODE } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
-import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS } from '../config/timeouts.js';
+import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 const resumeInProgress = new Set<string>();
 
 const SendMessageSchema = z.object({
@@ -102,17 +101,18 @@ export async function handleSendMessage(
     );
   }
 
-  // Finding 2: Reject resume for tasks that ran on Claude fallback —
-  // the Copilot session was destroyed and cannot be resumed.
-  if (task.provider === 'claude-cli') {
+  // Provider capability check: only providers that support session resume can receive messages
+  const capabilities = providerRegistry.getCapabilities(task.provider);
+  if (!capabilities?.supportsSessionResume) {
     return mcpError(
-      'This task ran on Claude fallback and cannot be resumed via send_message',
+      `This task ran on ${task.provider ?? 'an unknown provider'} which does not support session resume`,
       'Use `spawn_agent` to start a new task with the original prompt.'
     );
   }
 
-  // Finding 2: Check if the Copilot session is still alive in the SDK client manager.
-  // Sessions can be destroyed during unbind, sweeps, or rotation.
+  // Check if the session is still alive via the provider-specific SDK client manager.
+  // For Copilot: sessions can be destroyed during unbind, sweeps, or rotation.
+  const { sdkClientManager } = await import('../services/sdk-client-manager.js');
   if (!sdkClientManager.getSession(task.sessionId)) {
     return mcpError(
       `Session "${task.sessionId}" is no longer active`,
@@ -162,10 +162,10 @@ export async function handleSendMessage(
 
   const sessionId = task.sessionId;
   const cwd = parsed.cwd || task.cwd || process.cwd();
-  const timeout = parsed.timeout || task.timeout;
+  const timeout = parsed.timeout || task.timeout || TASK_TIMEOUT_DEFAULT_MS;
   const message = (parsed.message || '').trim() || 'continue';
 
-  // Finding 1: If the task is RATE_LIMITED, mark it FAILED before spawning
+  // If the task is RATE_LIMITED, mark it FAILED before spawning
   // to prevent the auto-retry scheduler from also spawning a duplicate.
   if (task.status === TaskStatus.RATE_LIMITED) {
     taskManager.updateTask(task.id, {
@@ -176,13 +176,29 @@ export async function handleSendMessage(
 
   resumeInProgress.add(taskId);
   try {
-    // Spawn a new task with the message to the existing session
-    const newTaskId = await spawnCopilotTask({
+    // Route through the provider's sendMessage() method
+    const provider = providerRegistry.getProvider(task.provider);
+    if (!provider) {
+      return mcpError(
+        `Provider "${task.provider}" is not registered`,
+        'Use `spawn_agent` to start a new task.'
+      );
+    }
+
+    if (!provider.sendMessage) {
+      return mcpError(
+        `Provider "${task.provider}" does not support sendMessage`,
+        'Use `spawn_agent` to start a new task with the original prompt.'
+      );
+    }
+
+    const newTaskId = await provider.sendMessage(taskId, message, {
+      taskId,
       prompt: message,
-      timeout,
       cwd,
-      resumeSessionId: sessionId,
-      labels: [...(task.labels || []), `continued-from:${task.id}`],
+      model: task.model ?? 'sonnet',
+      timeout,
+      mode: task.mode ?? DEFAULT_AGENT_MODE,
     });
 
     const newTask = taskManager.getTask(newTaskId);
