@@ -47,7 +47,7 @@ export const baseInputSchemaProperties = {
   },
   timeout: {
     type: 'integer',
-    description: `Max duration in milliseconds. Default: 30 min (${TASK_TIMEOUT_DEFAULT_MS}ms). Max: 1 hr (${TASK_TIMEOUT_MAX_MS}ms). Min: 1 sec (${TASK_TIMEOUT_MIN_MS}ms).`,
+    description: `Max duration in milliseconds. Default: 30 min (${TASK_TIMEOUT_DEFAULT_MS}ms). Max: 1 hr (${TASK_TIMEOUT_MAX_MS}ms). Min: 15 min (${TASK_TIMEOUT_MIN_MS}ms).`,
     default: TASK_TIMEOUT_DEFAULT_MS,
     minimum: TASK_TIMEOUT_MIN_MS,
     maximum: TASK_TIMEOUT_MAX_MS,

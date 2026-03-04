@@ -452,8 +452,9 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 | `ENABLE_OPUS` | `false` | Show `claude-opus-4.6` in tool descriptions (opus is always usable via alias) |
 | `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable automatic fallback to Claude Agent SDK when all PATs are exhausted |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` (30 min) | Default task timeout |
+| `MCP_TASK_TIMEOUT_MIN_MS` | `900000` (15 min) | Minimum allowed timeout |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` (1 hr) | Maximum allowed timeout |
-| `MCP_TASK_STALL_WARN_MS` | `300000` (5 min) | No-output warning threshold |
+| `MCP_TASK_STALL_WARN_MS` | `900000` (15 min) | No-output warning threshold |
 | `DEBUG_NOTIFICATIONS` | `false` | Log MCP notification errors to stderr |
 | `DEBUG_CLAUDE_FALLBACK` | `false` | Verbose logging for Claude Agent SDK fallback path |
 | `DEBUG_SDK_EVENTS` | `false` | Log all Copilot SDK events |

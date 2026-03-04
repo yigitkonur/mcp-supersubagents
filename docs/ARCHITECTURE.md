@@ -511,9 +511,9 @@ taskManager.onOutput((taskId, line) => {
 | `ENABLE_OPUS` | `false` | Allow opus model |
 | `ENABLE_STREAMING` | `false` | Enable `stream_output` tool |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` | Default timeout (30 min) |
-| `MCP_TASK_TIMEOUT_MIN_MS` | `1000` | Minimum timeout |
+| `MCP_TASK_TIMEOUT_MIN_MS` | `900000` | Minimum timeout (15 min) |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` | Maximum timeout (1 hour) |
-| `MCP_TASK_STALL_WARN_MS` | `300000` | Stall warning (5 min) |
+| `MCP_TASK_STALL_WARN_MS` | `900000` | Stall warning (15 min) |
 | `MCP_COPILOT_SWITCH_TIMEOUT_MS` | `120000` | Switch command timeout |
 
 ---
