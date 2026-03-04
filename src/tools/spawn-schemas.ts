@@ -43,26 +43,30 @@ export const baseInputSchemaProperties = {
   },
   cwd: {
     type: 'string',
-    description: 'Working directory (absolute path).',
+    description: 'Working directory override (absolute path). Usually omit — server auto-detects project root. Set only if the agent needs a different root.',
   },
   timeout: {
-    type: 'number',
-    description: `Max duration in ms. Default: ${TASK_TIMEOUT_DEFAULT_MS}. Max: ${TASK_TIMEOUT_MAX_MS}.`,
+    type: 'integer',
+    description: `Max duration in milliseconds. Default: 30 min (${TASK_TIMEOUT_DEFAULT_MS}ms). Max: 1 hr (${TASK_TIMEOUT_MAX_MS}ms). Min: 1 sec (${TASK_TIMEOUT_MIN_MS}ms).`,
+    default: TASK_TIMEOUT_DEFAULT_MS,
+    minimum: TASK_TIMEOUT_MIN_MS,
+    maximum: TASK_TIMEOUT_MAX_MS,
   },
   depends_on: {
     type: 'array',
-    items: { type: 'string' },
-    description: 'Task IDs that must complete before this task starts.',
+    items: { type: 'string', minLength: 1 },
+    description: 'Task IDs that must complete before this starts. Handles execution ORDER only — you still must specify context_files with known paths or spawn after reading predecessor output via task:///{id}.',
   },
   labels: {
     type: 'array',
-    items: { type: 'string' },
-    description: 'Labels for grouping/filtering (max 10, 50 chars each).',
+    items: { type: 'string', minLength: 1, maxLength: 50 },
+    maxItems: 10,
+    description: 'Tags for grouping related tasks, e.g. "auth", "frontend", "v2-migration". Max 10 labels, 50 chars each.',
   },
   reasoning_effort: {
     type: 'string',
     enum: ['low', 'medium', 'high', 'xhigh'],
-    description: 'Reasoning effort level. Higher = more thorough but slower/costlier.',
+    description: 'Reasoning depth. low=fast drafts, medium=standard tasks (default behavior), high=complex multi-file logic, xhigh=deep multi-step reasoning. Most tasks work fine without setting this.',
   },
 } as const;
 
@@ -84,3 +88,51 @@ export const SPAWN_TOOL_EXECUTION = {
 
 /** Mode enum values for JSON schema. */
 export const MODE_ENUM = [...AGENT_MODES] as string[];
+
+// ---------------------------------------------------------------------------
+// MCP JSON Schema helpers for role-specific properties
+// ---------------------------------------------------------------------------
+
+/** Shared context_files item schema for MCP tool registration. */
+export const contextFilesItemSchema_MCP = {
+  type: 'object',
+  properties: {
+    path: { type: 'string', minLength: 1, description: 'Absolute file path (must start with /).' },
+    description: { type: 'string', maxLength: 2000, description: 'STRONGLY RECOMMENDED. Tells the agent what this file is and why it matters. Injected directly into the agent prompt — without it, the agent must guess file purpose from content alone.' },
+  },
+  required: ['path'],
+} as const;
+
+/** Build context_files property for MCP inputSchema with array bounds. */
+export function buildContextFilesProperty(description: string, opts?: { required?: boolean }) {
+  return {
+    type: 'array' as const,
+    items: contextFilesItemSchema_MCP,
+    ...(opts?.required ? { minItems: 1 } : {}),
+    maxItems: 20,
+    description,
+  };
+}
+
+/** Build mode property for MCP inputSchema. `defaultMode` and `description` vary per role. */
+export function buildModeProperty(defaultMode: string, description: string) {
+  return {
+    type: 'string' as const,
+    enum: MODE_ENUM,
+    description,
+    default: defaultMode,
+  };
+}
+
+/**
+ * Build prompt property with role-specific minLength.
+ * Aligns JSON schema minLength with brief-validator enforcement.
+ */
+export function buildPromptProperty(minLength: number, description: string) {
+  return {
+    type: 'string' as const,
+    minLength,
+    maxLength: 100000,
+    description,
+  };
+}

@@ -57,7 +57,7 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 | `MCP_TASK_TIMEOUT_MS` | 1,800,000 (30min) | Default task timeout |
 | `MCP_TASK_TIMEOUT_MIN_MS` | 1,000 (1s) | Minimum allowed timeout |
 | `MCP_TASK_TIMEOUT_MAX_MS` | 3,600,000 (1hr) | Maximum allowed timeout |
-| `MCP_TASK_STALL_WARN_MS` | 300,000 (5min) | No-output warning threshold |
+| `MCP_TASK_STALL_WARN_MS` | 600,000 (10min) | No-output warning threshold |
 | `MCP_TASK_TTL_MS` | 3,600,000 (1hr) | How long terminal tasks stay in memory |
 | `BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS` | 15,000 (15s) | Max graceful shutdown wait |
 
@@ -153,6 +153,8 @@ MCP client calls spawn_agent
 | `fleet` | `rpc.mode.set('autopilot')` + `rpc.fleet.start()` + fleet suffix prompt | `bypassPermissions` + fleet suffix prompt |
 
 Suffix prompts are defined in `src/config/mode-prompts.ts`. Resolution logic in `resolveMode()` (`src/services/sdk-spawner.ts`): explicit `mode` > `enableFleet` legacy > default `fleet`.
+
+**Per-tool mode defaults:** coder=`fleet`, planner=`plan`, tester=`fleet`, researcher=`fleet`, classic=`autopilot`. The default only changes which suffix prompt is appended — all modes auto-execute.
 
 ### Task State Machine
 

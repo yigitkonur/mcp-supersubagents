@@ -113,3 +113,31 @@ skills-lock.json
 *.tgz
 private/
 lorem.txt
+
+# ============================================
+# AI coding tool configs (auto-generated, not source)
+# ============================================
+.agent/
+.augment/
+.claude/skills/
+.cline/
+.codebuddy/
+.commandcode/
+.continue/
+.crush/
+.goose/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.zencoder/

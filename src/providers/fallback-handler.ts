@@ -93,6 +93,10 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     taskType: freshTask.taskType ?? 'super-coder',
   };
 
+  // Final terminal check before spawning — task may have been cancelled during setup
+  const preSpawn = taskManager.getTask(taskId);
+  if (!preSpawn || isTerminalStatus(preSpawn.status)) return false;
+
   // Spawn via the fallback provider
   const handle = createTaskHandle(taskId);
   const runFallback = selection.provider.spawn(spawnOptions, handle);

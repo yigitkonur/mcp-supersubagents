@@ -25,22 +25,13 @@ const SendMessageSchema = z.object({
 
 export const messageAgentTool = {
   name: 'message-agent',
-  description: `Send a follow-up message to an existing agent session. Resumes the session and delivers your message — the agent continues working from where it left off.
+  description: `Send a follow-up message to an existing agent session. Resumes the session — the agent continues from where it left off.
 
-**When to call:**
-- Continue a completed agent with follow-up instructions ("now also add tests")
-- Resume a failed or rate-limited agent with "continue"
-- Add context to an existing session without spawning a new agent
+**Returns a NEW task_id** — the original task stays terminal. Monitor the new ID for progress.
 
-**Default message:** "continue" (picks up where the agent left off)
+**When to call:** Continue a completed/failed/rate-limited agent with follow-up instructions, or resume with default "continue".
 
-**How it works:** The agent's session is resumed with your message injected as a new user turn. The agent processes the message and continues autonomously.
-
-**Examples:**
-- \`{ "task_id": "abc123" }\` — Resume with "continue"
-- \`{ "task_id": "abc123", "message": "now add unit tests for the auth module" }\` — Follow-up instruction
-
-**Find task_id:** Read MCP Resource \`task:///all\` for task list with IDs and \`can_send_message\` flag.`,
+**Find task_id:** Read \`task:///all\` — look for \`can_send_message: true\`.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -50,11 +41,14 @@ export const messageAgentTool = {
       },
       message: {
         type: 'string',
-        description: 'Message to send to the session. Default: "continue" (resumes where it left off).',
+        default: 'continue',
+        description: 'Message to send. Default: "continue" (resumes where it left off).',
       },
       timeout: {
-        type: 'number',
-        description: 'Optional. Max execution time in ms. Default: from original task.',
+        type: 'integer',
+        minimum: TASK_TIMEOUT_MIN_MS,
+        maximum: TASK_TIMEOUT_MAX_MS,
+        description: `Max execution time in milliseconds. Default: inherited from original task. Max: 1 hr (${TASK_TIMEOUT_MAX_MS}ms).`,
       },
       cwd: {
         type: 'string',

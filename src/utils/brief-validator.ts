@@ -55,30 +55,26 @@ const CODER_RULES: ToolValidationRules = {
   maxFileSizeBytes: MAX_FILE_SIZE,
   maxTotalSizeBytes: MAX_TOTAL_SIZE,
   briefTemplate: [
-    '🎯 OBJECTIVE: [What exactly to build/modify — specific deliverables, not vague goals]',
-    '📁 FILES TO MODIFY: [ALL absolute file paths the agent needs to touch]',
-    '✅ SUCCESS CRITERIA: [Exactly how to verify the implementation is correct]',
-    '🚫 CONSTRAINTS: [What NOT to do — boundaries, forbidden approaches, patterns to avoid]',
-    '🔗 PATTERNS TO FOLLOW: [Existing code patterns to match, utilities to reuse]',
-    '📝 CONTEXT: [Background — why this matters, dependencies, architectural decisions]',
+    'OBJECTIVE: [What exactly to build/modify — specific deliverables, not vague goals]',
+    'FILES TO MODIFY: [ALL absolute file paths the agent needs to touch]',
+    'SUCCESS CRITERIA: [Exactly how to verify the implementation is correct]',
+    'CONSTRAINTS: [What NOT to do — boundaries, forbidden approaches, patterns to avoid]',
+    'PATTERNS TO FOLLOW: [Existing code patterns to match, utilities to reuse]',
+    'CONTEXT: [Background — why this matters, dependencies, architectural decisions]',
   ].join('\n'),
   workflowHint: [
-    '⚠️ YOU MUST CREATE .md FILES BEFORE SPAWNING A CODER:',
+    'YOU MUST CREATE .md FILES BEFORE SPAWNING A CODER:',
     '',
     'Option A — Use a planner agent:',
     '  1. launch-super-planner(prompt: "...") → wait for completion',
-    '  2. Planner writes .md files to .agent-workspace/plans/[topic]/',
+    '  2. Read task:///{id} to get output file paths',
     '  3. launch-super-coder(context_files: [{ path: ".../builder-briefing.md" }])',
     '',
-    'Option B — Write a spec yourself:',
-    '  1. Create a .md file with the design/plan/spec',
-    '  2. launch-super-coder(context_files: [{ path: "/abs/path/to/spec.md" }])',
+    'Option B — Write a .md spec yourself and pass its absolute path.',
     '',
-    '💡 If multiple agents need the same context, attach the same .md files to each one.',
-    '',
-    '📎 Common handoff files:',
-    '• Planner output: .agent-workspace/plans/[topic]/05-handoff/builder-briefing.md',
-    '• Researcher output: .agent-workspace/researches/[topic]/HANDOFF.md',
+    'Common handoff files:',
+    '  Planner output: .agent-workspace/plans/[topic]/05-handoff/builder-briefing.md',
+    '  Researcher output: .agent-workspace/researches/[topic]/HANDOFF.md',
   ].join('\n'),
   promptQualityChecks: [
     { pattern: /\/[\w./-]+\.\w+/, label: 'file paths', hint: 'Include absolute file paths the agent should modify' },
@@ -96,15 +92,15 @@ const PLANNER_RULES: ToolValidationRules = {
   maxFileSizeBytes: MAX_FILE_SIZE,
   maxTotalSizeBytes: MAX_TOTAL_SIZE,
   briefTemplate: [
-    '🎯 PROBLEM STATEMENT: [What needs to be solved — the actual problem, not a solution]',
-    '🚫 CONSTRAINTS: [What\'s been ruled out, what must be preserved]',
-    '✅ VERIFIED FACTS: [What you already know — don\'t re-investigate these]',
-    '📏 SCOPE: [What\'s in/out of scope — be explicit]',
-    '📤 EXPECTED OUTPUT: [What the next agent (Coder/Tester) needs from this plan]',
+    'PROBLEM STATEMENT: [What needs to be solved — the actual problem, not a solution]',
+    'CONSTRAINTS: [What\'s been ruled out, what must be preserved]',
+    'VERIFIED FACTS: [What you already know — don\'t re-investigate these]',
+    'SCOPE: [What\'s in/out of scope — be explicit]',
+    'EXPECTED OUTPUT: [What the next agent (Coder/Tester) needs from this plan]',
   ].join('\n'),
   workflowHint: [
-    '📎 TIP: The planner creates files at .agent-workspace/plans/[topic]/',
-    'Use those files as context_files when spawning launch-super-coder next.',
+    'TIP: The planner creates files at .agent-workspace/plans/[topic]/',
+    'After completion, read task:///{id} to get output paths, then pass as context_files to launch-super-coder.',
   ].join('\n'),
   promptQualityChecks: [
     { pattern: /problem|goal|need|solve|issue|challenge/i, label: 'problem statement', hint: 'State the problem clearly — what needs solving, not just what to build' },
@@ -121,17 +117,17 @@ const TESTER_RULES: ToolValidationRules = {
   maxFileSizeBytes: MAX_FILE_SIZE,
   maxTotalSizeBytes: MAX_TOTAL_SIZE,
   briefTemplate: [
-    '🎯 WHAT WAS BUILT: [Feature/fix to verify — specific deliverable]',
-    '📁 FILES CHANGED: [Where to focus testing — absolute paths]',
-    '✅ SUCCESS CRITERIA: [What "working" means — specific, testable conditions]',
-    '🔍 TEST SUGGESTIONS: [Specific flows to test — happy path + edge cases]',
-    '⚠️ EDGE CASES: [What the coder is worried about — potential failure points]',
-    '🌐 BASE URL / SETUP: [How to access the system under test]',
+    'WHAT WAS BUILT: [Feature/fix to verify — specific deliverable]',
+    'FILES CHANGED: [Where to focus testing — absolute paths]',
+    'SUCCESS CRITERIA: [What "working" means — specific, testable conditions]',
+    'TEST SUGGESTIONS: [Specific flows to test — happy path + edge cases]',
+    'EDGE CASES: [What the coder is worried about — potential failure points]',
+    'BASE URL / SETUP: [How to access the system under test]',
   ].join('\n'),
   workflowHint: [
-    '📎 REFERENCE FILES FROM OTHER AGENTS:',
-    '• Coder handoff: .agent-workspace/implementation/[topic]/HANDOFF.md',
-    '• Planner test checklist: .agent-workspace/plans/[topic]/05-handoff/tester-checklist.md',
+    'REFERENCE FILES FROM OTHER AGENTS:',
+    '  Coder handoff: .agent-workspace/implementation/[topic]/HANDOFF.md',
+    '  Planner test checklist: .agent-workspace/plans/[topic]/05-handoff/tester-checklist.md',
   ].join('\n'),
   promptQualityChecks: [
     { pattern: /success|criteria|pass|expect|should|working/i, label: 'success criteria', hint: 'Specify what "working" means in testable terms' },
@@ -148,15 +144,15 @@ const RESEARCHER_RULES: ToolValidationRules = {
   maxFileSizeBytes: MAX_FILE_SIZE,
   maxTotalSizeBytes: MAX_TOTAL_SIZE,
   briefTemplate: [
-    '🎯 WHAT TO RESEARCH: [Specific topic or question — not vague "research X"]',
-    '🤔 WHY IT MATTERS: [What decision this research informs]',
-    '📚 WHAT\'S ALREADY KNOWN: [Don\'t re-research verified facts]',
-    '❓ SPECIFIC QUESTIONS: [2-5 pointed, answerable questions]',
-    '📤 HANDOFF TARGET: [Who reads the output — Planner? Coder? Human?]',
+    'WHAT TO RESEARCH: [Specific topic or question — not vague "research X"]',
+    'WHY IT MATTERS: [What decision this research informs]',
+    'WHAT\'S ALREADY KNOWN: [Don\'t re-research verified facts]',
+    'SPECIFIC QUESTIONS: [2-5 pointed, answerable questions]',
+    'HANDOFF TARGET: [Who reads the output — Planner? Coder? Human?]',
   ].join('\n'),
   workflowHint: [
-    '📎 TIP: Research output goes to .agent-workspace/researches/[topic]/HANDOFF.md',
-    'Reference this file when spawning launch-super-planner or launch-super-coder next.',
+    'TIP: Research output goes to .agent-workspace/researches/[topic]/HANDOFF.md',
+    'After completion, read task:///{id} to get output paths, then pass as context_files to launch-super-planner or launch-super-coder.',
   ].join('\n'),
   promptQualityChecks: [
     { pattern: /\?/, label: 'explicit questions', hint: 'Include explicit questions (with ?) so the researcher has clear targets' },
@@ -173,12 +169,12 @@ const GENERAL_RULES: ToolValidationRules = {
   maxFileSizeBytes: MAX_FILE_SIZE,
   maxTotalSizeBytes: MAX_TOTAL_SIZE,
   briefTemplate: [
-    '🎯 OBJECTIVE: [What you need done — be specific]',
-    '📋 CONTEXT: [Background information and constraints]',
-    '📦 DELIVERABLES: [What files/outputs to produce]',
+    'OBJECTIVE: [What you need done — be specific]',
+    'CONTEXT: [Background information and constraints]',
+    'DELIVERABLES: [What files/outputs to produce]',
   ].join('\n'),
   workflowHint: [
-    '📎 TIP: General agent handles non-code tasks like writing, analysis, documentation, and organization.',
+    'TIP: General agent handles non-code tasks like writing, analysis, documentation, and organization.',
   ].join('\n'),
 };
 
@@ -269,20 +265,19 @@ export async function validateBrief(
     }
 
     // Workspace boundary check (prevent path traversal via symlinks)
-    if (cwd) {
-      try {
-        const resolvedPath = await realpath(file.path);
-        const normalizedCwd = await realpath(cwd);
-        if (!resolvedPath.startsWith(normalizedCwd + '/') && resolvedPath !== normalizedCwd) {
-          errors.push({
-            code: 'PATH_TRAVERSAL',
-            message: `File "${file.path}" resolves outside workspace boundary`,
-          });
-          continue;
-        }
-      } catch {
-        // realpath failed — let subsequent checks handle it
+    const effectiveCwd = cwd || process.cwd();
+    try {
+      const resolvedPath = await realpath(file.path);
+      const normalizedCwd = await realpath(effectiveCwd);
+      if (!resolvedPath.startsWith(normalizedCwd + '/') && resolvedPath !== normalizedCwd) {
+        errors.push({
+          code: 'PATH_TRAVERSAL',
+          message: `File "${file.path}" resolves outside workspace boundary`,
+        });
+        continue;
       }
+    } catch {
+      // realpath failed — let subsequent checks handle it
     }
 
     // VE-010: Symlink check — reject symlinks for context files
@@ -322,13 +317,6 @@ export async function validateBrief(
     // VE-004: Read file content at validation time to avoid TOCTOU
     try {
       const content = await readFile(file.path, 'utf-8');
-      if (content.length > rules.maxFileSizeBytes) {
-        errors.push({
-          code: 'FILE_TOO_LARGE',
-          message: `FILE TOO LARGE: "${file.path}" content is ${Math.round(content.length / 1024)}KB (max: ${Math.round(rules.maxFileSizeBytes / 1024)}KB)`,
-        });
-        continue;
-      }
       fileContents.set(file.path, content);
     } catch {
       // readFile failed — already validated access above, treat as non-fatal
@@ -368,9 +356,9 @@ export function formatValidationError(toolName: string, errors: ValidationError[
   if (!rules) return errors.map(e => e.message).join('\n');
 
   const parts: string[] = [
-    `❌ **BRIEF VALIDATION FAILED — ${rules.toolName}**`,
+    `**BRIEF VALIDATION FAILED — ${rules.toolName}**`,
     '',
-    '⚠️ **ISSUES FOUND:**',
+    '**ISSUES FOUND:**',
   ];
 
   for (const err of errors) {
@@ -383,7 +371,7 @@ export function formatValidationError(toolName: string, errors: ValidationError[
   }
 
   parts.push('');
-  parts.push('📋 **HOW TO FIX — Follow this brief template:**');
+  parts.push('**HOW TO FIX — Follow this brief template:**');
   parts.push('```');
   parts.push(rules.briefTemplate);
   parts.push('```');
@@ -393,7 +381,7 @@ export function formatValidationError(toolName: string, errors: ValidationError[
   // Append quality warnings when present alongside hard errors
   if (warnings && warnings.length > 0) {
     parts.push('');
-    parts.push('💡 **PROMPT QUALITY TIPS (not blocking — but these improve agent results):**');
+    parts.push('**PROMPT QUALITY TIPS (not blocking — but these improve agent results):**');
     for (const warn of warnings) {
       parts.push(`• ${warn.message} — ${warn.detail}`);
     }
@@ -409,7 +397,7 @@ export function formatValidationError(toolName: string, errors: ValidationError[
 export function formatQualityWarnings(warnings?: ValidationError[]): string | null {
   if (!warnings || warnings.length === 0) return null;
   const labels = warnings.map(w => w.message.replace(/^Missing: /, '')).join(', ');
-  return `💡 **Prompt tips:** Consider adding: ${labels} — these improve agent results.`;
+  return `**Prompt tips:** Consider adding: ${labels} — these improve agent results.`;
 }
 
 // --- Context file content assembly ---

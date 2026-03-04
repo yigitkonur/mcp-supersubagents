@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { OPUS_MODEL } from '../models.js';
 import { AGENT_MODES } from '../types.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildModeProperty, buildPromptProperty } from './spawn-schemas.js';
 
 // --- Zod schema (planner-specific: context_files optional) ---
 
@@ -16,60 +16,25 @@ const LaunchSuperPlannerSchema = z.object({
 
 export const launchSuperPlannerTool = {
   name: 'launch-super-planner',
-  description: `Launch an autonomous planning agent that designs architecture, creates implementation plans, and produces .md specification files for the coder. Always uses ${OPUS_MODEL} regardless of model parameter.
+  description: `Launch an autonomous planning agent. Designs architecture and creates implementation plans as .md files. Always uses ${OPUS_MODEL} regardless of model parameter. **Use this for any non-trivial task** — if the work touches 3+ files or has ambiguous requirements, plan first.
 
-**When to call:** You need to break down a complex task into a structured plan before coding. The planner produces .md files that the coder consumes.
+**Workflow:** researcher → **PLANNER** → coder → tester
+Output goes to \`.agent-workspace/plans/[topic]/\`. After completion, read \`task:///{id}\` to get workspace path, then pass ALL .md files from that workspace as context_files to launch-super-coder. Send everything — builder-briefing.md, tester-checklist.md, task specs, the full workspace.
 
-**Brief template — your prompt MUST include:**
-\`\`\`
-PROBLEM STATEMENT: What needs to be solved — the actual problem, not a solution
-CONSTRAINTS: What's been ruled out, what must be preserved
-VERIFIED FACTS: What you already know — don't re-investigate these
-SCOPE: What's in/out of scope — be explicit
-EXPECTED OUTPUT: What the next agent (Coder/Tester) needs from this plan
-\`\`\`
-
-**Workflow position:** researcher → **PLANNER** → coder → tester
-The planner creates files at \`.agent-workspace/plans/[topic]/\`. Pass those files as \`context_files\` when spawning \`launch-super-coder\` next.
-
-**Status:** Read resource \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
 
   inputSchema: {
     type: 'object' as const,
     properties: {
-      prompt: {
-        type: 'string',
-        description: 'Your planning brief. MUST include: PROBLEM STATEMENT (what to solve), CONSTRAINTS (what\'s ruled out), VERIFIED FACTS (known info), SCOPE (in/out), EXPECTED OUTPUT (what coder needs). Min 300 chars.',
-      },
-      context_files: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Absolute file path (must start with /).' },
-            description: { type: 'string', description: 'What this file contains and why the agent needs it.' },
-          },
-          required: ['path'],
-        },
-        description: 'Optional reference files (research docs, existing specs). Max 20 files, 200KB each, 500KB total.',
-      },
+      prompt: buildPromptProperty(300, 'Planning brief. MUST include: PROBLEM STATEMENT (what to solve), CONSTRAINTS (what\'s ruled out), VERIFIED FACTS (known info), SCOPE (in/out), EXPECTED OUTPUT (what coder needs). Min 300 chars.'),
+      context_files: buildContextFilesProperty('Optional reference files (research docs, existing specs). Pass ALL files from prior researcher workspace — don\'t filter. Max 20 files, 200KB each, 500KB total.'),
       ...baseInputSchemaProperties,
       model: {
         type: 'string',
         enum: baseInputSchemaProperties.model.enum,
-        description: `Model parameter accepted but planner ALWAYS uses ${OPUS_MODEL} for maximum reasoning capability.`,
+        description: `Ignored — planner always uses ${OPUS_MODEL}. Parameter kept for backward compatibility only.`,
       },
-      depends_on: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Task IDs that must complete before this task starts. Use to chain after researcher.',
-      },
-      mode: {
-        type: 'string',
-        enum: ['fleet', 'plan', 'autopilot'],
-        description: 'Execution mode. plan=plan-then-execute (default for planner), fleet=parallel sub-agents, autopilot=direct execution.',
-        default: 'plan',
-      },
+      mode: buildModeProperty('plan', 'Execution mode. Default: plan (plan-then-execute).'),
     },
     required: ['prompt'],
   },

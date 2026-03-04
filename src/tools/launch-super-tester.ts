@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { AGENT_MODES } from '../types.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildModeProperty, buildPromptProperty } from './spawn-schemas.js';
 
 // --- Zod schema (tester-specific: context_files REQUIRED, any file type) ---
 
@@ -15,58 +15,22 @@ const LaunchSuperTesterSchema = z.object({
 
 export const launchSuperTesterTool = {
   name: 'launch-super-tester',
-  description: `Launch an autonomous testing agent that writes and runs tests, verifies implementations, and validates edge cases. The agent runs in COMPLETE ISOLATION.
+  description: `Launch an autonomous testing agent. Primarily E2E testing with Playwright (browser flows, visual, interactions) but also handles API testing (curl + jq), running existing test suites, and any verification that proves the code works in the real world. Runs in COMPLETE ISOLATION.
 
-**When to call:** A coder has finished implementation and you need to verify it works. Pass the source files or handoff documents as context_files.
+**context_files are MANDATORY** — any file type accepted (source, tests, handoff docs). Pass ALL files from the coder's agent workspace — especially HANDOFF.md which contains testing instructions, curl examples, and Playwright hints.
 
-**context_files are MANDATORY** — the call WILL FAIL without them. Any file type accepted (source code, test files, handoff docs).
+**Workflow:** researcher → planner → coder → **TESTER**
+Chain with depends_on after coder.
 
-**Brief template — your prompt MUST include:**
-\`\`\`
-WHAT WAS BUILT: Feature/fix to verify — specific deliverable
-FILES CHANGED: Where to focus testing — absolute paths
-SUCCESS CRITERIA: What "working" means — specific, testable conditions
-TEST SUGGESTIONS: Specific flows to test — happy path + edge cases
-EDGE CASES: Potential failure points the coder is worried about
-BASE URL / SETUP: How to access the system under test
-\`\`\`
-
-**Workflow position:** researcher → planner → coder → **TESTER**
-Chain with \`depends_on\` after the coder task. Pass changed source files and handoff docs as \`context_files\`.
-
-**Status:** Read resource \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
 
   inputSchema: {
     type: 'object' as const,
     properties: {
-      prompt: {
-        type: 'string',
-        description: 'Your testing brief. MUST include: WHAT WAS BUILT (feature to verify), FILES CHANGED (absolute paths), SUCCESS CRITERIA (testable conditions), TEST SUGGESTIONS (flows to test), EDGE CASES (failure points). Min 300 chars.',
-      },
-      context_files: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Absolute file path (must start with /).' },
-            description: { type: 'string', description: 'What this file contains and why the agent needs it.' },
-          },
-          required: ['path'],
-        },
-        description: 'REQUIRED. Source files, test files, or handoff docs the tester needs. Any file type accepted. Max 20 files, 200KB each, 500KB total.',
-      },
+      prompt: buildPromptProperty(300, 'Testing brief. MUST include: WHAT WAS BUILT (feature to verify), FILES CHANGED (absolute paths), SUCCESS CRITERIA (testable conditions), TEST SUGGESTIONS (flows to test — include Playwright steps for UI or curl commands for APIs), EDGE CASES (failure points). Min 300 chars.'),
+      context_files: buildContextFilesProperty('REQUIRED. Pass ALL files from coder\'s .agent-workspace/ — HANDOFF.md, changed source files, any test files. Don\'t filter. Any file type accepted. Max 20 files, 200KB each, 500KB total.', { required: true }),
       ...baseInputSchemaProperties,
-      depends_on: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Task IDs that must complete before this task starts. Use to chain after coder.',
-      },
-      mode: {
-        type: 'string',
-        enum: ['fleet', 'plan', 'autopilot'],
-        description: 'Execution mode. fleet=parallel sub-agents (default), plan=plan-then-execute, autopilot=direct autonomous execution.',
-        default: 'fleet',
-      },
+      mode: buildModeProperty('fleet', 'Execution mode. Default: fleet (parallel sub-agents).'),
     },
     required: ['prompt', 'context_files'],
   },

@@ -34,6 +34,12 @@ export class CopilotProviderAdapter implements ProviderAdapter {
   readonly displayName = 'GitHub Copilot SDK';
 
   checkAvailability(): AvailabilityResult {
+    if (process.env.DISABLE_COPILOT === 'true') {
+      return {
+        available: false,
+        reason: 'Copilot disabled (DISABLE_COPILOT=true)',
+      };
+    }
     const token = accountManager.getCurrentToken();
     if (!token) {
       return {
@@ -95,6 +101,9 @@ export class CopilotProviderAdapter implements ProviderAdapter {
   }
 
   getStats(): Record<string, unknown> {
-    return getSDKStats();
+    return {
+      ...getSDKStats(),
+      disabled: process.env.DISABLE_COPILOT === 'true',
+    };
   }
 }

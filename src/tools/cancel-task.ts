@@ -19,30 +19,19 @@ const CancelTaskSchema = z.object({
     z.string().min(1),
     z.array(z.string().min(1)).min(1).max(50),
   ]).describe('Task ID, array of task IDs, or "all" to clear workspace'),
-  clear: z.boolean().optional().describe('When task_id="all", set true to clear all tasks'),
-  confirm: z.boolean().optional().describe('Required when clear=true'),
+  clear: z.boolean().optional().describe('When task_id="all", set true to confirm and clear all tasks'),
 });
 
 export const cancelAgentTool = {
   name: 'cancel-agent',
-  description: `Cancel running agents or clear all agents from the workspace.
+  description: `Cancel running agents or clear the entire workspace.
 
-**When to call:**
-- Stop an agent that's stuck, taking too long, or working on the wrong thing
-- Batch-cancel multiple agents at once
-- Clear the entire workspace to start fresh
+**Cancel:** \`{ "task_id": "abc123" }\` or \`{ "task_id": ["abc", "def"] }\` (max 50).
+**Clear all:** \`{ "task_id": "all", "clear": true }\` — kills active agents, removes all state.
 
-**What happens:**
-- Running/pending/waiting agents: process is killed (SIGTERM → SIGKILL), status → CANCELLED
-- Completed/failed agents: removed from memory immediately
-- Clear all: kills all active agents and removes all task state + persistence files
+Running agents are killed (SIGTERM → SIGKILL). Terminal agents are removed from memory.
 
-**Examples:**
-- Cancel one: \`{ "task_id": "abc123" }\`
-- Cancel many: \`{ "task_id": ["abc", "def", "ghi"] }\`
-- Clear all: \`{ "task_id": "all", "clear": true, "confirm": true }\`
-
-**Find task_id:** Read MCP Resource \`task:///all\` for task list with IDs and status.`,
+**Find task_id:** Read \`task:///all\`.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -52,15 +41,11 @@ export const cancelAgentTool = {
         items: { type: 'string', minLength: 1 },
         minItems: 1,
         maxItems: 50,
-        description: 'Task ID, array of task IDs, or "all" to clear workspace.',
+        description: 'Task ID, array of task IDs (max 50), or "all" to clear workspace.',
       },
       clear: {
         type: 'boolean',
-        description: 'When task_id="all", set true to clear all tasks from workspace.',
-      },
-      confirm: {
-        type: 'boolean',
-        description: 'Required confirmation when clear=true.',
+        description: 'Required when task_id="all". Set true to confirm clearing all tasks.',
       },
     },
     required: ['task_id'],
@@ -92,13 +77,7 @@ export async function handleCancelTask(args: unknown): Promise<{ content: Array<
       if (!parsed.clear) {
         return mcpError(
           'Use clear=true to clear all tasks',
-          '`{ "task_id": "all", "clear": true, "confirm": true }`'
-        );
-      }
-      if (!parsed.confirm) {
-        return mcpError(
-          'Confirmation required',
-          '`{ "task_id": "all", "clear": true, "confirm": true }`'
+          '`{ "task_id": "all", "clear": true }`'
         );
       }
       

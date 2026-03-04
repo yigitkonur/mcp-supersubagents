@@ -38,11 +38,14 @@ answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
     properties: {
       task_id: {
         type: 'string',
-        description: 'Task ID with pending question',
+        minLength: 1,
+        description: 'Task ID with pending question. Find via task:///all — look for has_pending_question: true.',
       },
       answer: {
         type: 'string',
-        description: 'Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"',
+        minLength: 1,
+        maxLength: 10000,
+        description: 'Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer".',
       },
     },
     required: ['task_id', 'answer'],
