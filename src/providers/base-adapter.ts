@@ -24,10 +24,11 @@ import type {
   ProviderSpawnOptions,
   AvailabilityResult,
 } from './types.js';
+import type { Provider } from '../types.js';
 import type { TaskHandle } from './task-handle.js';
 
 export abstract class BaseProviderAdapter implements ProviderAdapter {
-  abstract readonly id: string;
+  abstract readonly id: Provider;
   abstract readonly displayName: string;
 
   abstract checkAvailability(): AvailabilityResult;
@@ -100,7 +101,7 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
       const finalPrompt = suffix ? `${options.prompt}\n\n${suffix}` : options.prompt;
 
       await this.executeSession(handle, finalPrompt, abortController.signal, options);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Only mark failed if not already in a terminal state
       // (subclass may have already called markCompleted/markFailed)
       if (handle.isAlive()) {

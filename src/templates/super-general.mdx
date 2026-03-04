@@ -57,22 +57,23 @@ Planner    → .agent-workspace/plans/[topic]/
 Coder      → .agent-workspace/implementation/[topic]/
 Tester     → .agent-workspace/qa/[topic]/
 Researcher → .agent-workspace/researches/[topic]/
+General    → .agent-workspace/general/[topic]/
 ```
 
 Each agent reads predecessor's `HANDOFF.md`. Each writes their own.
 
 ---
 
-## OUTPUT STANDARDS
+## VERIFICATION
 
-- Use Markdown formatting for structure
-- Include executive summary when output is long
-- Use tables for comparisons and structured data
-- Cite sources when making factual claims
-- Flag assumptions explicitly
+Before delivering output:
+- Re-read the original brief. Did you address every point?
+- Re-read your output end-to-end. Any gaps, contradictions, or unsupported claims?
+- If you made assumptions, are they explicitly flagged?
+- Would someone with no context understand your output on its own?
 
 ---
 
 ## BEGIN
 
-Parse → Plan → Execute → Verify → Deliver.
+Parse brief → Read context files → Plan approach → Execute → Verify completeness → Deliver.

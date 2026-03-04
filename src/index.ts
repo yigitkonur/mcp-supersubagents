@@ -16,6 +16,7 @@ import { launchSuperPlannerTool, handleLaunchSuperPlanner } from './tools/launch
 import { launchSuperTesterTool, handleLaunchSuperTester } from './tools/launch-super-tester.js';
 import { launchSuperResearcherTool, handleLaunchSuperResearcher } from './tools/launch-super-researcher.js';
 import { launchClassicAgentTool, handleLaunchClassicAgent } from './tools/launch-classic-agent.js';
+import { recoverFromSpawnFailure } from './tools/shared-spawn.js';
 import { cancelAgentTool, handleCancelTask } from './tools/cancel-task.js';
 import { messageAgentTool, handleSendMessage } from './tools/send-message.js';
 import { answerAgentTool, handleAnswerQuestion } from './tools/answer-question.js';
@@ -150,7 +151,7 @@ taskManager.onRetry(async (task) => {
   try {
     // Create a new task with the same parameters, carrying forward retry info
     const newTask = taskManager.createTask(task.prompt, task.cwd || process.cwd(), task.model || 'claude-sonnet-4.6', {
-      provider: provider.id as Provider,
+      provider: provider.id,
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
       mode: task.mode ?? DEFAULT_AGENT_MODE,
       labels: task.labels,
@@ -172,29 +173,14 @@ taskManager.onRetry(async (task) => {
         mode: task.mode ?? DEFAULT_AGENT_MODE,
       }, handle).catch((err) => {
         console.error(`[index] Retry spawn failed for ${newTask.id}:`, err);
-        const current = taskManager.getTask(newTask.id);
-        if (current && !isTerminalStatus(current.status)) {
-          triggerFallback({
-            taskId: newTask.id,
-            failedProviderId: provider.id,
-            reason: `${provider.id}_retry_spawn_error`,
-            errorMessage: err instanceof Error ? err.message : String(err),
-            cwd: task.cwd || process.cwd(),
-            promptOverride: task.prompt,
-          }).then((fell) => {
-            if (!fell) {
-              const t = taskManager.getTask(newTask.id);
-              if (t && !isTerminalStatus(t.status)) {
-                taskManager.updateTask(newTask.id, {
-                  status: TaskStatus.FAILED,
-                  error: `Retry spawn failed: ${err instanceof Error ? err.message : String(err)}`,
-                  endTime: new Date().toISOString(),
-                  exitCode: 1,
-                });
-              }
-            }
-          }).catch(() => { /* fallback handler logs internally */ });
-        }
+        recoverFromSpawnFailure({
+          taskId: newTask.id,
+          failedProviderId: provider.id,
+          reason: `${provider.id}_retry_spawn_error`,
+          err,
+          cwd: task.cwd || process.cwd(),
+          promptOverride: task.prompt,
+        });
       });
     });
 
@@ -232,26 +218,15 @@ taskManager.onExecute(async (task) => {
     }, handle);
   } catch (err) {
     console.error(`[mcp-server] Execute failed for ${task.id}:`, err);
-    const provId = provider?.id ?? task.provider ?? 'copilot';
-    const fell = await triggerFallback({
+    const provId = (provider?.id ?? task.provider ?? 'copilot') as Provider;
+    await recoverFromSpawnFailure({
       taskId: task.id,
       failedProviderId: provId,
       reason: `${provId}_execute_error`,
-      errorMessage: err instanceof Error ? err.message : String(err),
+      err,
       cwd: task.cwd || process.cwd(),
       promptOverride: task.prompt,
-    }).catch(() => false);
-    if (!fell) {
-      const current = taskManager.getTask(task.id);
-      if (current && !isTerminalStatus(current.status)) {
-        taskManager.updateTask(task.id, {
-          status: TaskStatus.FAILED,
-          error: `Execution startup failed: ${err instanceof Error ? err.message : String(err)}`,
-          endTime: new Date().toISOString(),
-          exitCode: 1,
-        });
-      }
-    }
+    });
   }
 });
 
@@ -275,7 +250,7 @@ taskManager.onOutput((taskId, line) => {
   if (!resourceUpdateTimers.has(taskId)) {
     const needsUpdate = subscriptionRegistry.isSubscribed(uri)
       || subscriptionRegistry.isSubscribed(sessionUri)
-      || subscriptionRegistry.isSubscribed('task:///all');
+      || subscriptionRegistry.isSubscribed(TASK_ALL_URI);
     if (needsUpdate) {
       resourceUpdateTimers.set(taskId, setTimeout(() => {
         resourceUpdateTimers.delete(taskId);
@@ -285,8 +260,8 @@ taskManager.onOutput((taskId, line) => {
         if (subscriptionRegistry.isSubscribed(sessionUri)) {
           server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
         }
-        if (subscriptionRegistry.isSubscribed('task:///all')) {
-          server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+        if (subscriptionRegistry.isSubscribed(TASK_ALL_URI)) {
+          server.sendResourceUpdated({ uri: TASK_ALL_URI }).catch(logNotifyError);
         }
       }, 1000).unref());
     }
@@ -319,8 +294,8 @@ taskManager.onStatusChange((task, previousStatus) => {
     if (!statusUpdateTimers.has(task.id)) {
       const needsUpdate = subscriptionRegistry.isSubscribed(uri)
         || subscriptionRegistry.isSubscribed(sessionUri)
-        || subscriptionRegistry.isSubscribed('task:///all')
-        || subscriptionRegistry.isSubscribed('system:///status');
+        || subscriptionRegistry.isSubscribed(TASK_ALL_URI)
+        || subscriptionRegistry.isSubscribed(SYSTEM_STATUS_URI);
       if (needsUpdate) {
         statusUpdateTimers.set(task.id, setTimeout(() => {
           statusUpdateTimers.delete(task.id);
@@ -330,11 +305,11 @@ taskManager.onStatusChange((task, previousStatus) => {
           if (subscriptionRegistry.isSubscribed(sessionUri)) {
             server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
           }
-          if (subscriptionRegistry.isSubscribed('task:///all')) {
-            server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+          if (subscriptionRegistry.isSubscribed(TASK_ALL_URI)) {
+            server.sendResourceUpdated({ uri: TASK_ALL_URI }).catch(logNotifyError);
           }
-          if (subscriptionRegistry.isSubscribed('system:///status')) {
-            server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
+          if (subscriptionRegistry.isSubscribed(SYSTEM_STATUS_URI)) {
+            server.sendResourceUpdated({ uri: SYSTEM_STATUS_URI }).catch(logNotifyError);
           }
         }, 1000).unref());
       }
@@ -389,8 +364,16 @@ server.oninitialized = async () => {
 
 // --- Tool handlers ---
 
+interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  execution?: Record<string, unknown>;
+}
+
 // 8 tools: 5 launch-* + message-agent + cancel-agent + answer-agent
-const tools = [
+const tools: McpToolDefinition[] = [
   launchSuperCoderTool,
   launchSuperPlannerTool,
   launchSuperTesterTool,
@@ -406,8 +389,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
-    ...('annotations' in t ? { annotations: (t as any).annotations } : {}),
-    ...('execution' in t ? { execution: (t as any).execution } : {}),
+    ...(t.annotations ? { annotations: t.annotations } : {}),
+    ...(t.execution ? { execution: t.execution } : {}),
   })),
 }));
 
@@ -564,7 +547,7 @@ server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
       mimeType: 'application/json',
     },
     {
-      uriTemplate: 'system:///status',
+      uriTemplate: SYSTEM_STATUS_URI,
       name: 'System Status',
       description: 'Account stats, SDK health, active task counts, and rate limit status.',
       mimeType: 'application/json',
@@ -947,11 +930,11 @@ questionRegistry.onQuestionAsked((taskId, question) => {
   if (subscriptionRegistry.isSubscribed(sessionUri)) {
     server.sendResourceUpdated({ uri: sessionUri }).catch(logNotifyError);
   }
-  if (subscriptionRegistry.isSubscribed('task:///all')) {
-    server.sendResourceUpdated({ uri: 'task:///all' }).catch(logNotifyError);
+  if (subscriptionRegistry.isSubscribed(TASK_ALL_URI)) {
+    server.sendResourceUpdated({ uri: TASK_ALL_URI }).catch(logNotifyError);
   }
-  if (subscriptionRegistry.isSubscribed('system:///status')) {
-    server.sendResourceUpdated({ uri: 'system:///status' }).catch(logNotifyError);
+  if (subscriptionRegistry.isSubscribed(SYSTEM_STATUS_URI)) {
+    server.sendResourceUpdated({ uri: SYSTEM_STATUS_URI }).catch(logNotifyError);
   }
 });
 

@@ -1,31 +1,14 @@
 import { z } from 'zod';
-import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL } from '../models.js';
-import { handleSharedSpawn, type SharedSpawnParams, type SpawnToolConfig } from './shared-spawn.js';
-import { REASONING_EFFORTS, type ToolContext, type ReasoningEffort } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
-import {
-  TASK_TIMEOUT_DEFAULT_MS,
-  TASK_TIMEOUT_MAX_MS,
-  TASK_TIMEOUT_MIN_MS,
-} from '../config/timeouts.js';
+import { AGENT_MODES } from '../types.js';
+import { createLaunchHandler } from './shared-spawn.js';
+import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION } from './spawn-schemas.js';
 
 // --- Zod schema (tester-specific: context_files REQUIRED, any file type) ---
 
-const contextFileSchema = z.object({
-  path: z.string().min(1),
-  description: z.string().max(2000).optional(),
-});
-
 const LaunchSuperTesterSchema = z.object({
-  prompt: z.string().min(1).max(100000),
-  context_files: z.array(contextFileSchema).min(1).max(20),
-  model: z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional(),
-  cwd: z.string().optional(),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).default(TASK_TIMEOUT_DEFAULT_MS).optional(),
-  depends_on: z.array(z.string().min(1)).optional(),
-  labels: z.array(z.string().min(1).max(50)).max(10).optional(),
-  reasoning_effort: z.enum(REASONING_EFFORTS as unknown as [string, ...string[]]).optional(),
-  mode: z.enum(['fleet', 'plan', 'autopilot']).default('fleet').optional(),
+  ...baseSpawnFields,
+  context_files: contextFilesRequired,
+  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).default('fleet').optional(),
 });
 
 // --- Tool definition ---
@@ -72,27 +55,11 @@ Chain with \`depends_on\` after the coder task. Pass changed source files and ha
         },
         description: 'REQUIRED. Source files, test files, or handoff docs the tester needs. Any file type accepted. Max 20 files, 200KB each, 500KB total.',
       },
-      model: {
-        type: 'string',
-        enum: MODEL_IDS,
-        description: `Model to use. Default: ${DEFAULT_MODEL}.`,
-      },
-      cwd: { type: 'string', description: 'Working directory (absolute path).' },
-      timeout: { type: 'number', description: `Max duration in ms. Default: ${TASK_TIMEOUT_DEFAULT_MS}. Max: ${TASK_TIMEOUT_MAX_MS}.` },
+      ...baseInputSchemaProperties,
       depends_on: {
         type: 'array',
         items: { type: 'string' },
         description: 'Task IDs that must complete before this task starts. Use to chain after coder.',
-      },
-      labels: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Labels for grouping/filtering (max 10, 50 chars each).',
-      },
-      reasoning_effort: {
-        type: 'string',
-        enum: ['low', 'medium', 'high', 'xhigh'],
-        description: 'Reasoning effort level. Higher = more thorough but slower/costlier.',
       },
       mode: {
         type: 'string',
@@ -103,49 +70,14 @@ Chain with \`depends_on\` after the coder task. Pass changed source files and ha
     },
     required: ['prompt', 'context_files'],
   },
-  annotations: {
-    title: 'Launch Super Tester',
-    readOnlyHint: false,
-    destructiveHint: false,
-    idempotentHint: false,
-    openWorldHint: true,
-  },
-  execution: {
-    taskSupport: 'forbidden',
-  },
+  annotations: buildAnnotations('Launch Super Tester'),
+  execution: SPAWN_TOOL_EXECUTION,
 };
 
 // --- Handler ---
 
-export async function handleLaunchSuperTester(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed: z.infer<typeof LaunchSuperTesterSchema>;
-  try {
-    parsed = LaunchSuperTesterSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `**SCHEMA VALIDATION FAILED — launch-super-tester**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\nRequired: prompt (string, min 300 chars) + context_files (array of file paths).`
-    );
-  }
-
-  const params: SharedSpawnParams = {
-    prompt: parsed.prompt,
-    context_files: parsed.context_files,
-    model: parsed.model,
-    cwd: parsed.cwd,
-    timeout: parsed.timeout,
-    depends_on: parsed.depends_on,
-    labels: parsed.labels,
-    reasoning_effort: parsed.reasoning_effort as ReasoningEffort | undefined,
-    mode: parsed.mode,
-  };
-
-  const config: SpawnToolConfig = {
-    toolName: 'tester',
-    taskType: 'super-tester',
-  };
-
-  return handleSharedSpawn(params, config, ctx);
-}
+export const handleLaunchSuperTester = createLaunchHandler(
+  LaunchSuperTesterSchema,
+  'launch-super-tester',
+  { toolName: 'tester', taskType: 'super-tester' },
+);

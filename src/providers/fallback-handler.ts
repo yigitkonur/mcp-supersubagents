@@ -57,7 +57,7 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
   taskManager.updateTask(taskId, {
     fallbackCount: (freshTask.fallbackCount ?? 0) + 1,
     switchAttempted: true,
-    provider: selection.provider.id as Provider,
+    provider: selection.provider.id,
   });
 
   // Calculate remaining timeout

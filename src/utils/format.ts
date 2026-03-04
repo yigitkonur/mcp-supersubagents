@@ -2,8 +2,14 @@
  * Shared formatting helpers for converting MCP tool responses to markdown.
  */
 
+/** Standard MCP tool response shape. */
+export type McpToolResponse = {
+  content: Array<{ type: 'text'; text: string }>;
+  isError?: true;
+};
+
 /** Wraps a markdown string in the MCP response shape. */
-export function mcpText(markdown: string): { content: Array<{ type: string; text: string }> } {
+export function mcpText(markdown: string): McpToolResponse {
   return { content: [{ type: 'text', text: markdown }] };
 }
 
@@ -20,19 +26,19 @@ export function formatError(error: string, hint?: string): string {
 }
 
 /** MCP-compliant validation error response with isError: true. */
-export function mcpValidationError(markdown: string): { content: Array<{ type: string; text: string }>; isError: true } {
+export function mcpValidationError(markdown: string): McpToolResponse & { isError: true } {
   return { content: [{ type: 'text', text: markdown }], isError: true as const };
 }
 
 /** MCP-compliant error response with optional actionable hint. */
-export function mcpError(error: string, hint?: string): { content: Array<{ type: string; text: string }>; isError: true } {
+export function mcpError(error: string, hint?: string): McpToolResponse & { isError: true } {
   const text = hint ? `**Error:** ${error}\n\n${hint}` : `**Error:** ${error}`;
   return { content: [{ type: 'text', text }], isError: true as const };
 }
 
-/** Escape pipe characters in table cell content. */
+/** Escape pipe characters and newlines in table cell content. */
 function escapeCell(value: string): string {
-  return value.replace(/\|/g, '\\|');
+  return value.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
 }
 
 /** Render a markdown table from headers and rows. */

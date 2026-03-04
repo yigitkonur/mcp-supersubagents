@@ -9,6 +9,8 @@
  * making providers true "Lego blocks" — implement one method, mount/unmount.
  */
 
+import type { AgentMode, Provider, SubagentInfo, QuotaInfo, ToolMetrics } from '../types.js';
+
 // ---------------------------------------------------------------------------
 // Session Metrics (reported by providers on completion)
 // ---------------------------------------------------------------------------
@@ -16,19 +18,10 @@
 export interface SessionMetrics {
   turnCount?: number;
   totalTokens?: { input: number; output: number };
-  toolMetrics?: Record<
-    string,
-    {
-      toolName: string;
-      executionCount: number;
-      successCount: number;
-      failureCount: number;
-      totalDurationMs: number;
-    }
-  >;
-  activeSubagents?: string[];
-  completedSubagents?: string[];
-  quotas?: Record<string, unknown>;
+  toolMetrics?: Record<string, ToolMetrics>;
+  activeSubagents?: SubagentInfo[] | string[];
+  completedSubagents?: SubagentInfo[] | string[];
+  quotas?: Record<string, QuotaInfo>;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +92,7 @@ export interface TaskHandle {
   setSessionId(id: string): void;
 
   /** Set the provider identifier on the task. */
-  setProvider(provider: string): void;
+  setProvider(provider: Provider): void;
 
   // --- Read-only accessors ---
 
@@ -116,5 +109,5 @@ export interface TaskHandle {
   getModel(): string;
 
   /** Get the task execution mode. */
-  getMode(): string;
+  getMode(): AgentMode;
 }

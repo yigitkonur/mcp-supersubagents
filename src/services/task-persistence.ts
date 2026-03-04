@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, unlink, access, constants, open as openFile, l
 import { homedir } from 'os';
 import { join } from 'path';
 import { TaskState, TaskStatus } from '../types.js';
+import { isErrnoException } from '../utils/is-errno-exception.js';
 
 const STORAGE_DIR_NAME = '.super-agents';
 
@@ -158,7 +159,9 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
 export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }>): Promise<boolean> {
   const filePath = getStoragePath(cwd);
 
-  // PR-011: Write coalescing — if a write is in progress, mark pending and return
+  // PR-011: Write coalescing — if a write is in progress, queue latest data.
+  // Returns true to indicate the data is accepted (will be written when current write completes).
+  // Note: data is NOT yet on disk at this point. Callers should not assume durability.
   if (writeInProgressSet.has(filePath)) {
     writePendingArgs.set(filePath, { cwd, tasks, cooldowns });
     return true;
@@ -224,7 +227,9 @@ export async function saveTasks(cwd: string, tasks: TaskState[], cooldowns?: Arr
     const pending = writePendingArgs.get(filePath);
     if (pending) {
       writePendingArgs.delete(filePath);
-      saveTasks(pending.cwd, pending.tasks, pending.cooldowns).catch(() => {});
+      saveTasks(pending.cwd, pending.tasks, pending.cooldowns).catch((err) => {
+        console.error(`[task-persistence] Coalesced write failed:`, err instanceof Error ? err.message : err);
+      });
     }
   }
 }
@@ -271,10 +276,11 @@ export async function loadTasks(cwd: string): Promise<{ tasks: TaskState[]; cool
     }
 
     const data = await readFile(filePath, 'utf-8');
-    let parsed: any;
+    let parsed: unknown;
     try {
       parsed = JSON.parse(data);
-    } catch (parseError) {
+    } catch (parseErr: unknown) {
+      console.error(`[task-persistence] JSON parse failed: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
       const backupPath = `${filePath}.corrupt.${Date.now()}`;
       try {
         await rename(filePath, backupPath);
@@ -284,40 +290,44 @@ export async function loadTasks(cwd: string): Promise<{ tasks: TaskState[]; cool
     }
 
     // PR-008: Version guard for future formats
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.version && parsed.version > 2) {
-      console.error(`[task-persistence] Persistence file version ${parsed.version} is newer than supported (2). Data may be corrupted — please upgrade or delete ${filePath}`);
+    const parsedRecord = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? parsed as Record<string, unknown>
+      : null;
+
+    if (parsedRecord !== null && typeof parsedRecord['version'] === 'number' && parsedRecord['version'] > 2) {
+      console.error(`[task-persistence] Persistence file version ${parsedRecord['version']} is newer than supported (2). Data may be corrupted — please upgrade or delete ${filePath}`);
       return { tasks: [], cooldowns: undefined };
     }
 
     // Support both v1 (plain array) and v2 (object with tasks + cooldowns) formats
-    let tasks: TaskState[];
+    let rawTasks: unknown[];
     let cooldowns: Array<{ index: number; failedAt: number; failureReason?: string; failureCount: number }> | undefined;
 
     if (Array.isArray(parsed)) {
       // v1 format: plain array of tasks
-      tasks = parsed;
-    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.tasks)) {
+      rawTasks = parsed;
+    } else if (parsedRecord !== null && Array.isArray(parsedRecord['tasks'])) {
       // v2 format: { version, tasks, cooldowns }
-      tasks = parsed.tasks;
-      cooldowns = parsed.cooldowns;
+      rawTasks = parsedRecord['tasks'];
+      cooldowns = parsedRecord['cooldowns'] as typeof cooldowns;
     } else {
       console.error('[task-persistence] Invalid tasks file format, starting fresh');
       return { tasks: [], cooldowns: undefined };
     }
 
     // Validate each task has minimum required fields
-    const validTasks = tasks.filter((t: any) =>
-      t && typeof t === 'object' &&
-      typeof t.id === 'string' && t.id.length > 0 &&
-      typeof t.status === 'string' &&
-      typeof t.prompt === 'string'
+    const validTasks = rawTasks.filter((t): t is TaskState =>
+      t !== null && typeof t === 'object' &&
+      typeof (t as Record<string, unknown>)['id'] === 'string' && ((t as Record<string, unknown>)['id'] as string).length > 0 &&
+      typeof (t as Record<string, unknown>)['status'] === 'string' &&
+      typeof (t as Record<string, unknown>)['prompt'] === 'string'
     );
-    if (validTasks.length !== tasks.length) {
-      console.error(`[task-persistence] Filtered out ${tasks.length - validTasks.length} invalid task(s)`);
+    if (validTasks.length !== rawTasks.length) {
+      console.error(`[task-persistence] Filtered out ${rawTasks.length - validTasks.length} invalid task(s)`);
     }
 
     // Recover orphaned tasks (server crashed while they were running)
-    return { tasks: recoverOrphanedTasks(validTasks as TaskState[]), cooldowns };
+    return { tasks: recoverOrphanedTasks(validTasks), cooldowns };
   } catch (error) {
     console.error(`[task-persistence] Failed to load tasks: ${error}`);
     const backupPath = `${filePath}.corrupt.${Date.now()}`;
@@ -338,8 +348,8 @@ export async function deleteStorage(cwd: string): Promise<boolean> {
   try {
     await unlink(filePath);
     return true;
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return true; // Already gone
+  } catch (error: unknown) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return true; // Already gone
     console.error(`[task-persistence] Failed to delete storage: ${error}`);
     return false;
   }

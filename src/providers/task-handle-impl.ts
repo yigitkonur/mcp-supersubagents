@@ -8,11 +8,29 @@
 
 import type { TaskHandle } from './task-handle.js';
 import type { SessionMetrics as HandleSessionMetrics } from './task-handle.js';
-import type { TaskState, SessionMetrics as CoreSessionMetrics } from '../types.js';
+import type { TaskState, SubagentInfo } from '../types.js';
 import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE } from '../types.js';
-import type { Provider } from '../types.js';
+import type { AgentMode, Provider } from '../types.js';
 import { taskManager } from '../services/task-manager.js';
 import { processRegistry } from '../services/process-registry.js';
+
+/**
+ * Normalize subagent arrays: providers may return string[] (names only)
+ * or SubagentInfo[] (full objects). Ensure we always store SubagentInfo[].
+ */
+function normalizeSubagents(arr: SubagentInfo[] | string[] | undefined): SubagentInfo[] {
+  if (!arr || arr.length === 0) return [];
+  if (typeof arr[0] === 'string') {
+    return (arr as string[]).map(name => ({
+      agentName: name,
+      agentDisplayName: name,
+      toolCallId: '',
+      status: 'completed' as const,
+      startedAt: new Date().toISOString(),
+    }));
+  }
+  return arr as SubagentInfo[];
+}
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -45,13 +63,13 @@ export class TaskHandleImpl implements TaskHandle {
     };
     if (metrics) {
       // Map handle-level metrics to core SessionMetrics type.
-      // Handle metrics use simplified types; cast through unknown for subagent arrays
-      // which may be string[] from providers that don't track full SubagentInfo.
+      // Handle metrics use simplified types; subagent arrays are normalized
+      // from string[] (some providers) to full SubagentInfo[].
       updates.sessionMetrics = {
-        quotas: (metrics.quotas ?? {}) as CoreSessionMetrics['quotas'],
-        toolMetrics: (metrics.toolMetrics ?? {}) as CoreSessionMetrics['toolMetrics'],
-        activeSubagents: (metrics.activeSubagents ?? []) as unknown as CoreSessionMetrics['activeSubagents'],
-        completedSubagents: (metrics.completedSubagents ?? []) as unknown as CoreSessionMetrics['completedSubagents'],
+        quotas: metrics.quotas ?? {},
+        toolMetrics: metrics.toolMetrics ?? {},
+        activeSubagents: normalizeSubagents(metrics.activeSubagents),
+        completedSubagents: normalizeSubagents(metrics.completedSubagents),
         turnCount: metrics.turnCount ?? 0,
         totalTokens: metrics.totalTokens ?? { input: 0, output: 0 },
       };
@@ -143,8 +161,8 @@ export class TaskHandleImpl implements TaskHandle {
     taskManager.updateTask(this.taskId, { sessionId: id } as Partial<TaskState>);
   }
 
-  setProvider(provider: string): void {
-    taskManager.updateTask(this.taskId, { provider: provider as Provider });
+  setProvider(provider: Provider): void {
+    taskManager.updateTask(this.taskId, { provider });
   }
 
   // --- Read-only accessors ---
@@ -165,7 +183,7 @@ export class TaskHandleImpl implements TaskHandle {
     return taskManager.getTask(this.taskId)?.model ?? 'claude-sonnet-4.6';
   }
 
-  getMode(): string {
+  getMode(): AgentMode {
     return taskManager.getTask(this.taskId)?.mode ?? DEFAULT_AGENT_MODE;
   }
 }

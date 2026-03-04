@@ -1,5 +1,6 @@
 import { access, stat, lstat, readFile, realpath, constants } from 'fs/promises';
 import { extname, isAbsolute } from 'path';
+import { isErrnoException } from './is-errno-exception.js';
 
 // --- Validation rule types ---
 
@@ -250,8 +251,8 @@ export async function validateBrief(
     // File existence and readability check
     try {
       await access(file.path, constants.R_OK);
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') {
+    } catch (err: unknown) {
+      if (isErrnoException(err) && err.code === 'ENOENT') {
         errors.push({
           code: 'FILE_NOT_FOUND',
           message: `FILE NOT FOUND: "${file.path}" does not exist`,

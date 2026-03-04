@@ -6,7 +6,7 @@
  * fallback chains, and lifecycle.
  */
 
-import type { AgentMode, ReasoningEffort } from '../types.js';
+import type { AgentMode, Provider, ReasoningEffort } from '../types.js';
 import type { TaskHandle } from './task-handle.js';
 
 // ============================================================================
@@ -43,6 +43,7 @@ export interface ProviderSpawnOptions {
   taskId: string;
   prompt: string;
   cwd: string;
+  /** Model name in provider-specific format (from resolveModelForProvider, may differ from canonical ModelId) */
   model: string;
   timeout: number;
   mode: AgentMode;
@@ -52,7 +53,7 @@ export interface ProviderSpawnOptions {
   /** Labels from the original spawn request */
   labels?: string[];
   /** Task type for model resolution */
-  taskType?: string;
+  taskType?: import('../types.js').TaskTypeName;
 }
 
 // ============================================================================
@@ -80,7 +81,7 @@ export interface AvailabilityResult {
  */
 export interface FallbackRequest {
   taskId: string;
-  failedProviderId: string;
+  failedProviderId: Provider;
   reason: string;
   errorMessage?: string;
   cwd?: string;
@@ -99,7 +100,7 @@ export interface FallbackRequest {
  *   → [{ id: 'copilot', fallbackOnly: false }, { id: 'codex', fallbackOnly: false }, { id: 'claude-cli', fallbackOnly: true }]
  */
 export interface ChainEntry {
-  id: string;
+  id: Provider;
   /** If true, this provider is only used as a fallback (skipped during primary selection) */
   fallbackOnly: boolean;
 }
@@ -128,7 +129,7 @@ export interface ChainEntry {
  */
 export interface ProviderAdapter {
   /** Unique identifier matching the Provider type union (e.g., 'copilot', 'claude-cli', 'codex') */
-  readonly id: string;
+  readonly id: Provider;
   /** Human-readable name for logs and UI */
   readonly displayName: string;
 

@@ -7,6 +7,8 @@
  * - Preventing zombie/orphan processes
  */
 
+import { isErrnoException } from '../utils/is-errno-exception.js';
+
 export interface TrackedProcess {
   taskId: string;
   pid?: number;
@@ -201,10 +203,10 @@ export class ProcessRegistry {
         return false;
       }
       return true;
-    } catch (err: any) {
-      if (err.code === 'ESRCH') return false;
+    } catch (err: unknown) {
+      if (isErrnoException(err) && err.code === 'ESRCH') return false;
       // EPERM means process exists but we lack permission — still alive
-      if (err.code === 'EPERM') return true;
+      if (isErrnoException(err) && err.code === 'EPERM') return true;
       return false;
     }
   }
@@ -260,9 +262,10 @@ export class ProcessRegistry {
       } else if (this.hasValidPid(pid)) {
         process.kill(pid, signal);
       }
-    } catch (err: any) {
-      if (err.code !== 'ESRCH') {
-        log(`sendSignal: error sending ${signal} to pid=${pid ?? 'n/a'}: ${err.message}`);
+    } catch (err: unknown) {
+      if (!isErrnoException(err) || err.code !== 'ESRCH') {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`sendSignal: error sending ${signal} to pid=${pid ?? 'n/a'}: ${msg}`);
       }
     }
   }

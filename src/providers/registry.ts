@@ -15,6 +15,7 @@ import type {
   AvailabilityResult,
   ChainEntry,
 } from './types.js';
+import type { Provider } from '../types.js';
 
 export interface ProviderSelection {
   provider: ProviderAdapter;
@@ -35,9 +36,9 @@ export function parseChainString(chainStr: string): ChainEntry[] {
     .filter(Boolean)
     .map(entry => {
       if (entry.startsWith('!')) {
-        return { id: entry.slice(1), fallbackOnly: true };
+        return { id: entry.slice(1) as Provider, fallbackOnly: true };
       }
-      return { id: entry, fallbackOnly: false };
+      return { id: entry as Provider, fallbackOnly: false };
     });
 }
 
@@ -59,16 +60,14 @@ class ProviderRegistry {
    * Call after all providers are registered.
    */
   configureChain(entries: ChainEntry[]): void {
-    // Validate that all chain entries reference registered providers
-    const valid = entries.filter(entry => {
+    // Warn about provider IDs that aren't registered
+    for (const entry of entries) {
       if (!this.providers.has(entry.id)) {
-        console.error(`[provider-registry] Warning: chain references unregistered provider '${entry.id}', skipping`);
-        return false;
+        console.error(`[provider-registry] Warning: provider '${entry.id}' in chain is not registered — will be skipped during selection`);
       }
-      return true;
-    });
-    this.chain = valid;
-    const display = valid.map(e => e.fallbackOnly ? `!${e.id}` : e.id).join(' → ');
+    }
+    this.chain = entries;
+    const display = entries.map(e => e.fallbackOnly ? `!${e.id}` : e.id).join(' → ');
     console.error(`[provider-registry] Chain configured: ${display}`);
   }
 

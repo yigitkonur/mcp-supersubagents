@@ -1,31 +1,15 @@
 import { z } from 'zod';
-import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL, OPUS_MODEL } from '../models.js';
-import { handleSharedSpawn, type SharedSpawnParams, type SpawnToolConfig } from './shared-spawn.js';
-import { REASONING_EFFORTS, type ToolContext, type ReasoningEffort } from '../types.js';
-import { mcpValidationError } from '../utils/format.js';
-import {
-  TASK_TIMEOUT_DEFAULT_MS,
-  TASK_TIMEOUT_MAX_MS,
-  TASK_TIMEOUT_MIN_MS,
-} from '../config/timeouts.js';
+import { DEFAULT_MODEL } from '../models.js';
+import { AGENT_MODES } from '../types.js';
+import { createLaunchHandler } from './shared-spawn.js';
+import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION } from './spawn-schemas.js';
 
 // --- Zod schema (coder-specific: context_files REQUIRED, no .optional()) ---
 
-const contextFileSchema = z.object({
-  path: z.string().min(1),
-  description: z.string().max(2000).optional(),
-});
-
 const LaunchSuperCoderSchema = z.object({
-  prompt: z.string().min(1).max(100000),
-  context_files: z.array(contextFileSchema).min(1).max(20),
-  model: z.enum(ALL_ACCEPTED_MODELS as [string, ...string[]]).optional(),
-  cwd: z.string().optional(),
-  timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS).default(TASK_TIMEOUT_DEFAULT_MS).optional(),
-  depends_on: z.array(z.string().min(1)).optional(),
-  labels: z.array(z.string().min(1).max(50)).max(10).optional(),
-  reasoning_effort: z.enum(REASONING_EFFORTS as unknown as [string, ...string[]]).optional(),
-  mode: z.enum(['fleet', 'plan', 'autopilot']).default('fleet').optional(),
+  ...baseSpawnFields,
+  context_files: contextFilesRequired,
+  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).default('fleet').optional(),
 });
 
 // --- Tool definition ---
@@ -72,27 +56,16 @@ Chain with \`depends_on\`. Each upstream agent produces .md files that the coder
         },
         description: 'REQUIRED. Markdown (.md) plan/spec files for the coder. Create via launch-super-planner first, then pass output files here. Max 20 files, 200KB each, 500KB total.',
       },
+      ...baseInputSchemaProperties,
       model: {
         type: 'string',
-        enum: MODEL_IDS,
+        enum: baseInputSchemaProperties.model.enum,
         description: `Model to use. Default: ${DEFAULT_MODEL}. Use gpt-5.3-codex-xhigh for maximum reasoning.`,
       },
-      cwd: { type: 'string', description: 'Working directory (absolute path).' },
-      timeout: { type: 'number', description: `Max duration in ms. Default: ${TASK_TIMEOUT_DEFAULT_MS}. Max: ${TASK_TIMEOUT_MAX_MS}.` },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
         description: 'Task IDs that must complete before this task starts. Use to chain after planner/researcher.',
-      },
-      labels: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Labels for grouping/filtering (max 10, 50 chars each).',
-      },
-      reasoning_effort: {
-        type: 'string',
-        enum: ['low', 'medium', 'high', 'xhigh'],
-        description: 'Reasoning effort level. Higher = more thorough but slower/costlier.',
       },
       mode: {
         type: 'string',
@@ -103,49 +76,14 @@ Chain with \`depends_on\`. Each upstream agent produces .md files that the coder
     },
     required: ['prompt', 'context_files'],
   },
-  annotations: {
-    title: 'Launch Super Coder',
-    readOnlyHint: false,
-    destructiveHint: false,
-    idempotentHint: false,
-    openWorldHint: true,
-  },
-  execution: {
-    taskSupport: 'forbidden',
-  },
+  annotations: buildAnnotations('Launch Super Coder'),
+  execution: SPAWN_TOOL_EXECUTION,
 };
 
 // --- Handler ---
 
-export async function handleLaunchSuperCoder(
-  args: unknown,
-  ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
-  let parsed: z.infer<typeof LaunchSuperCoderSchema>;
-  try {
-    parsed = LaunchSuperCoderSchema.parse(args);
-  } catch (error) {
-    return mcpValidationError(
-      `**SCHEMA VALIDATION FAILED — launch-super-coder**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}\n\nRequired: prompt (string, min 1000 chars) + context_files (array of .md file paths).`
-    );
-  }
-
-  const params: SharedSpawnParams = {
-    prompt: parsed.prompt,
-    context_files: parsed.context_files,
-    model: parsed.model,
-    cwd: parsed.cwd,
-    timeout: parsed.timeout,
-    depends_on: parsed.depends_on,
-    labels: parsed.labels,
-    reasoning_effort: parsed.reasoning_effort as ReasoningEffort | undefined,
-    mode: parsed.mode,
-  };
-
-  const config: SpawnToolConfig = {
-    toolName: 'coder',
-    taskType: 'super-coder',
-  };
-
-  return handleSharedSpawn(params, config, ctx);
-}
+export const handleLaunchSuperCoder = createLaunchHandler(
+  LaunchSuperCoderSchema,
+  'launch-super-coder',
+  { toolName: 'coder', taskType: 'super-coder' },
+);

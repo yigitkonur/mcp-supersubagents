@@ -10,6 +10,8 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'fleet';
 export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 
+export type TaskTypeName = 'super-coder' | 'super-planner' | 'super-tester' | 'super-researcher' | 'super-general';
+
 /** Open string type — any provider can define its own fallback reasons */
 export type FallbackReason = string;
 
@@ -254,7 +256,7 @@ export interface TaskState {
   cwd?: string;
   model?: string;
   /** Original task template/role type (super-coder, super-planner, etc.) */
-  taskType?: string;
+  taskType?: TaskTypeName;
   isResume?: boolean;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
@@ -292,7 +294,7 @@ export interface SpawnOptions {
   timeout?: number;
   cwd?: string;
   model?: string;
-  taskType?: string;
+  taskType?: TaskTypeName;
   resumeSessionId?: string;
   retryInfo?: RetryInfo;
   dependsOn?: string[];
@@ -322,7 +324,9 @@ export const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set([
   TaskStatus.TIMED_OUT,
 ]);
 
-export function isTerminalStatus(status: TaskStatus): boolean {
+export type TerminalStatus = TaskStatus.COMPLETED | TaskStatus.FAILED | TaskStatus.CANCELLED | TaskStatus.TIMED_OUT;
+
+export function isTerminalStatus(status: TaskStatus): status is TerminalStatus {
   return TERMINAL_STATUSES.has(status);
 }
 
@@ -332,3 +336,11 @@ export function isTerminalStatus(status: TaskStatus): boolean {
 
 export const ROTATABLE_STATUS_CODES: ReadonlySet<number> = new Set([429, 500, 502, 503, 504]);
 export const RATE_LIMIT_STATUS_CODE = 429;
+
+// ============================================================================
+// Discriminated Result Type (use incrementally for new return types)
+// ============================================================================
+
+export type Result<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };

@@ -1,11 +1,12 @@
+import { z } from 'zod';
 import { providerRegistry } from '../providers/registry.js';
 import { triggerFallback } from '../providers/fallback-handler.js';
 import { createTaskHandle } from '../providers/task-handle-impl.js';
 import { taskManager } from '../services/task-manager.js';
 import { applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
-import { mcpText, mcpValidationError } from '../utils/format.js';
+import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, AGENT_MODES, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
+import { mcpText, mcpValidationError, type McpToolResponse } from '../utils/format.js';
 import { resolveModel, getPreferredProvider, resolveModelForProvider } from '../models.js';
 import { clientContext } from '../services/client-context.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
@@ -14,28 +15,114 @@ import {
   formatValidationError,
   formatQualityWarnings,
   assemblePromptWithContext,
-  type ContextFile,
 } from '../utils/brief-validator.js';
+import { baseSpawnFields, contextFileSchema } from './spawn-schemas.js';
 
-export interface SharedSpawnParams {
-  prompt: string;
-  context_files?: ContextFile[];
-  model?: string;
-  cwd?: string;
-  timeout?: number;
-  depends_on?: string[];
-  labels?: string[];
-  reasoning_effort?: ReasoningEffort;
-  mode?: AgentMode;
+/**
+ * Shared error recovery: attempt fallback, mark FAILED if no fallback available.
+ * Used by spawn, retry, and execute paths to avoid duplicating the recovery chain.
+ */
+export async function recoverFromSpawnFailure(opts: {
+  taskId: string;
+  failedProviderId: Provider;
+  reason: string;
+  err: unknown;
+  cwd: string;
+  promptOverride: string;
+}): Promise<void> {
+  const { taskId, failedProviderId, reason, err, cwd, promptOverride } = opts;
+  const errorMessage = err instanceof Error ? err.message : String(err);
+
+  const currentTask = taskManager.getTask(taskId);
+  if (!currentTask || isTerminalStatus(currentTask.status)) return;
+
+  try {
+    const fell = await triggerFallback({
+      taskId,
+      failedProviderId,
+      reason,
+      errorMessage,
+      cwd,
+      promptOverride,
+    });
+    if (!fell) {
+      const t = taskManager.getTask(taskId);
+      if (t && !isTerminalStatus(t.status)) {
+        taskManager.updateTask(taskId, {
+          status: TaskStatus.FAILED,
+          error: `Provider '${failedProviderId}' failed: ${errorMessage}`,
+          endTime: new Date().toISOString(),
+          exitCode: 1,
+        });
+      }
+    }
+  } catch (fallbackErr) {
+    console.error(`[shared-spawn] Fallback also failed for task ${taskId}:`, fallbackErr);
+    const t = taskManager.getTask(taskId);
+    if (t && !isTerminalStatus(t.status)) {
+      taskManager.updateTask(taskId, {
+        status: TaskStatus.FAILED,
+        error: `Fallback failed for provider '${failedProviderId}': ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
+        endTime: new Date().toISOString(),
+        exitCode: 1,
+      });
+    }
+  }
 }
 
+/**
+ * Factory for launch handlers — eliminates boilerplate across launch-super-*.ts files.
+ * Each handler only needs to provide its schema, tool config, and optional param overrides.
+ */
+export function createLaunchHandler<T extends z.ZodType<Record<string, unknown>>>(
+  schema: T,
+  toolName: string,
+  config: SpawnToolConfig,
+  paramOverrides?: (parsed: z.infer<T>) => Partial<SharedSpawnParams>,
+): (args: unknown, ctx?: ToolContext) => Promise<McpToolResponse> {
+  return async (args: unknown, ctx?: ToolContext): Promise<McpToolResponse> => {
+    let parsed: z.infer<T>;
+    try {
+      parsed = schema.parse(args);
+    } catch (error) {
+      return mcpValidationError(
+        `**SCHEMA VALIDATION FAILED — ${toolName}**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}`
+      );
+    }
+
+    const params: SharedSpawnParams = {
+      prompt: parsed.prompt as string,
+      context_files: parsed.context_files as SharedSpawnParams['context_files'],
+      model: parsed.model as SharedSpawnParams['model'],
+      cwd: parsed.cwd as SharedSpawnParams['cwd'],
+      timeout: parsed.timeout as SharedSpawnParams['timeout'],
+      depends_on: parsed.depends_on as SharedSpawnParams['depends_on'],
+      labels: parsed.labels as SharedSpawnParams['labels'],
+      reasoning_effort: parsed.reasoning_effort as SharedSpawnParams['reasoning_effort'],
+      mode: parsed.mode as SharedSpawnParams['mode'],
+      ...paramOverrides?.(parsed),
+    };
+
+    return handleSharedSpawn(params, config, ctx);
+  };
+}
+
+const sharedSpawnSchema = z.object({
+  ...baseSpawnFields,
+  context_files: z.array(contextFileSchema).max(20).optional(),
+  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).optional(),
+});
+export type SharedSpawnParams = z.infer<typeof sharedSpawnSchema>;
+
+export type SpawnToolName = 'coder' | 'planner' | 'tester' | 'researcher' | 'general';
+
 export interface SpawnToolConfig {
-  toolName: string;
+  toolName: SpawnToolName;
   taskType?: TaskType;
 }
 
 // Return type shared by all spawn handlers
-export type SpawnHandlerResult = Promise<{ content: Array<{ type: string; text: string }>; isError?: true }>;
+export type SpawnHandlerResult = Promise<McpToolResponse>;
 
 /**
  * Shared spawn handler used by all 5 specialized roles.
@@ -48,7 +135,7 @@ export async function handleSharedSpawn(
   params: SharedSpawnParams,
   config: SpawnToolConfig,
   ctx?: ToolContext,
-): Promise<{ content: Array<{ type: string; text: string }>; isError?: true }> {
+): Promise<McpToolResponse> {
   // 1. Validate the brief
   const validation = await validateBrief(config.toolName, params.prompt, params.context_files, params.cwd);
   if (!validation.valid) {
@@ -88,14 +175,14 @@ export async function handleSharedSpawn(
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
   const cwd = params.cwd || clientContext.getDefaultCwd();
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
-  const mode = params.mode ?? DEFAULT_AGENT_MODE;
+  const mode = (params.mode ?? DEFAULT_AGENT_MODE) as AgentMode;
   const taskType = config.taskType || 'super-coder';
 
   try {
     const task = taskManager.createTask(finalPrompt, cwd, model, {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
-      provider: selection.provider.id as Provider,
+      provider: selection.provider.id,
       timeout,
       mode,
       taskType,
@@ -140,46 +227,19 @@ export async function handleSharedSpawn(
         model: providerModel,
         timeout,
         mode,
-        reasoningEffort: params.reasoning_effort,
+        reasoningEffort: params.reasoning_effort as ReasoningEffort | undefined,
         labels: labels.length > 0 ? labels : undefined,
         taskType,
       }, handle).catch((err) => {
         console.error(`[shared-spawn] Provider '${selectedProvider.id}' failed for task ${taskId}:`, err);
-        // Attempt fallback to next provider in chain
-        const currentTask = taskManager.getTask(taskId);
-        if (currentTask && !isTerminalStatus(currentTask.status)) {
-          triggerFallback({
-            taskId,
-            failedProviderId: selectedProvider.id,
-            reason: `${selectedProvider.id}_spawn_error`,
-            errorMessage: err instanceof Error ? err.message : String(err),
-            cwd,
-            promptOverride: finalPrompt,
-          }).then((fell) => {
-            if (!fell) {
-              const t = taskManager.getTask(taskId);
-              if (t && !isTerminalStatus(t.status)) {
-                taskManager.updateTask(taskId, {
-                  status: TaskStatus.FAILED,
-                  error: `Provider '${selectedProvider.id}' failed: ${err instanceof Error ? err.message : String(err)}`,
-                  endTime: new Date().toISOString(),
-                  exitCode: 1,
-                });
-              }
-            }
-          }).catch((fallbackErr) => {
-            console.error(`[shared-spawn] Fallback also failed for task ${taskId}:`, fallbackErr);
-            const t = taskManager.getTask(taskId);
-            if (t && !isTerminalStatus(t.status)) {
-              taskManager.updateTask(taskId, {
-                status: TaskStatus.FAILED,
-                error: `Fallback failed for provider '${selectedProvider.id}': ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
-                endTime: new Date().toISOString(),
-                exitCode: 1,
-              });
-            }
-          });
-        }
+        recoverFromSpawnFailure({
+          taskId,
+          failedProviderId: selectedProvider.id,
+          reason: `${selectedProvider.id}_spawn_error`,
+          err,
+          cwd,
+          promptOverride: finalPrompt,
+        });
       });
     });
 

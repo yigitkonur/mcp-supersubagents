@@ -10,8 +10,18 @@ import { unlink } from 'fs/promises';
 const MAX_TASKS = 100;
 const retryInFlight = new Set<string>();
 
+/** Type guard for provider session objects that support abort() */
+function isAbortableSession(state: unknown): state is { abort: () => Promise<void> } {
+  return (
+    state !== null &&
+    typeof state === 'object' &&
+    'abort' in state &&
+    typeof (state as Record<string, unknown>)['abort'] === 'function'
+  );
+}
+
 /** Legal state transitions - if a transition isn't in this map, it's rejected */
-const VALID_TRANSITIONS: Record<string, Set<string>> = {
+const VALID_TRANSITIONS: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED]),
@@ -51,7 +61,7 @@ function findCircularDependencyPath(
     if (!task || !task.dependsOn || task.dependsOn.length === 0) {
       return [];
     }
-    if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED || task.status === TaskStatus.CANCELLED || task.status === TaskStatus.TIMED_OUT) {
+    if (isTerminalStatus(task.status)) {
       return [];
     }
     return task.dependsOn;
@@ -645,12 +655,8 @@ class TaskManager {
     let delay = baseDelayMs;
     for (const task of rateLimitedTasks) {
       if (task.retryInfo) {
-        this.updateTask(task.id, {
-          retryInfo: {
-            ...task.retryInfo,
-            nextRetryTime: new Date(Date.now() + delay).toISOString(),
-          },
-        });
+        task.retryInfo.nextRetryTime = new Date(Date.now() + delay).toISOString();
+        this.updateTask(task.id, { retryInfo: task.retryInfo });
         delay += 2000; // Stagger by 2 seconds per task
       }
     }
@@ -673,11 +679,10 @@ class TaskManager {
       await this.cleanupSdkBindings();
 
       for (const task of this.tasks.values()) {
-        const session = task.providerState as { abort?: () => Promise<void> } | undefined;
-        if (!session?.abort) continue;
+        if (!isAbortableSession(task.providerState)) continue;
         try {
           await Promise.race([
-            session.abort(),
+            task.providerState.abort(),
             new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
           ]);
         } catch {
@@ -853,7 +858,7 @@ class TaskManager {
             const elapsedMs = task.startTime ? now - new Date(task.startTime).getTime() : 0;
             const taskId = task.id;
             const timeoutMs = task.timeout;
-            const session = task.providerState as { abort?: () => Promise<void> } | undefined;
+            const providerSession = task.providerState;
             this.timingOutTasks.add(taskId);
             console.error(`[task-manager] Health check: hard timeout reached for task ${taskId} after ${elapsedMs}ms`);
 
@@ -866,10 +871,10 @@ class TaskManager {
                   /* swallow */
                 }
 
-                if (!killed && session?.abort) {
+                if (!killed && isAbortableSession(providerSession)) {
                   try {
                     await Promise.race([
-                      session.abort(),
+                      providerSession.abort(),
                       new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
                     ]);
                   } catch {
@@ -1001,10 +1006,7 @@ class TaskManager {
     }
 
     for (const [id, task] of this.tasks) {
-      if (task.status === TaskStatus.COMPLETED ||
-          task.status === TaskStatus.FAILED ||
-          task.status === TaskStatus.CANCELLED ||
-          task.status === TaskStatus.TIMED_OUT) {
+      if (isTerminalStatus(task.status)) {
         if (referencedDeps.has(id)) continue; // Don't evict tasks referenced as deps
         const endTime = task.endTime ? new Date(task.endTime).getTime() : 0;
         if (now - endTime > TASK_TTL_MS) {
@@ -1048,7 +1050,7 @@ class TaskManager {
     }
   }
 
-  createTask(prompt: string, cwd?: string, model?: string, options?: { isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackCount?: number; switchAttempted?: boolean; timeout?: number; mode?: import('../types.js').AgentMode; taskType?: string }): TaskState {
+  createTask(prompt: string, cwd?: string, model?: string, options?: { isResume?: boolean; retryInfo?: import('../types.js').RetryInfo; dependsOn?: string[]; labels?: string[]; provider?: import('../types.js').Provider; fallbackCount?: number; switchAttempted?: boolean; timeout?: number; mode?: import('../types.js').AgentMode; taskType?: import('../types.js').TaskTypeName }): TaskState {
     if (this.isClearing) {
       throw new Error('Cannot create tasks while clearing workspace');
     }
@@ -1321,8 +1323,7 @@ class TaskManager {
     };
 
     // Idempotency guard: terminal statuses are no-ops
-    if (task.status === TaskStatus.CANCELLED || task.status === TaskStatus.COMPLETED ||
-        task.status === TaskStatus.FAILED || task.status === TaskStatus.TIMED_OUT) {
+    if (isTerminalStatus(task.status)) {
       return { success: true, alreadyDead: true };
     }
 
@@ -1347,11 +1348,10 @@ class TaskManager {
 
     // Use process registry for proper escalation
     const killed = await processRegistry.killTask(task.id);
-    const cancelSession = task.providerState as { abort?: () => Promise<void> } | undefined;
-    if (!killed && cancelSession?.abort) {
+    if (!killed && isAbortableSession(task.providerState)) {
       try {
         await Promise.race([
-          cancelSession.abort(),
+          task.providerState.abort(),
           new Promise<void>((_, r) => setTimeout(() => r(new Error('abort timeout')), 5000)),
         ]);
       } catch {

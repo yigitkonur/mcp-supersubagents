@@ -18,7 +18,7 @@ export const MODEL_IDS: ModelId[] = [
 ];
 
 // All accepted model values for backend Zod validation (canonical names only, no aliases)
-export const ALL_ACCEPTED_MODELS: string[] = [...MODEL_IDS];
+export const ALL_ACCEPTED_MODELS: readonly ModelId[] = [...MODEL_IDS] as const;
 
 // ---------------------------------------------------------------------------
 // Model family + provider routing
@@ -51,7 +51,10 @@ export function getPreferredProvider(model: string): string | undefined {
  * - copilot SDK:     "gpt-5.3-codex (xhigh)"  (parens)
  * - claude-cli:      falls back to Claude equivalent
  */
-const MODEL_PROVIDER_MAP: Record<string, Record<string, string>> = {
+type TranslatedModelId = 'gpt-5.3-codex-xhigh' | 'gpt-5.3-codex-medium';
+type ProviderTarget = 'codex' | 'copilot' | 'claude-cli';
+
+const MODEL_PROVIDER_MAP: Record<TranslatedModelId, Record<ProviderTarget, string>> = {
   'gpt-5.3-codex-xhigh': {
     codex:        'gpt-5.3-codex xhigh',
     copilot:      'gpt-5.3-codex (xhigh)',
@@ -69,7 +72,9 @@ const MODEL_PROVIDER_MAP: Record<string, Record<string, string>> = {
  * Returns the canonical name unchanged if no translation is defined.
  */
 export function resolveModelForProvider(model: string, providerId: string): string {
-  return MODEL_PROVIDER_MAP[model]?.[providerId] ?? model;
+  const map = MODEL_PROVIDER_MAP[model as TranslatedModelId];
+  if (!map) return model;
+  return map[providerId as ProviderTarget] ?? model;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +93,7 @@ export function resolveModel(requested?: string, taskType?: string): ModelId {
   if (!requested) return DEFAULT_MODEL;
 
   // Direct match against known models
-  if ((Object.keys(MODELS) as ModelId[]).includes(requested as ModelId)) {
+  if (requested in MODELS) {
     return requested as ModelId;
   }
 

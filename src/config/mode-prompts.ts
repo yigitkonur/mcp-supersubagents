@@ -26,5 +26,5 @@ export const MODE_SUFFIX_PROMPTS: Record<AgentMode, string> = {
 
 /** Get the suffix prompt for a given mode (empty string for autopilot) */
 export function getModeSuffixPrompt(mode: AgentMode): string {
-  return MODE_SUFFIX_PROMPTS[mode] ?? '';
+  return MODE_SUFFIX_PROMPTS[mode];
 }
