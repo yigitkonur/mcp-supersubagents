@@ -97,6 +97,31 @@ const MODEL_REGISTRY: Record<string, ModelEntry> = {
 };
 
 // ---------------------------------------------------------------------------
+// Model aliases — shortcuts that resolve to canonical model IDs
+// ---------------------------------------------------------------------------
+
+export const MODEL_ALIASES: Record<string, string> = {
+  // GPT-5.4 shortcuts
+  'gpt-5.4':           'gpt-5.4-xhigh',
+  'gpt5.4':            'gpt-5.4-xhigh',
+  'gpt-5.4-max':       'gpt-5.4-xhigh',
+  // GPT-5.3 shortcuts
+  'gpt-5.3':           'gpt-5.3-codex-xhigh',
+  'gpt-5.3-codex':     'gpt-5.3-codex-xhigh',
+  'gpt5.3':            'gpt-5.3-codex-xhigh',
+  // Claude shortcuts
+  'sonnet':            'claude-sonnet-4.6',
+  'claude-sonnet':     'claude-sonnet-4.6',
+  'sonnet-4.6':        'claude-sonnet-4.6',
+  'opus':              'claude-opus-4.6',
+  'claude-opus':       'claude-opus-4.6',
+  'opus-4.6':          'claude-opus-4.6',
+  // Legacy / common names
+  'o4-mini':           'gpt-5.3-codex-medium',
+  'default':           'gpt-5.4-xhigh',
+};
+
+// ---------------------------------------------------------------------------
 // Derived exports — all computed from MODEL_REGISTRY
 // ---------------------------------------------------------------------------
 
@@ -173,21 +198,94 @@ export function canRunModel(model: string, providerId: string): boolean {
 // Model resolution (user input → canonical ModelId)
 // ---------------------------------------------------------------------------
 
-/**
- * Validate and sanitize model selection.
- * - super-planner always resolves to opus (no user override).
- * - Unknown models default to claude-sonnet-4.6.
- */
-export function resolveModel(requested?: string, taskType?: string): ModelId {
-  // super-planner defaults to xhigh reasoning — user can still override
-  if (taskType === 'super-planner' && !requested) return DEFAULT_MODEL;
+export interface ModelResolution {
+  model: ModelId;
+  /** Set when the input was an alias that got resolved */
+  resolvedFrom?: string;
+}
 
-  if (!requested) return DEFAULT_MODEL;
+export interface ModelResolutionError {
+  error: string;
+  /** Markdown-formatted help text listing valid models */
+  help: string;
+}
+
+export type ModelResolutionResult =
+  | { ok: true; resolution: ModelResolution }
+  | { ok: false; error: ModelResolutionError };
+
+/**
+ * Validate and resolve model selection.
+ * Returns a result type: ok with the resolved model, or error with help text.
+ * Supports canonical names and aliases (case-insensitive).
+ */
+export function resolveModel(requested?: string, _taskType?: string): ModelResolutionResult {
+  if (!requested) return { ok: true, resolution: { model: DEFAULT_MODEL } };
 
   // Direct match against known models
   if (requested in MODEL_REGISTRY) {
-    return requested as ModelId;
+    return { ok: true, resolution: { model: requested as ModelId } };
   }
 
-  return DEFAULT_MODEL;
+  // Alias match (case-insensitive)
+  const lower = requested.toLowerCase();
+  const aliasTarget = MODEL_ALIASES[lower];
+  if (aliasTarget) {
+    return { ok: true, resolution: { model: aliasTarget as ModelId, resolvedFrom: requested } };
+  }
+
+  // No match — return error with helpful guidance
+  return {
+    ok: false,
+    error: {
+      error: `Unknown model: '${requested}'`,
+      help: formatModelHelp(requested),
+    },
+  };
+}
+
+/**
+ * Generate a markdown help message listing all valid models and aliases.
+ * Used in error responses when an invalid model is provided.
+ */
+export function formatModelHelp(attempted: string): string {
+  const modelLines = Object.entries(MODEL_REGISTRY)
+    .map(([id, entry]) => `| \`${id}\` | ${entry.display} |`);
+  const aliasLines = Object.entries(MODEL_ALIASES)
+    .map(([alias, target]) => `| \`${alias}\` | → \`${target}\` |`);
+  return [
+    `❌ **INVALID MODEL:** \`${attempted}\` is not a recognized model name.`,
+    '',
+    '**Available models:**',
+    '| Model ID | Description |',
+    '|----------|-------------|',
+    ...modelLines,
+    '',
+    '**Aliases (shortcuts):**',
+    '| Alias | Resolves to |',
+    '|-------|-------------|',
+    ...aliasLines,
+    '',
+    '**How model routing works:**',
+    '- GPT models → Codex provider first, then Copilot, then Claude as fallback',
+    '- Claude models → Claude CLI first, then Copilot',
+    '- Omit `model` entirely to use the default (`gpt-5.4-xhigh`)',
+  ].join('\n');
+}
+
+/**
+ * Generate a markdown table showing which providers can run a specific model.
+ * Used in "no compatible provider" error messages.
+ */
+export function formatModelProviderTable(model: string): string {
+  const entry = MODEL_REGISTRY[model];
+  if (!entry) return '';
+  const providers = Object.entries(entry.providerModels)
+    .map(([pid, pmodel]) => `| \`${pid}\` | \`${pmodel}\` |`);
+  return [
+    '**Compatible providers for this model:**',
+    '| Provider | SDK Model Name |',
+    '|----------|---------------|',
+    ...providers,
+  ].join('\n');
 }

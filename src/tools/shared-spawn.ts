@@ -7,7 +7,7 @@ import { applyTemplate, isValidTaskType, type TaskType } from '../templates/inde
 import { progressRegistry } from '../services/progress-registry.js';
 import { TaskStatus, isTerminalStatus, type ToolContext, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError, type McpToolResponse } from '../utils/format.js';
-import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort } from '../models.js';
+import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort, getModelFamily, formatModelHelp, formatModelProviderTable } from '../models.js';
 import { clientContext } from '../services/client-context.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import {
@@ -85,6 +85,13 @@ export function createLaunchHandler<T extends z.ZodType<Record<string, unknown>>
     try {
       parsed = schema.parse(args);
     } catch (error) {
+      // If model-related Zod error, show model help instead of raw schema error
+      if (error instanceof z.ZodError && error.issues.some(i => i.path.includes('model'))) {
+        const attempted = typeof args === 'object' && args !== null
+          ? String((args as Record<string, unknown>).model ?? '')
+          : '';
+        return mcpValidationError(formatModelHelp(attempted));
+      }
       return mcpValidationError(
         `**SCHEMA VALIDATION FAILED — ${toolName}**\n\n${error instanceof Error ? error.message : 'Invalid arguments'}`
       );
@@ -159,12 +166,20 @@ export async function handleSharedSpawn(
     : enrichedPrompt;
 
   // 5. Resolve model early so we can route to preferred provider
-  const model = resolveModel(params.model, config.taskType);
+  const resolution = resolveModel(params.model, config.taskType);
+  if (!resolution.ok) {
+    return mcpValidationError(resolution.error.help);
+  }
+  const model = resolution.resolution.model;
+
   const selection = providerRegistry.selectProvider(getPreferredProvider(model), model);
   if (!selection) {
     return mcpValidationError(
-      '❌ **NO PROVIDERS AVAILABLE:** No AI providers are configured or available.\n\n' +
-      'Configure PAT tokens (GITHUB_PAT_TOKENS), OpenAI API key (OPENAI_API_KEY), or ensure Claude Agent SDK is enabled.'
+      `❌ **NO COMPATIBLE PROVIDER:** No available provider can run model \`${model}\`.\n\n` +
+      `**Model family:** ${getModelFamily(model)}\n` +
+      `**Provider chain:** ${providerRegistry.getChainDescription()}\n\n` +
+      formatModelProviderTable(model) + '\n\n' +
+      'Check: Is the required provider enabled? Are API keys configured?'
     );
   }
 
@@ -242,6 +257,9 @@ export async function handleSharedSpawn(
       `✅ **Task launched** (${config.toolName})`,
       `task_id: \`${taskId}\``,
       `provider: \`${selectedProvider.id}\` | model: \`${providerModel}\``,
+      resolution.resolution.resolvedFrom
+        ? `model_alias: \`${resolution.resolution.resolvedFrom}\` → \`${model}\``
+        : null,
       task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
       'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',

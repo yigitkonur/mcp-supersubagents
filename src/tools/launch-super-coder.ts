@@ -33,7 +33,7 @@ Coder writes detailed testing notes to \`.agent-workspace/implementation/[topic]
       model: {
         type: 'string',
         enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
       },
     },
     required: ['prompt', 'context_files'],

@@ -30,7 +30,7 @@ Output goes to \`.agent-workspace/researches/[topic]/\`. After completion, read 
       model: {
         type: 'string',
         enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
       },
     },
     required: ['prompt'],

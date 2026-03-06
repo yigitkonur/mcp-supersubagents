@@ -13,7 +13,7 @@
 import process from 'node:process';
 
 // Import from built JS — run `pnpm build` first
-import { canRunModel, getPreferredProvider, resolveModelForProvider } from '../build/models.js';
+import { canRunModel, getPreferredProvider, resolveModelForProvider, resolveModel, MODEL_ALIASES } from '../build/models.js';
 import { parseChainString } from '../build/providers/registry.js';
 
 // ---------------------------------------------------------------------------
@@ -504,6 +504,100 @@ async function main() {
     const chain = parseChainString(' codex , copilot , !claude-cli ');
     assertEqual(chain.length, 3, 'chain length after trim');
     assertEqual(chain[0].id, 'codex', 'trimmed first entry');
+  });
+
+  // =========================================================================
+  // 7. resolveModel() — result type and alias resolution
+  // =========================================================================
+
+  section('resolveModel() — result type');
+
+  await test('canonical model returns ok result', () => {
+    const r = resolveModel('gpt-5.4-xhigh');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'canonical model');
+    assertEqual(r.resolution.resolvedFrom, undefined, 'no alias');
+  });
+
+  await test('undefined model returns default', () => {
+    const r = resolveModel(undefined);
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'default model');
+  });
+
+  await test('claude-opus-4.6 returns ok result', () => {
+    const r = resolveModel('claude-opus-4.6');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'claude-opus-4.6', 'canonical model');
+  });
+
+  await test('unknown model returns error', () => {
+    const r = resolveModel('banana');
+    assert(r.ok === false, 'should not be ok');
+    assert(r.error.error.includes('banana'), 'error mentions the model');
+    assert(r.error.help.includes('INVALID MODEL'), 'help has guidance');
+    assert(r.error.help.includes('gpt-5.4-xhigh'), 'help lists valid models');
+  });
+
+  section('resolveModel() — alias resolution');
+
+  await test('sonnet → claude-sonnet-4.6', () => {
+    const r = resolveModel('sonnet');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'claude-sonnet-4.6', 'resolved model');
+    assertEqual(r.resolution.resolvedFrom, 'sonnet', 'resolvedFrom set');
+  });
+
+  await test('opus → claude-opus-4.6', () => {
+    const r = resolveModel('opus');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'claude-opus-4.6', 'resolved model');
+    assertEqual(r.resolution.resolvedFrom, 'opus', 'resolvedFrom set');
+  });
+
+  await test('gpt-5.4 → gpt-5.4-xhigh', () => {
+    const r = resolveModel('gpt-5.4');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'resolved model');
+    assertEqual(r.resolution.resolvedFrom, 'gpt-5.4', 'resolvedFrom set');
+  });
+
+  await test('o4-mini → gpt-5.3-codex-medium', () => {
+    const r = resolveModel('o4-mini');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.3-codex-medium', 'resolved model');
+  });
+
+  await test('SONNET (uppercase) → claude-sonnet-4.6 (case-insensitive)', () => {
+    const r = resolveModel('SONNET');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'claude-sonnet-4.6', 'resolved model');
+  });
+
+  await test('gpt-5.3-codex alias → gpt-5.3-codex-xhigh', () => {
+    const r = resolveModel('gpt-5.3-codex');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.3-codex-xhigh', 'resolved model');
+  });
+
+  await test('claude-sonnet alias → claude-sonnet-4.6', () => {
+    const r = resolveModel('claude-sonnet');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'claude-sonnet-4.6', 'resolved model');
+  });
+
+  await test('default alias → gpt-5.4-xhigh', () => {
+    const r = resolveModel('default');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'resolved model');
+  });
+
+  await test('all aliases resolve to valid canonical models', () => {
+    for (const [alias, target] of Object.entries(MODEL_ALIASES)) {
+      const r = resolveModel(alias);
+      assert(r.ok === true, `alias '${alias}' should resolve ok`);
+      assertEqual(r.resolution.model, target, `alias '${alias}' target`);
+    }
   });
 
   // =========================================================================

@@ -18,7 +18,7 @@ import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { sdkSessionAdapter } from './sdk-session-adapter.js';
 import { TaskStatus, type SpawnOptions, type TaskState, type AgentMode, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
-import { resolveModel } from '../models.js';
+import { resolveModel, DEFAULT_MODEL } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import { getModeSuffixPrompt } from '../config/mode-prompts.js';
@@ -189,7 +189,8 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     }
   }
 
-  const model = resolveModel(options.model, options.taskType);
+  const modelResult = resolveModel(options.model, options.taskType);
+  const model = modelResult.ok ? modelResult.resolution.model : DEFAULT_MODEL;
 
   // Create the task in the task manager
   const task = taskManager.createTask(prompt, cwd, model, {
@@ -298,7 +299,8 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
   const taskId = task.id;
   const prompt = task.prompt?.trim() || '';
   const cwd = task.cwd || clientContext.getDefaultCwd();
-  const model = resolveModel(task.model);
+  const modelResult = resolveModel(task.model);
+  const model = modelResult.ok ? modelResult.resolution.model : DEFAULT_MODEL;
 
   // Update status to PENDING before running
   taskManager.updateTask(taskId, { status: TaskStatus.PENDING });
@@ -646,7 +648,9 @@ async function handleRateLimit(
         // Clean up old binding first
         sdkSessionAdapter.unbind(taskId);
         
-        await runSDKSession(taskId, taskAfterRotate.prompt, cwd, resolveModel(taskAfterRotate.model), {
+        const rotateModelResult = resolveModel(taskAfterRotate.model);
+        const rotateModel = rotateModelResult.ok ? rotateModelResult.resolution.model : DEFAULT_MODEL;
+        await runSDKSession(taskId, taskAfterRotate.prompt, cwd, rotateModel, {
           ...options,
           switchAttempted: true,
         });

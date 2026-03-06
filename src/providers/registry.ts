@@ -213,6 +213,11 @@ class ProviderRegistry {
     return this.chain;
   }
 
+  /** Human-readable description of the current provider chain for error messages */
+  getChainDescription(): string {
+    return this.chain.map(e => e.fallbackOnly ? `!${e.id}` : e.id).join(' → ');
+  }
+
   /**
    * Check if fallback is enabled (at least one fallback provider in chain).
    * Replaces the old isFallbackEnabled() from exhaustion-fallback.ts.

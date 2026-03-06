@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL } from '../models.js';
+import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
 import {
   TASK_TIMEOUT_DEFAULT_MS,
   TASK_TIMEOUT_MAX_MS,
@@ -20,7 +20,7 @@ export const contextFilesOptional = z.array(contextFileSchema).max(20).optional(
 /** Base fields shared by all spawn schemas. Roles extend this with context_files. */
 export const baseSpawnFields = {
   prompt: z.string().min(1).max(100000),
-  model: z.enum(ALL_ACCEPTED_MODELS as readonly [string, ...string[]]).optional(),
+  model: z.string().optional(),
   cwd: z.string().optional(),
   timeout: z.number().int().min(TASK_TIMEOUT_MIN_MS).max(TASK_TIMEOUT_MAX_MS)
     .default(TASK_TIMEOUT_DEFAULT_MS).optional(),
@@ -37,7 +37,7 @@ export const baseInputSchemaProperties = {
   model: {
     type: 'string',
     enum: MODEL_IDS,
-    description: `Model to use. Default: ${DEFAULT_MODEL}.`,
+    description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
   },
   cwd: {
     type: 'string',
