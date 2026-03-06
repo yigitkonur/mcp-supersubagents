@@ -171,10 +171,16 @@ function createUserInputHandler(taskId: string): (request: UserInputRequest, inv
       invocation.sessionId,
       request.question,
       request.choices,
-      request.allowFreeform ?? true
+      request.allowFreeform ?? true,
+      'Copilot',
     );
-    
-    return response;
+
+    // Copilot SDK expects { answer: string; wasFreeform: boolean }
+    if (response.kind === 'single') {
+      return { answer: response.answer, wasFreeform: response.wasFreeform };
+    }
+    // Structured response on Copilot path is unexpected — return empty string gracefully
+    return { answer: '', wasFreeform: false };
   };
 }
 
