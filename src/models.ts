@@ -126,10 +126,14 @@ export function getModelFamily(model: string): ModelFamily {
 
 /**
  * Return the preferred provider ID for a given model.
- * Codex-family models prefer the codex provider; Claude models use default chain.
+ * Codex-family models → codex provider. Claude-family models → claude-cli provider.
+ * This ensures models route to their native provider first, with chain fallback if unavailable.
  */
 export function getPreferredProvider(model: string): string | undefined {
-  return getModelFamily(model) === 'codex' ? 'codex' : undefined;
+  const family = getModelFamily(model);
+  if (family === 'codex') return 'codex';
+  if (family === 'claude') return 'claude-cli';
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
