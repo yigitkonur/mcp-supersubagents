@@ -12,7 +12,10 @@ import { mcpText, mcpError } from '../utils/format.js';
 
 const AnswerQuestionSchema = z.object({
   task_id: z.string().min(1).describe('Task ID with pending question'),
-  answer: z.string().min(1).max(10000).describe('Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"'),
+  answer: z.string().min(1).max(10000).optional().describe('Single answer: choice number (1, 2, 3...), exact choice text, or "OTHER: your answer". Use for single-question flows (Copilot/Claude).'),
+  answers: z.record(z.string(), z.string().min(1).max(10000)).optional().describe('Multi-question answer map: { "<questionId>": "<answer>" }. Use for Codex multi-question flows — read structured_questions[].id from task:///{id} to get the question IDs.'),
+}).refine(d => d.answer !== undefined || d.answers !== undefined, {
+  message: 'Provide either answer (single string) or answers (map of question IDs to answer strings)',
 });
 
 export const answerAgentTool = {
@@ -21,15 +24,19 @@ export const answerAgentTool = {
 
 **When to call:** An agent's status shows "input_required" or the \`task:///all\` resource shows a pending question for a task.
 
-**Answer formats:**
+**Single-question flows (Copilot / Claude):** Use the \`answer\` field.
 - **Choice by number**: \`"1"\`, \`"2"\`, \`"3"\` — selects the corresponding option
 - **Choice by text**: Exact text of a choice option
-- **Custom answer**: \`"CUSTOM: your custom text"\` — for freeform responses when choices don't fit
+- **Custom answer**: \`"OTHER: your custom text"\` — for freeform responses when choices don't fit
+
+**Multi-question flows (Codex):** Use the \`answers\` field with a map of question IDs to answers.
+Read \`task:///{id}\` → \`pending_question.structured_questions\` to get question IDs.
 
 **Examples:**
 \`\`\`
 answer-agent { "task_id": "abc123", "answer": "2" }
-answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
+answer-agent { "task_id": "abc123", "answer": "OTHER: Use TypeScript instead" }
+answer-agent { "task_id": "abc123", "answers": { "q_build_system": "1", "q_language": "TypeScript" } }
 \`\`\`
 
 **Find pending questions:** Read MCP Resource \`task:///all\` — tasks with \`has_pending_question: true\` need answers.`,
@@ -45,10 +52,15 @@ answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
         type: 'string',
         minLength: 1,
         maxLength: 10000,
-        description: 'Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer".',
+        description: 'Single answer for single-question flows (Copilot/Claude): choice number (1, 2, 3...), exact choice text, or "OTHER: your answer". Mutually exclusive with answers.',
+      },
+      answers: {
+        type: 'object',
+        additionalProperties: { type: 'string', minLength: 1, maxLength: 10000 },
+        description: 'Multi-question answer map for Codex flows: { "<questionId>": "<answer>" }. Read task:///{id} → pending_question.structured_questions[].id to get question IDs. Mutually exclusive with answer.',
       },
     },
-    required: ['task_id', 'answer'],
+    required: ['task_id'],
   },
   annotations: {
     title: 'Answer Agent',
@@ -88,8 +100,47 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
     // Get the question for context
     const question = questionRegistry.getQuestion(taskId);
 
-    // Submit the answer
-    const result = questionRegistry.submitAnswer(taskId, parsed.answer);
+    // Route: multi-question (answers map) vs single-question (answer string)
+    if (parsed.answers !== undefined) {
+      // Multi-question Codex path
+      if (!question?.structuredQuestions?.length) {
+        return mcpError(
+          'Invalid answer format',
+          'This task has a single-question flow. Use answer (not answers) to respond.',
+        );
+      }
+
+      const result = questionRegistry.submitStructuredAnswers(taskId, parsed.answers);
+
+      if (!result.success) {
+        const parts: string[] = [`**Error:** ${result.error}`, ''];
+        parts.push('**Structured questions:**');
+        for (const sq of question.structuredQuestions) {
+          parts.push(`- \`${sq.id}\` — ${sq.question}`);
+          if (sq.options && sq.options.length > 0) {
+            sq.options.forEach((o, i) => parts.push(`  ${i + 1}. ${o.label}`));
+          }
+          if (sq.allowFreeform) parts.push('  *(freeform allowed)*');
+        }
+        return { content: [{ type: 'text', text: parts.join('\n') }], isError: true as const };
+      }
+
+      const successParts: (string | null)[] = [
+        `✅ **Structured answers submitted** (${result.answeredCount} question(s))`,
+        `task_id: \`${taskId}\``,
+        task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+        '',
+        'Task execution resumed. MCP notifications will alert on completion—no need to poll.',
+        '',
+        '**Optional progress check:**',
+        task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
+        `- Read resource: \`task:///${taskId}\``,
+      ];
+      return mcpText(successParts.filter(Boolean).join('\n'));
+    }
+
+    // Single-answer path
+    const result = questionRegistry.submitAnswer(taskId, parsed.answer!);
 
     if (!result.success) {
       // Build helpful error message with valid options
@@ -108,7 +159,7 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
 
         if (question.allowFreeform) {
           parts.push('');
-          parts.push('**Custom answer:** `CUSTOM: your answer here`');
+          parts.push('**Custom answer:** `OTHER: your answer here`');
         }
       }
 
@@ -135,7 +186,7 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
 
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return mcpError('Invalid input', 'Required: task_id (string), answer (string)');
+      return mcpError('Invalid input', 'Required: task_id (string) + either answer (string) or answers (object mapping question IDs to answer strings)');
     }
     return mcpError(
       error instanceof Error ? error.message : 'Unknown error',

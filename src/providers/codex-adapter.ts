@@ -39,6 +39,7 @@ import { BaseProviderAdapter } from './base-adapter.js';
 import { createProviderPolicy, type ProviderPolicy } from './resilience.js';
 import { getEmbeddedReasoningEffort } from '../models.js';
 import { TaskStatus } from '../types.js';
+import type { StructuredQuestion } from '../types.js';
 import {
   CodexAppServerClient,
   CodexRpcError,
@@ -817,9 +818,19 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         const displayedQuestion = multiQuestion
           ? this.buildCombinedUserInputQuestion(questions)
           : firstQuestion.question;
-        handle.writeOutput(`[question] Codex is asking: ${displayedQuestion}`);
+        // Build structured per-question metadata for MCP clients
+        // (registry.register() handles all output file logging — no duplicate write here)
+        const structuredQuestions: StructuredQuestion[] = questions.map(q => ({
+          id: q.id,
+          header: q.header,
+          question: q.question,
+          options: q.options?.map(o => ({ label: o.label, description: o.description })) ?? undefined,
+          allowFreeform: q.isOther !== false,
+          isSecret: q.isSecret,
+        }));
 
-        const choices = multiQuestion ? undefined : firstQuestion.options?.map(o => o.label);
+        // Single-question backward compat: still expose flat choices for answer-agent
+        const flatChoices = multiQuestion ? undefined : firstQuestion.options?.map(o => o.label);
         const allowFreeform = multiQuestion ? true : firstQuestion.isOther !== false;
 
         questionState.setQuestionPending(true);
@@ -828,12 +839,21 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
             taskId,
             uiParams.threadId || '',
             displayedQuestion,
-            choices,
+            flatChoices,
             allowFreeform,
+            'Codex',             // Fix: was defaulting to 'Copilot'
+            structuredQuestions,
           );
           questionState.setQuestionPending(false);
 
-          const answers = this.buildUserInputAnswers(questions, response.answer);
+          // Route by response kind
+          let answers: Record<string, { answers: string[] }>;
+          if (response.kind === 'structured') {
+            answers = response.answers;
+          } else {
+            // Single-answer fallback: distribute text across all question IDs
+            answers = this.buildUserInputAnswers(questions, response.answer);
+          }
 
           client.respondToRequest(requestId, { answers });
         } catch (err) {

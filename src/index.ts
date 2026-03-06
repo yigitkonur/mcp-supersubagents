@@ -34,7 +34,7 @@ import { processRegistry } from './services/process-registry.js';
 import { mcpText, mcpValidationError } from './utils/format.js';
 import { extractToolNameFromDetail } from './utils/tool-summarizer.js';
 import { TaskStatus, isTerminalStatus } from './types.js';
-import type { ToolContext, Provider } from './types.js';
+import type { ToolContext, Provider, PendingQuestion } from './types.js';
 import { createRequire } from 'module';
 import { providerRegistry, parseChainString } from './providers/index.js';
 import { setProviderChecker, canRunModel } from './models.js';
@@ -726,6 +726,37 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
   
+  // Helper: build how_to_answer object for any pending question
+  function buildHowToAnswer(taskId: string, q: PendingQuestion) {
+    if (q.structuredQuestions?.length) {
+      return {
+        tool: 'answer-agent',
+        instructions: 'Call answer-agent with task_id and an answers map. Per question: "N" selects by number, "N: detail" selects and adds context, "OTHER: text" is custom. All keys required.',
+        format: {
+          task_id: taskId,
+          answers: Object.fromEntries(
+            q.structuredQuestions.map(sq => [
+              sq.id,
+              sq.options?.length
+                ? `"1"–"${sq.options.length}" | "N: detail" | "OTHER: text"`
+                : '"OTHER: text"',
+            ])
+          ),
+        },
+      };
+    }
+    return {
+      tool: 'answer-agent',
+      instructions: 'Call answer-agent with task_id and answer. "N" picks a numbered choice; "OTHER: text" is freeform.',
+      format: {
+        task_id: taskId,
+        answer: q.choices?.length
+          ? `"1"–"${q.choices.length}" | "OTHER: text"`
+          : '"OTHER: text"',
+      },
+    };
+  }
+
   // Handle task:///all - replaces list_tasks
   if (uri === TASK_ALL_URI) {
     const allTasks = taskManager.getAllTasks();
@@ -736,13 +767,14 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         const stats = task.cachedStats || { round: 0, totalMessages: 0 };
         return {
           id: task.id,
-          status: task.status,
+          status: buildMCPTask(task).status,
           round: stats.round,
           total_messages: stats.totalMessages,
           last_user_message: stats.lastUserMessage,
           labels: task.labels,
           has_pending_question: !!task.pendingQuestion,
           pending_question: task.pendingQuestion?.question,
+          how_to_answer: task.pendingQuestion ? buildHowToAnswer(task.id, task.pendingQuestion) : undefined,
           can_send_message: canSendMessage(task),
           session_id: task.sessionId,
           started: task.startTime,
@@ -754,7 +786,13 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         .map(t => {
           const q = t.pendingQuestion;
           if (!q) return null;
-          return { task_id: t.id, question: q.question, choices: q.choices };
+          return {
+            task_id: t.id,
+            question: q.question,
+            choices: q.choices,
+            structured_questions: q.structuredQuestions,
+            how_to_answer: buildHowToAnswer(t.id, q),
+          };
         }).filter(Boolean),
     };
     
@@ -815,9 +853,10 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const msgStats = extractMessageStats(task.output);
   const filtered = filterOutputForResource(task.output);
   
+  const mcpStatus = buildMCPTask(task).status;
   const data = {
     id: task.id,
-    status: task.status,
+    status: mcpStatus,
     session_id: task.sessionId,
     can_send_message: canSendMessage(task),
     
@@ -849,6 +888,16 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       choices: task.pendingQuestion.choices,
       allow_freeform: task.pendingQuestion.allowFreeform,
       source: task.pendingQuestion.source,
+      structured_questions: task.pendingQuestion.structuredQuestions?.map(q => ({
+        id: q.id,
+        header: q.header,
+        question: q.question,
+        options: q.options,
+        allow_freeform: q.allowFreeform,
+        is_secret: q.isSecret,
+      })),
+      // MCP-native: exact call format so any client can answer without guessing
+      how_to_answer: buildHowToAnswer(task.id, task.pendingQuestion),
     } : undefined,
     
     // Rate limit info
@@ -954,7 +1003,7 @@ async function main() {
   providerRegistry.register(new CodexProviderAdapter());
   providerRegistry.register(new ClaudeProviderAdapter());
 
-  const chainStr = process.env.PROVIDER_CHAIN || 'codex,copilot,!claude-cli';
+  const chainStr = process.env.PROVIDER_CHAIN || 'codex,!claude-cli';
   const chain = parseChainString(chainStr);
   providerRegistry.configureChain(chain);
 
