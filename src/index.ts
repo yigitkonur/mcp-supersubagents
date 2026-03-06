@@ -848,6 +848,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       question: task.pendingQuestion.question,
       choices: task.pendingQuestion.choices,
       allow_freeform: task.pendingQuestion.allowFreeform,
+      source: task.pendingQuestion.source,
     } : undefined,
     
     // Rate limit info

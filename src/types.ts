@@ -237,6 +237,8 @@ export interface PendingQuestion {
   askedAt: string;
   /** Session ID that asked the question */
   sessionId: string;
+  /** Human-readable provider/source label for the prompt, e.g. Copilot or Codex */
+  source?: string;
 }
 
 export interface TaskState {

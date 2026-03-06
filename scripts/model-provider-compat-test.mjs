@@ -13,8 +13,9 @@
 import process from 'node:process';
 
 // Import from built JS — run `pnpm build` first
-import { canRunModel, getPreferredProvider, resolveModelForProvider, resolveModel, MODEL_ALIASES, getAvailableModelIds, getModelOverride, MODEL_IDS } from '../build/models.js';
+import { canRunModel, getPreferredProvider, resolveModelForProvider, resolveModel, MODEL_ALIASES, getAvailableModelIds, getModelOverride, MODEL_IDS, setProviderChecker } from '../build/models.js';
 import { parseChainString } from '../build/providers/registry.js';
+import { launchSuperCoderTool } from '../build/tools/launch-super-coder.js';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -527,6 +528,13 @@ async function main() {
     assertEqual(r.resolution.model, 'claude-opus-4.6', 'canonical model');
   });
 
+  await test('canonical model matching is case-insensitive', () => {
+    const r = resolveModel('GPT-5.4-HIGH');
+    assert(r.ok === true, 'should be ok');
+    assertEqual(r.resolution.model, 'gpt-5.4-high', 'resolved canonical model');
+    assertEqual(r.resolution.resolvedFrom, 'GPT-5.4-HIGH', 'resolvedFrom set for normalized canonical input');
+  });
+
   await test('unknown model returns error', () => {
     const r = resolveModel('banana');
     assert(r.ok === false, 'should not be ok');
@@ -608,6 +616,21 @@ async function main() {
 
   await test('MODEL_IDS has exactly 5 entries', () => {
     assertEqual(MODEL_IDS.length, 5, 'MODEL_IDS count');
+  });
+
+  await test('launch-super-coder model enum stays dynamic after provider changes', () => {
+    setProviderChecker(() => ({
+      ids: ['claude-cli'],
+      canRun: (model, providerId) => providerId === 'claude-cli' && model.startsWith('claude-'),
+      isAvailable: () => true,
+    }));
+
+    const enumValues = launchSuperCoderTool.inputSchema.properties.model.enum;
+    assert(Array.isArray(enumValues), 'enum should be an array');
+    assert(enumValues.includes('claude-sonnet-4.6'), 'should include available Claude model');
+    assert(enumValues.includes('sonnet'), 'should include alias for available Claude model');
+    assert(!enumValues.includes('gpt-5.4-high'), 'should omit unavailable GPT model');
+    assert(!enumValues.includes('gpt-5.4'), 'should omit alias for unavailable GPT model');
   });
 
   section('getModelOverride() — env var');

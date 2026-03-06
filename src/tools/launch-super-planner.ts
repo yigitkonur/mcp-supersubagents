@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { OPUS_MODEL } from '../models.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty, buildModelProperty } from './spawn-schemas.js';
 
 // --- Zod schema (planner-specific: context_files optional) ---
 
@@ -27,11 +27,7 @@ Output goes to \`.agent-workspace/plans/[topic]/\`. After completion, read \`tas
       prompt: buildPromptProperty(300, 'Planning brief. MUST include: PROBLEM STATEMENT (what to solve), CONSTRAINTS (what\'s ruled out), VERIFIED FACTS (known info), SCOPE (in/out), EXPECTED OUTPUT (what coder needs). Min 300 chars.'),
       context_files: buildContextFilesProperty('Optional reference files (research docs, existing specs). Pass ALL files from prior researcher workspace — don\'t filter. Max 20 files, 200KB each, 500KB total.'),
       ...baseInputSchemaProperties,
-      model: {
-        type: 'string',
-        enum: baseInputSchemaProperties.model.enum,
-        description: `Ignored — planner always uses ${OPUS_MODEL}. Parameter kept for backward compatibility only.`,
-      },
+      model: buildModelProperty(`Ignored — planner always uses ${OPUS_MODEL}. Parameter kept for backward compatibility only.`),
     },
     required: ['prompt'],
   },

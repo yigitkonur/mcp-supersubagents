@@ -59,7 +59,8 @@ class QuestionRegistry {
     sessionId: string,
     question: string,
     choices?: string[],
-    allowFreeform: boolean = true
+    allowFreeform: boolean = true,
+    source: string = 'Copilot',
   ): Promise<UserInputResponse> {
     // Enforce max concurrent pending questions to prevent unbounded memory growth
     if (this.bindings.size >= MAX_PENDING_QUESTIONS && !this.bindings.has(taskId.toLowerCase())) {
@@ -101,10 +102,11 @@ class QuestionRegistry {
         allowFreeform,
         askedAt: askedAt.toISOString(),
         sessionId,
+        source,
       };
 
       taskManager.updateTask(taskId, { pendingQuestion });
-      taskManager.appendOutput(taskId, `\n[question] Copilot is asking: ${question}`);
+      taskManager.appendOutput(taskId, `\n[question] ${source} is asking: ${question}`);
       
       if (choices && choices.length > 0) {
         const choiceList = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
@@ -117,7 +119,7 @@ class QuestionRegistry {
 
       taskManager.appendOutput(taskId, `[question] Task paused. Use answer_question tool to respond.`);
 
-      console.error(`[question-registry] Question registered for task ${taskId}: "${question}"`);
+      console.error(`[question-registry] ${source} question registered for task ${taskId}: "${question}"`);
 
       // Send MCP notification
       if (this.notificationCallback) {

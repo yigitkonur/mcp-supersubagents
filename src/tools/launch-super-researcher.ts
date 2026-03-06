@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { DEFAULT_MODEL } from '../models.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty, buildModelProperty } from './spawn-schemas.js';
 
 // --- Zod schema (researcher-specific: context_files optional) ---
 
@@ -27,11 +27,7 @@ Output goes to \`.agent-workspace/researches/[topic]/\`. After completion, read 
       prompt: buildPromptProperty(200, 'Research brief. MUST include: WHAT TO RESEARCH (specific topic), WHY IT MATTERS (what decision it informs), WHAT\'S ALREADY KNOWN (verified facts), SPECIFIC QUESTIONS (2-5 pointed questions), HANDOFF TARGET (who reads output). Min 200 chars.'),
       context_files: buildContextFilesProperty('Optional reference files for the researcher. Pass ALL relevant files from prior agent workspaces — don\'t filter. Max 20 files, 200KB each, 500KB total.'),
       ...baseInputSchemaProperties,
-      model: {
-        type: 'string',
-        enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
-      },
+      model: buildModelProperty(`Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`),
     },
     required: ['prompt'],
   },

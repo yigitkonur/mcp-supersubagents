@@ -830,7 +830,6 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
             displayedQuestion,
             choices,
             allowFreeform,
-            'Codex',
           );
           questionState.setQuestionPending(false);
 
