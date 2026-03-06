@@ -3,7 +3,7 @@
 <h3 align="center">Stop waiting. Start spawning.</h3>
 
 <p align="center">
-  Spawn parallel autonomous Copilot agent sessions from a single MCP client. Each agent gets its own workspace, tools, and execution context. Your main session stays unblocked while agents code, plan, research, and test simultaneously.
+  Spawn parallel autonomous AI agent sessions from a single MCP client. Each agent gets its own workspace, tools, and execution context. Your main session stays unblocked while agents code, plan, research, and test simultaneously.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/4_tools-ready_to_use-brightgreen?style=flat-square" alt="4 tools">
+  <img src="https://img.shields.io/badge/8_tools-ready_to_use-brightgreen?style=flat-square" alt="8 tools">
   <img src="https://img.shields.io/badge/⚡_parallel--spawn-unlimited_agents-orange?style=flat-square" alt="parallel spawn">
 </p>
 
@@ -28,7 +28,7 @@
 
 ## The Pitch
 
-AI coding assistants work one task at a time. You ask it to refactor a module, and you wait. Then you ask it to write tests, and you wait again. Then you ask it to update the docs. **Super Subagents multiplies your AI coding bandwidth.** Instead of sequential requests, spawn N agents that work simultaneously -- each with full tool access (file read/write, terminal, search) in its own isolated Copilot SDK session.
+AI coding assistants work one task at a time. You ask it to refactor a module, and you wait. Then you ask it to write tests, and you wait again. Then you ask it to update the docs. **Super Subagents multiplies your AI coding bandwidth.** Instead of sequential requests, spawn N agents that work simultaneously -- each with full tool access (file read/write, terminal, search) in its own isolated session. Three execution backends (OpenAI Codex, GitHub Copilot, Claude Agent SDK) with automatic failover.
 
 <table>
 <tr>
@@ -75,7 +75,7 @@ You (main session):  "Spawn three tasks: refactor auth, write API tests, update 
 You:                 Continue working on other things — or spawn more tasks.
 ```
 
-Each agent runs as an autonomous Copilot SDK session in the background. When it finishes, you get notified via MCP. If it hits a rate limit, it rotates to another GitHub account automatically. Task IDs are human-readable (`brave-tiger-42`, `calm-falcon-17`) so you can track them at a glance.
+Each agent runs as an autonomous session in the background. When it finishes, you get notified via MCP. If it hits a rate limit, it rotates to another GitHub account automatically. Task IDs are human-readable (`brave-tiger-42`, `calm-falcon-17`) so you can track them at a glance.
 
 ---
 
@@ -189,43 +189,49 @@ No build step required -- `npx` runs the package directly.
 
 ## Tool Reference
 
-Super Subagents exposes **4 MCP tools** for task orchestration:
+Super Subagents exposes **8 MCP tools**: 5 specialized launchers + 3 utility tools.
 
 <table>
 <tr>
-<td width="25%" align="center"><strong>🚀 spawn_agent</strong><br>Create a new agent</td>
-<td width="25%" align="center"><strong>💬 send_message</strong><br>Follow-up on a task</td>
-<td width="25%" align="center"><strong>🛑 cancel_task</strong><br>Cancel one or all</td>
-<td width="25%" align="center"><strong>❓ answer_question</strong><br>Respond to agent</td>
+<td width="20%" align="center"><strong>🧑‍💻 launch-super-coder</strong><br>Code, fix, refactor</td>
+<td width="20%" align="center"><strong>📋 launch-super-planner</strong><br>Architecture & plans</td>
+<td width="20%" align="center"><strong>🔬 launch-super-researcher</strong><br>Investigate & analyze</td>
+<td width="20%" align="center"><strong>🧪 launch-super-tester</strong><br>QA & testing</td>
+<td width="20%" align="center"><strong>🔧 launch-classic-agent</strong><br>General purpose</td>
 </tr>
 </table>
 
-### `spawn_agent`
+<table>
+<tr>
+<td width="33%" align="center"><strong>💬 message-agent</strong><br>Follow-up on a task</td>
+<td width="33%" align="center"><strong>🛑 cancel-agent</strong><br>Cancel one or all</td>
+<td width="33%" align="center"><strong>❓ answer-agent</strong><br>Respond to agent</td>
+</tr>
+</table>
 
-Spawn an autonomous AI agent. The agent runs in an isolated session with NO shared memory -- your prompt + context_files are its only context.
+### Launch Tools
+
+All 5 launch tools share these parameters:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `role` | string | Yes | Agent role: `coder`, `planner`, `tester`, or `researcher` |
 | `prompt` | string | Yes | Complete self-contained instructions. Min length varies by role. |
-| `context_files` | array | No | Files to inject into prompt. Each item: `{ path, description }`. Required for coder (min 1 .md) and tester (min 1). Max 20 files, 200KB each, 500KB total. |
-| `specialization` | string | No | Role-specific: coder (typescript/python/react), planner (feature/bugfix/migration), tester (playwright/rest/suite), researcher (security/library/performance) |
-| `model` | string | No | Model to use. Default: `claude-sonnet-4.5`. Planner always uses `claude-opus-4.6`. |
+| `context_files` | array | Varies | Files to inject into prompt. Each item: `{ path, description }`. Required for coder (min 1 .md) and tester (min 1). Max 20 files, 200KB each, 500KB total. |
+| `model` | string | No | Model to use. Default: `gpt-5.4-xhigh`. See [Models](#models). |
 | `cwd` | string | No | Absolute path to working directory |
-| `timeout` | number | No | Max execution time in ms. Default: 1800000 (30 min) |
-| `autonomous` | boolean | No | Run without asking for confirmation. Default: true |
 | `depends_on` | string[] | No | Task IDs that must complete before this starts |
 | `labels` | string[] | No | Labels for grouping/filtering (max 10) |
 
-**Roles and minimum prompt lengths:**
-- **coder** — Implementation tasks. Min 1000-char prompt + min 1 `.md` context file. Include: OBJECTIVE, FILES, CRITERIA, CONSTRAINTS, PATTERNS.
-- **planner** — Architecture/planning. Min 300-char prompt. Always uses opus. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
-- **tester** — QA/testing. Min 300-char prompt + min 1 context file. Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
-- **researcher** — Investigation. Min 200-char prompt. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
+**Per-tool details:**
+
+- **`launch-super-coder`** — Implementation tasks. Min 1000-char prompt + min 1 `.md` context file. Include: OBJECTIVE, FILES, CRITERIA, CONSTRAINTS, PATTERNS.
+- **`launch-super-planner`** — Architecture/planning. Min 300-char prompt. Always uses `claude-opus-4.6`. Include: PROBLEM, CONSTRAINTS, SCOPE, OUTPUT.
+- **`launch-super-researcher`** — Investigation. Min 200-char prompt. Include: TOPIC, QUESTIONS, HANDOFF TARGET.
+- **`launch-super-tester`** — QA/testing. Min 300-char prompt + min 1 context file. Include: WHAT BUILT, FILES, CRITERIA, TESTS, EDGE CASES.
+- **`launch-classic-agent`** — General-purpose agent. Min 200-char prompt. Use when a task doesn't fit the specialized roles.
 
 ```json
 {
-  "role": "coder",
   "prompt": "Refactor the auth module to use JWT refresh tokens. Read /src/services/auth.ts for current implementation...",
   "context_files": [{ "path": "/path/to/plan.md" }],
   "labels": ["backend", "auth"]
@@ -234,21 +240,20 @@ Spawn an autonomous AI agent. The agent runs in an isolated session with NO shar
 
 **Recommended workflow:** researcher → planner → coder → tester. Chain with `depends_on`.
 
-### `send_message`
+### `message-agent`
 
-Send a follow-up message to a completed, failed, cancelled, rate-limited, or timed-out task's session. Resumes the same Copilot session so the agent retains full context of what it did.
+Send a follow-up message to a completed, failed, cancelled, rate-limited, or timed-out task's session. Resumes the same session so the agent retains full context of what it did.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `task_id` | string | Yes | Task ID to send message to |
 | `message` | string | No | Message to send. Default: `"continue"` |
-| `timeout` | number | No | Max execution time in ms |
 
 ```json
 { "task_id": "brave-tiger-42", "message": "Now add unit tests for the changes you made" }
 ```
 
-### `cancel_task`
+### `cancel-agent`
 
 Cancel one task, multiple tasks, or all tasks. Running/pending/waiting/rate-limited tasks are killed (SIGTERM). Completed/failed tasks are removed from memory. Duplicate IDs in an array are deduplicated automatically.
 
@@ -269,9 +274,9 @@ Cancel one task, multiple tasks, or all tasks. Running/pending/waiting/rate-limi
 { "task_id": "all", "clear": true, "confirm": true }
 ```
 
-### `answer_question`
+### `answer-agent`
 
-Respond when a Copilot agent asks a question via `ask_user`. The task pauses until you answer.
+Respond when an agent asks a question via `ask_user`. The task pauses until you answer.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -335,22 +340,49 @@ Templates wrap your prompt with specialized system instructions. The agent sees 
 | `super-tester` | "Test like a user, not a developer." E2E first, then integration, then unit. Collects evidence. | QA, test writing, verification |
 
 ```json
-{ "role": "coder", "prompt": "Fix the null check in auth.ts line 45...", "context_files": [{ "path": "/path/to/plan.md" }] }
+// launch-super-coder
+{ "prompt": "Fix the null check in auth.ts line 45...", "context_files": [{ "path": "/path/to/plan.md" }] }
 ```
 
-The `role` parameter selects the agent template. Each role has a specialized system prompt.
+Each launch tool selects the corresponding agent template automatically.
 
 ---
 
 ## Models
 
-| Model | When to Use |
-|---|---|
-| `claude-sonnet-4.5` | **Default.** Best balance of speed and capability. Recommended for most tasks. |
-| `claude-haiku-4.5` | Simple, well-defined tasks. Quick iterations. |
-| `claude-opus-4.6` | Complex reasoning, large refactors. Always available via `opus` alias. Set `ENABLE_OPUS=true` to show in tool descriptions. |
+| Model | Family | Reasoning | When to Use |
+|---|---|---|---|
+| `gpt-5.4-xhigh` | Codex | Maximum | **Default.** Best reasoning capability for complex tasks. |
+| `gpt-5.4-high` | Codex | High | Good balance of reasoning and speed. |
+| `gpt-5.4-medium` | Codex | Medium | Faster execution, suitable for straightforward tasks. |
+| `gpt-5.3-codex-xhigh` | Codex | Maximum | Alternative Codex model with maximum reasoning. |
+| `gpt-5.3-codex-medium` | Codex | Medium | Alternative Codex model, balanced. |
+| `claude-sonnet-4.6` | Claude | — | Strong general capability. Runs on Claude CLI or Copilot. |
+| `claude-opus-4.6` | Claude | — | Maximum capability. Used automatically by `launch-super-planner`. Set `ENABLE_OPUS=true` to show in tool descriptions. |
 
-> **Note:** `super-planner` always uses `claude-opus-4.6` regardless of the `model` parameter -- planning requires maximum reasoning capability.
+Reasoning effort is derived automatically from the model name — no need to specify it separately.
+
+> **Note:** `launch-super-planner` always uses `claude-opus-4.6` regardless of the `model` parameter.
+
+---
+
+## Provider Chain
+
+Tasks are routed through a configurable provider chain. The default order: **Codex → Copilot → Claude CLI (fallback-only)**.
+
+```
+PROVIDER_CHAIN=codex,copilot,!claude-cli   (default)
+```
+
+| Provider | Backend | Requires |
+|---|---|---|
+| `codex` | OpenAI Codex SDK | `OPENAI_API_KEY` |
+| `copilot` | GitHub Copilot SDK | PAT token with Copilot access |
+| `claude-cli` | Claude Agent SDK | `claude` CLI installed |
+
+- Prefix `!` marks a provider as **fallback-only** (skipped during primary selection, used only when earlier providers fail).
+- When a provider fails (rate limit, API error), the task automatically falls back to the next available provider in the chain.
+- **Model-provider compatibility** is enforced: Claude models only route to `claude-cli` and `copilot`, not `codex`. If no compatible provider is available, the spawn fails with a clear error.
 
 ---
 
@@ -410,9 +442,9 @@ Dependencies are validated at spawn time:
 ### Example: Chained pipeline
 
 ```
-spawn_agent(role: "planner") → plan-tiger-42    [running]
-spawn_agent(role: "coder")   → code-falcon-17   [waiting for plan-tiger-42]
-spawn_agent(role: "tester")  → test-panda-88    [waiting for code-falcon-17]
+launch-super-planner(prompt: "...") → plan-tiger-42    [running]
+launch-super-coder(prompt: "...", depends_on: ["plan-tiger-42"])   → code-falcon-17   [waiting]
+launch-super-tester(prompt: "...", depends_on: ["code-falcon-17"]) → test-panda-88    [waiting]
 
 plan-tiger-42 completes → code-falcon-17 auto-starts
 code-falcon-17 completes → test-panda-88 auto-starts
@@ -422,7 +454,7 @@ code-falcon-17 completes → test-panda-88 auto-starts
 
 ## Question Handling
 
-When a Copilot agent calls `ask_user`, the task pauses and surfaces the question through MCP notifications and resources. Pending questions appear in `task:///all` and on the individual task resource.
+When an agent calls `ask_user`, the task pauses and surfaces the question through MCP notifications and resources. Pending questions appear in `task:///all` and on the individual task resource.
 
 ### Answering
 
@@ -445,12 +477,19 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 
 | Variable | Default | Description |
 |---|---|---|
+| `PROVIDER_CHAIN` | `codex,copilot,!claude-cli` | Provider selection order. Prefix `!` = fallback-only. |
 | `GITHUB_PAT_TOKENS` | -- | Comma-separated PAT tokens for multi-account rotation |
 | `GITHUB_PAT_TOKEN_1`..`_N` | -- | Numbered PAT tokens (alternative to comma-separated) |
 | `GH_PAT_TOKEN` | -- | Fallback PAT token(s), comma-separated |
 | `GITHUB_TOKEN` / `GH_TOKEN` | -- | Single token fallback |
+| `OPENAI_API_KEY` / `CODEX_API_KEY` | -- | API key for Codex SDK provider |
+| `CODEX_MODEL` | `o4-mini` | Default model for Codex tasks |
+| `CODEX_SANDBOX_MODE` | `workspace-write` | Sandbox mode: `read-only`, `workspace-write`, `danger-full-access` |
+| `MAX_CONCURRENT_CODEX_SESSIONS` | `5` | Max simultaneous Codex sessions |
 | `ENABLE_OPUS` | `false` | Show `claude-opus-4.6` in tool descriptions (opus is always usable via alias) |
-| `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable automatic fallback to Claude Agent SDK when all PATs are exhausted |
+| `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable automatic fallback to Claude Agent SDK |
+| `DISABLE_CODEX_FALLBACK` | `false` | Disable Codex SDK in the provider chain |
+| `MAX_CONCURRENT_CLAUDE_FALLBACKS` | `3` | Max simultaneous Claude sessions |
 | `MCP_TASK_TIMEOUT_MS` | `1800000` (30 min) | Default task timeout |
 | `MCP_TASK_TIMEOUT_MIN_MS` | `900000` (15 min) | Minimum allowed timeout |
 | `MCP_TASK_TIMEOUT_MAX_MS` | `3600000` (1 hr) | Maximum allowed timeout |
@@ -458,9 +497,9 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 | `DEBUG_NOTIFICATIONS` | `false` | Log MCP notification errors to stderr |
 | `DEBUG_CLAUDE_FALLBACK` | `false` | Verbose logging for Claude Agent SDK fallback path |
 | `DEBUG_SDK_EVENTS` | `false` | Log all Copilot SDK events |
-| `BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS` | `15000` (15s) | Max wait time for graceful shutdown after broken pipe before force-exiting |
+| `BROKEN_PIPE_FORCE_EXIT_TIMEOUT_MS` | `15000` (15s) | Max wait time for graceful shutdown after broken pipe |
 
-> **No PAT tokens?** If no GitHub PAT is configured, tasks automatically use the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents/claude-agent-sdk) as a fallback (requires `claude` CLI installed). Set `DISABLE_CLAUDE_CODE_FALLBACK=true` to prevent this.
+> **No API keys?** If neither PAT tokens nor `OPENAI_API_KEY` are configured, tasks automatically use the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents/claude-agent-sdk) as a fallback (requires `claude` CLI installed). Set `DISABLE_CLAUDE_CODE_FALLBACK=true` to prevent this.
 
 ---
 
@@ -469,16 +508,14 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 ### Parallel Feature Development
 
 ```
-1. spawn_agent({
-     role: "coder",
+1. launch-super-coder({
      prompt: "Implement the /api/users endpoint. Read the OpenAPI spec at /docs/api.yaml for the schema...",
      context_files: [{ path: "/path/to/spec.md" }],
      labels: ["backend", "users-feature"]
    })
    → Task: brave-tiger-42
 
-2. spawn_agent({
-     role: "tester",
+2. launch-super-tester({
      prompt: "Write E2E tests for the /api/users endpoint using the test patterns in /tests/...",
      context_files: [{ path: "/path/to/test-patterns.md" }],
      depends_on: ["brave-tiger-42"],
@@ -486,8 +523,7 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
    })
    → Task: calm-falcon-17 (waiting for brave-tiger-42)
 
-3. spawn_agent({
-     role: "researcher",
+3. launch-super-researcher({
      prompt: "Research best practices for user data pagination. Compare cursor vs offset...",
      labels: ["research", "users-feature"]
    })
@@ -500,15 +536,15 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 6. Review results:
    - Read resource: task:///all
    - tail -20 .super-agents/brave-tiger-42.output
-   - send_message({ task_id: "brave-tiger-42", message: "Add input validation" })
+   - message-agent({ task_id: "brave-tiger-42", message: "Add input validation" })
 ```
 
 ### Plan-Code-Test Pipeline
 
 ```
-1. spawn_agent(role: "planner")  → Creates architecture plan with builder-briefing.md
-2. spawn_agent(role: "coder")    → depends_on planner, uses briefing as context_file
-3. spawn_agent(role: "tester")   → depends_on coder, uses tester-checklist.md as context_file
+1. launch-super-planner(...)  → Creates architecture plan with builder-briefing.md
+2. launch-super-coder(...)    → depends_on planner, uses briefing as context_file
+3. launch-super-tester(...)   → depends_on coder, uses tester-checklist.md as context_file
 ```
 
 Each stage auto-starts when its dependencies complete. The planner always uses `claude-opus-4.6` for maximum reasoning quality.
@@ -594,17 +630,17 @@ pnpm start
 - Tasks persist to `~/.super-agents/{md5(cwd)}.json` and survive server restarts.
 - Rate-limited tasks auto-retry when the server reconnects.
 - Live output files at `{cwd}/.super-agents/{task-id}.output` persist for post-hoc review.
-- Use `cancel_task` with `task_id: "all"`, `clear: true`, `confirm: true` to clear all tasks and delete the persistence file.
+- Use `cancel-agent` with `task_id: "all"`, `clear: true`, `confirm: true` to clear all tasks and delete the persistence file.
 
 </details>
 
 <details>
 <summary><strong>Agent produces poor results</strong></summary>
 
-- Use `spawn_agent` with the appropriate role (`coder`, `planner`, `tester`, `researcher`). Each role enforces structured briefs and produces dramatically better results.
+- Use the specialized launch tools (`launch-super-coder`, `launch-super-planner`, `launch-super-tester`, `launch-super-researcher`). Each enforces structured briefs and produces dramatically better results.
 - Agents run with NO shared memory -- your prompt is their ONLY context. Include all necessary file paths, background, and success criteria.
 - Attach context files (`.md`) with detailed plans or specifications.
-- For coding tasks (role: `coder`), provide a minimum of 1,000 characters with objective, files, success criteria, constraints, and patterns.
+- For `launch-super-coder`, provide a minimum of 1,000 characters with objective, files, success criteria, constraints, and patterns.
 
 </details>
 
