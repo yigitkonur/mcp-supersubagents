@@ -294,13 +294,14 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
             break;
 
           case 'item.updated':
-            if (event.item.type === 'agent_message') {
-              handle.writeOutput(event.item.text);
-            }
+            // Streaming deltas are logged when item completes (item.completed)
             break;
 
           case 'item.completed':
             switch (event.item.type) {
+              case 'agent_message':
+                if (event.item.text?.trim()) handle.writeOutput(event.item.text);
+                break;
               case 'command_execution': {
                 const exit = event.item.exit_code ?? -1;
                 const status = event.item.status;
@@ -428,6 +429,9 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         let totalTokens = { input: 0, output: 0 };
         const toolMetrics: Record<string, { count: number; successCount: number; failureCount: number }> = {};
 
+        // Line-accumulation buffers — prevents per-token line fragmentation in output
+        const buffers = { msg: '', reasoning: '', cmd: '' };
+
         for await (const msg of client.runTurn(prompt, { reasoningEffort })) {
           if (handle.isTerminal()) break;
 
@@ -445,7 +449,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
                 if (success) toolMetrics[name].successCount++;
                 else toolMetrics[name].failureCount++;
               },
-            });
+            }, buffers);
           } else if (msg.kind === 'request') {
             await this.handleAppServerRequest(
               handle, client, msg.id, msg.method, msg.params, taskId,
@@ -453,6 +457,11 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
             );
           }
         }
+
+        // Flush any buffered output that didn't end with a newline
+        if (buffers.msg.trim()) { handle.writeOutput(buffers.msg.trim()); buffers.msg = ''; }
+        if (buffers.cmd.trim()) { handle.writeOutput(`[cmd] ${buffers.cmd.trim().slice(0, 500)}`); buffers.cmd = ''; }
+        if (buffers.reasoning.trim()) { handle.writeOutputFileOnly(`[reasoning] ${buffers.reasoning.trim().slice(0, 300)}`); buffers.reasoning = ''; }
 
         // Mark completed
         if (handle.isAlive()) {
@@ -633,6 +642,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       addTokens: (input: number, output: number) => void;
       trackTool: (name: string, success: boolean) => void;
     },
+    buffers: { msg: string; reasoning: string; cmd: string },
   ): void {
     switch (method) {
       case 'turn/started':
@@ -667,13 +677,19 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         handle.writeOutput(`[error] Turn failed: ${(params.error as { message?: string })?.message || 'unknown'}`);
         break;
 
-      case 'item/agentMessage/delta':
-        if (typeof params.delta === 'string') {
-          handle.writeOutput(params.delta);
-        } else if (typeof params.text === 'string') {
-          handle.writeOutput(params.text);
+      case 'item/agentMessage/delta': {
+        const delta = typeof params.delta === 'string' ? params.delta
+          : typeof params.text === 'string' ? params.text : '';
+        if (!delta) break;
+        buffers.msg += delta;
+        const nl = buffers.msg.lastIndexOf('\n');
+        if (nl >= 0) {
+          const toFlush = buffers.msg.slice(0, nl);
+          buffers.msg = buffers.msg.slice(nl + 1);
+          if (toFlush.trim()) handle.writeOutput(toFlush);
         }
         break;
+      }
 
       case 'item/started': {
         const itemType = this.normalizeAppServerItemType((params.item as Record<string, unknown>)?.type as string);
@@ -713,7 +729,18 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         const itemType = this.normalizeAppServerItemType((params.item as Record<string, unknown>)?.type as string);
         const item = params.item as Record<string, unknown>;
         switch (itemType) {
+          case 'agentMessage': {
+            const remaining = buffers.msg.trim();
+            if (remaining) { handle.writeOutput(remaining); buffers.msg = ''; }
+            break;
+          }
+          case 'reasoning': {
+            const remaining = buffers.reasoning.trim();
+            if (remaining) { handle.writeOutputFileOnly(`[reasoning] ${remaining.slice(0, 300)}`); buffers.reasoning = ''; }
+            break;
+          }
           case 'commandExecution': {
+            if (buffers.cmd.trim()) { handle.writeOutput(`[cmd] ${buffers.cmd.trim().slice(0, 500)}`); buffers.cmd = ''; }
             const exit = (item.exitCode as number) ?? (item.exit_code as number) ?? -1;
             const status = item.status as string;
             metrics.trackTool('commandExecution', status === 'completed');
@@ -750,21 +777,33 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
 
       case 'item/reasoning/summaryTextDelta':
       case 'item/reasoning/textDelta':
-      case 'item/reasoning/delta':
-        if (typeof params.delta === 'string') {
-          handle.writeOutputFileOnly(`[reasoning] ${params.delta}`);
-        } else if (typeof params.text === 'string') {
-          handle.writeOutputFileOnly(`[reasoning] ${params.text}`);
+      case 'item/reasoning/delta': {
+        const delta = typeof params.delta === 'string' ? params.delta
+          : typeof params.text === 'string' ? params.text : '';
+        if (!delta) break;
+        buffers.reasoning += delta;
+        const nl = buffers.reasoning.lastIndexOf('\n');
+        if (nl >= 0) {
+          const toFlush = buffers.reasoning.slice(0, nl).trim();
+          buffers.reasoning = buffers.reasoning.slice(nl + 1);
+          if (toFlush) handle.writeOutputFileOnly(`[reasoning] ${toFlush.slice(0, 300)}`);
         }
         break;
+      }
 
-      case 'item/commandExecution/outputDelta':
-        if (typeof params.delta === 'string') {
-          handle.writeOutput(`[cmd] ${params.delta}`);
-        } else if (typeof params.output === 'string') {
-          handle.writeOutput(`[cmd] ${params.output}`);
+      case 'item/commandExecution/outputDelta': {
+        const delta = typeof params.delta === 'string' ? params.delta
+          : typeof params.output === 'string' ? params.output : '';
+        if (!delta) break;
+        buffers.cmd += delta;
+        const nl = buffers.cmd.lastIndexOf('\n');
+        if (nl >= 0) {
+          const toFlush = buffers.cmd.slice(0, nl).trim();
+          buffers.cmd = buffers.cmd.slice(nl + 1);
+          if (toFlush) handle.writeOutput(`[cmd] ${toFlush.slice(0, 500)}`);
         }
         break;
+      }
 
       case 'thread/status/changed':
         handle.writeOutputFileOnly(`[status] Thread status: ${this.formatThreadStatus(params.status)}`);
@@ -781,7 +820,22 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         );
         break;
 
+      // Internal Codex protocol events — silently ignored (pure noise, no user value)
+      case 'codex/event/mcp_startup_update':
+      case 'codex/event/mcp_startup_complete':
+      case 'codex/event/task_started':
+      case 'codex/event/item_started':
+      case 'codex/event/item_completed':
+      case 'codex/event/user_message':
+      case 'codex/event/token_count':
+      case 'codex/event/agent_reasoning_section_break':
+      case 'codex/event/agent_reasoning_delta':
+      case 'codex/event/reasoning_content_delta':
+      case 'account/rateLimits/updated':
+        break;
+
       default:
+        // Truly unknown notification — log to file only for debugging
         handle.writeOutputFileOnly(`[codex] notification: ${method}`);
         break;
     }
