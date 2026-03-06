@@ -957,6 +957,16 @@ async function main() {
     return label;
   }).join(' → ');
   console.error(`[index] Provider chain: ${chainDisplay}`);
+
+  // Startup availability diagnostic — shows which providers are actually ready
+  for (const entry of chain) {
+    const provider = providerRegistry.getProvider(entry.id);
+    if (provider) {
+      const avail = provider.checkAvailability();
+      const status = avail.available ? '✓ available' : `✗ unavailable (${avail.reason})`;
+      console.error(`[index] Provider '${entry.id}': ${status}`);
+    }
+  }
   
   // Check SDK availability
   const sdkAvailable = await checkSDKAvailable().catch(() => false);

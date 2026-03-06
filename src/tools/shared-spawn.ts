@@ -247,6 +247,7 @@ export async function handleSharedSpawn(
     const parts = [
       `✅ **Task launched** (${config.toolName})`,
       `task_id: \`${taskId}\``,
+      `provider: \`${selectedProvider.id}\` | model: \`${providerModel}\``,
       task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
       'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
