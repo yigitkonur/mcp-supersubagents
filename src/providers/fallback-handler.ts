@@ -15,7 +15,7 @@ import type { FallbackRequest, ProviderSpawnOptions } from './types.js';
 import { providerRegistry } from './registry.js';
 import { taskManager } from '../services/task-manager.js';
 import { createTaskHandle } from './task-handle-impl.js';
-import { isTerminalStatus, TaskStatus, DEFAULT_AGENT_MODE, type Provider } from '../types.js';
+import { isTerminalStatus, TaskStatus, type Provider } from '../types.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import { resolveModelForProvider, DEFAULT_MODEL } from '../models.js';
 
@@ -46,8 +46,9 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     return false;
   }
 
-  // Find the next provider in the chain
-  const selection = providerRegistry.selectFallback(failedProviderId);
+  // Find the next provider in the chain (filter by model compatibility)
+  const taskModel = freshTask.model ?? DEFAULT_MODEL;
+  const selection = providerRegistry.selectFallback(failedProviderId, taskModel);
   if (!selection) {
     console.error(`[fallback-handler] No fallback provider available after '${failedProviderId}'`);
     return false;
@@ -81,7 +82,6 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
   );
 
   // Translate model for the fallback provider
-  const taskModel = freshTask.model ?? DEFAULT_MODEL;
   const translatedModel = resolveModelForProvider(taskModel, selection.provider.id);
 
   const spawnOptions: ProviderSpawnOptions = {
@@ -90,7 +90,6 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     cwd: cwd ?? freshTask.cwd ?? process.cwd(),
     model: translatedModel,
     timeout: timeoutRemaining,
-    mode: freshTask.mode ?? DEFAULT_AGENT_MODE,
     taskType: freshTask.taskType ?? 'super-coder',
   };
 

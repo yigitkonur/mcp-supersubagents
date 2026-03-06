@@ -21,7 +21,7 @@ import { cancelAgentTool, handleCancelTask } from './tools/cancel-task.js';
 import { messageAgentTool, handleSendMessage } from './tools/send-message.js';
 import { answerAgentTool, handleAnswerQuestion } from './tools/answer-question.js';
 import { taskManager } from './services/task-manager.js';
-import { TERMINAL_STATUSES, DEFAULT_AGENT_MODE } from './types.js';
+import { TERMINAL_STATUSES } from './types.js';
 import { clientContext } from './services/client-context.js';
 import { checkSDKAvailable, getSDKStats } from './services/sdk-spawner.js';
 import { sdkClientManager } from './services/sdk-client-manager.js';
@@ -153,7 +153,6 @@ taskManager.onRetry(async (task) => {
     const newTask = taskManager.createTask(task.prompt, task.cwd || process.cwd(), task.model || 'claude-sonnet-4.6', {
       provider: provider.id,
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
-      mode: task.mode ?? DEFAULT_AGENT_MODE,
       labels: task.labels,
       retryInfo: task.retryInfo ? { ...task.retryInfo } : undefined,
       fallbackCount: task.fallbackCount,
@@ -170,7 +169,6 @@ taskManager.onRetry(async (task) => {
         cwd: task.cwd || process.cwd(),
         model: task.model || 'claude-sonnet-4.6',
         timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
-        mode: task.mode ?? DEFAULT_AGENT_MODE,
       }, handle).catch((err) => {
         console.error(`[index] Retry spawn failed for ${newTask.id}:`, err);
         recoverFromSpawnFailure({
@@ -214,7 +212,6 @@ taskManager.onExecute(async (task) => {
       cwd: task.cwd || process.cwd(),
       model: task.model || 'claude-sonnet-4.6',
       timeout: task.timeout ?? TASK_TIMEOUT_DEFAULT_MS,
-      mode: task.mode ?? DEFAULT_AGENT_MODE,
     }, handle);
   } catch (err) {
     console.error(`[mcp-server] Execute failed for ${task.id}:`, err);

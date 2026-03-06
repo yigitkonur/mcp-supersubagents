@@ -1,15 +1,13 @@
 import { z } from 'zod';
 import { DEFAULT_MODEL } from '../models.js';
-import { AGENT_MODES } from '../types.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildModeProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
 
 // --- Zod schema (coder-specific: context_files REQUIRED, no .optional()) ---
 
 const LaunchSuperCoderSchema = z.object({
   ...baseSpawnFields,
   context_files: contextFilesRequired,
-  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).default('fleet').optional(),
 });
 
 // --- Tool definition ---
@@ -37,7 +35,6 @@ Coder writes detailed testing notes to \`.agent-workspace/implementation/[topic]
         enum: baseInputSchemaProperties.model.enum,
         description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
       },
-      mode: buildModeProperty('fleet', 'Execution mode. Default: fleet (parallel sub-agents).'),
     },
     required: ['prompt', 'context_files'],
   },

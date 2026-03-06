@@ -14,7 +14,7 @@ import type {
 } from '@ai-sdk/provider';
 import { taskManager } from './task-manager.js';
 import { processRegistry } from './process-registry.js';
-import { TaskStatus, ToolMetrics, isTerminalStatus, DEFAULT_AGENT_MODE, type FallbackReason, type AgentMode } from '../types.js';
+import { TaskStatus, ToolMetrics, isTerminalStatus, type FallbackReason, type AgentMode } from '../types.js';
 import { getModeSuffixPrompt } from '../config/mode-prompts.js';
 import { extractToolContext, extractResultInfo, formatToolComplete, type ToolCallContext } from '../utils/tool-summarizer.js';
 
@@ -77,7 +77,6 @@ export interface ClaudeCodeRunOptions {
   resumeSessionId?: string;
   fallbackReason?: FallbackReason;
   preferredModel?: string;
-  mode?: AgentMode;
 }
 
 function normalizeClaudeModel(model?: string): string {
@@ -338,8 +337,8 @@ export async function runClaudeCodeSession(
   try {
     const model = claudeCode(modelId as any, settings as any) as LanguageModelV3;
 
-    // Apply mode suffix prompt for behavioral differentiation
-    const effectiveMode = options.mode ?? DEFAULT_AGENT_MODE;
+    // Autopilot mode for Claude fallback — no suffix needed (autopilot suffix is empty)
+    const effectiveMode: AgentMode = 'autopilot';
     const modeSuffix = getModeSuffixPrompt(effectiveMode);
     const effectivePrompt = modeSuffix ? prompt + modeSuffix : prompt;
     taskManager.appendOutputFileOnly(taskId, `[system] Claude fallback mode: ${effectiveMode}`);

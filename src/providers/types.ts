@@ -6,7 +6,7 @@
  * fallback chains, and lifecycle.
  */
 
-import type { AgentMode, Provider, ReasoningEffort } from '../types.js';
+import type { Provider, ReasoningEffort } from '../types.js';
 import type { TaskHandle } from './task-handle.js';
 
 // ============================================================================
@@ -46,7 +46,6 @@ export interface ProviderSpawnOptions {
   /** Model name in provider-specific format (from resolveModelForProvider, may differ from canonical ModelId) */
   model: string;
   timeout: number;
-  mode: AgentMode;
   reasoningEffort?: ReasoningEffort;
   /** Resume an existing session (Copilot-specific) */
   resumeSessionId?: string;

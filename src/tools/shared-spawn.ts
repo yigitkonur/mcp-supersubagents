@@ -5,7 +5,7 @@ import { createTaskHandle } from '../providers/task-handle-impl.js';
 import { taskManager } from '../services/task-manager.js';
 import { applyTemplate, isValidTaskType, type TaskType } from '../templates/index.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, AGENT_MODES, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
+import { TaskStatus, isTerminalStatus, type ToolContext, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError, type McpToolResponse } from '../utils/format.js';
 import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort } from '../models.js';
 import { clientContext } from '../services/client-context.js';
@@ -98,8 +98,6 @@ export function createLaunchHandler<T extends z.ZodType<Record<string, unknown>>
       timeout: parsed.timeout as SharedSpawnParams['timeout'],
       depends_on: parsed.depends_on as SharedSpawnParams['depends_on'],
       labels: parsed.labels as SharedSpawnParams['labels'],
-      reasoning_effort: parsed.reasoning_effort as SharedSpawnParams['reasoning_effort'],
-      mode: parsed.mode as SharedSpawnParams['mode'],
       ...paramOverrides?.(parsed),
     };
 
@@ -110,7 +108,6 @@ export function createLaunchHandler<T extends z.ZodType<Record<string, unknown>>
 const sharedSpawnSchema = z.object({
   ...baseSpawnFields,
   context_files: z.array(contextFileSchema).max(20).optional(),
-  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).optional(),
 });
 export type SharedSpawnParams = z.infer<typeof sharedSpawnSchema>;
 
@@ -163,7 +160,7 @@ export async function handleSharedSpawn(
 
   // 5. Resolve model early so we can route to preferred provider
   const model = resolveModel(params.model, config.taskType);
-  const selection = providerRegistry.selectProvider(getPreferredProvider(model));
+  const selection = providerRegistry.selectProvider(getPreferredProvider(model), model);
   if (!selection) {
     return mcpValidationError(
       '❌ **NO PROVIDERS AVAILABLE:** No AI providers are configured or available.\n\n' +
@@ -175,7 +172,6 @@ export async function handleSharedSpawn(
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
   const cwd = params.cwd || clientContext.getDefaultCwd();
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
-  const mode = (params.mode ?? DEFAULT_AGENT_MODE) as AgentMode;
   const taskType = config.taskType || 'super-coder';
 
   try {
@@ -184,7 +180,6 @@ export async function handleSharedSpawn(
       labels: labels.length > 0 ? labels : undefined,
       provider: selection.provider.id,
       timeout,
-      mode,
       taskType,
     });
 
@@ -226,8 +221,7 @@ export async function handleSharedSpawn(
         cwd,
         model: providerModel,
         timeout,
-        mode,
-        reasoningEffort: (params.reasoning_effort || getEmbeddedReasoningEffort(model)) as ReasoningEffort | undefined,
+        reasoningEffort: getEmbeddedReasoningEffort(model) as ReasoningEffort | undefined,
         labels: labels.length > 0 ? labels : undefined,
         taskType,
       }, handle).catch((err) => {

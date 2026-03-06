@@ -17,7 +17,7 @@ import { taskManager } from './task-manager.js';
 import { clientContext } from './client-context.js';
 import { sdkClientManager } from './sdk-client-manager.js';
 import { sdkSessionAdapter } from './sdk-session-adapter.js';
-import { TaskStatus, type SpawnOptions, type TaskState, type AgentMode, DEFAULT_AGENT_MODE, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
+import { TaskStatus, type SpawnOptions, type TaskState, type AgentMode, isTerminalStatus, ROTATABLE_STATUS_CODES } from '../types.js';
 import { resolveModel } from '../models.js';
 import { createRetryInfo } from './retry-queue.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
@@ -135,18 +135,15 @@ function ensureRotationCallbackRegistered(): void {
         console.error(`[sdk-spawner] Task ${taskId} became ${taskAfterResume?.status ?? 'deleted'} after resume`);
         return { rotated: false };
       }
-      // Re-apply autopilot mode on the new session after rotation
-      const taskMode = taskAfterResume.mode ?? DEFAULT_AGENT_MODE;
+      // Re-apply autopilot + fleet mode on the new session after rotation
       try {
         await newSession.rpc.mode.set({ mode: 'autopilot' });
       } catch { /* swallow — systemMessage fallback still active from original config */ }
 
-      // Re-apply fleet mode if the task was using it
-      if (taskMode === 'fleet') {
-        try {
-          await newSession.rpc.fleet.start({});
-        } catch { /* swallow — fleet may not be available on new account */ }
-      }
+      // Always re-apply fleet mode (Copilot hardcoded to fleet)
+      try {
+        await newSession.rpc.fleet.start({});
+      } catch { /* swallow — fleet may not be available on new account */ }
       console.error(`[sdk-spawner] Successfully rotated and resumed session ${sessionId}`);
       return { rotated: true, newSession };
     } catch (err) {
@@ -160,14 +157,8 @@ function ensureRotationCallbackRegistered(): void {
   console.error('[sdk-spawner] Rotation callback registered');
 }
 
-/**
- * Resolve effective agent mode from options.
- * Priority: explicit mode > default (fleet).
- */
-function resolveMode(options: Pick<SpawnOptions, 'mode'>): AgentMode {
-  if (options.mode) return options.mode;
-  return DEFAULT_AGENT_MODE; // 'fleet'
-}
+/** Copilot always uses fleet mode. */
+const COPILOT_MODE: AgentMode = 'fleet';
 
 /**
  * Spawn a new Copilot task using the SDK.
@@ -210,7 +201,6 @@ export async function spawnCopilotTask(options: SpawnOptions): Promise<string> {
     fallbackCount: options.fallbackCount,
     switchAttempted: options.switchAttempted,
     timeout: options.timeout,
-    mode: resolveMode(options),
     taskType: options.taskType,
   });
 
@@ -323,7 +313,6 @@ export async function executeWaitingTask(task: TaskState): Promise<void> {
     fallbackCount: task.fallbackCount,
     switchAttempted: task.switchAttempted,
     retryInfo: task.retryInfo,
-    mode: task.mode,
   };
 
   setImmediate(() => {
@@ -412,7 +401,7 @@ async function runSDKSession(
       sessionConfig.reasoningEffort = options.reasoningEffort;
     }
 
-    const effectiveMode = resolveMode(options);
+    const effectiveMode = COPILOT_MODE;
 
     // System message for autonomous operation (all modes auto-run)
     sessionConfig.systemMessage = {
@@ -460,18 +449,16 @@ async function runSDKSession(
         `[session] RPC mode.set(autopilot) not supported (${err instanceof Error ? err.message : err}), using systemMessage fallback`);
     }
 
-    // Fleet mode: also start fleet for parallel execution
-    if (effectiveMode === 'fleet') {
-      try {
-        const fleetResult = await session.rpc.fleet.start({});
-        if (fleetResult.started) {
-          taskManager.updateTask(taskId, { fleetMode: true });
-          taskManager.appendOutputFileOnly(taskId, '[session] Fleet mode started via SDK RPC');
-        }
-      } catch (err) {
-        taskManager.appendOutputFileOnly(taskId,
-          `[session] Fleet mode not available (${err instanceof Error ? err.message : err}), using suffix prompt fallback`);
+    // Always start fleet mode for Copilot
+    try {
+      const fleetResult = await session.rpc.fleet.start({});
+      if (fleetResult.started) {
+        taskManager.updateTask(taskId, { fleetMode: true });
+        taskManager.appendOutputFileOnly(taskId, '[session] Fleet mode started via SDK RPC');
       }
+    } catch (err) {
+      taskManager.appendOutputFileOnly(taskId,
+        `[session] Fleet mode not available (${err instanceof Error ? err.message : err}), using suffix prompt fallback`);
     }
 
     // Append mode suffix prompt for behavioral guidance (plan/fleet)

@@ -1,14 +1,12 @@
 import { z } from 'zod';
-import { AGENT_MODES } from '../types.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildModeProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
 
 // --- Zod schema (general-purpose: context_files optional) ---
 
 const LaunchClassicAgentSchema = z.object({
   ...baseSpawnFields,
   context_files: contextFilesOptional,
-  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).default('autopilot').optional(),
 });
 
 // --- Tool definition ---
@@ -25,7 +23,6 @@ export const launchClassicAgentTool = {
       prompt: buildPromptProperty(200, 'Task brief. MUST include: OBJECTIVE (what to do), CONTEXT (background and constraints), DELIVERABLES (expected outputs). Min 200 chars.'),
       context_files: buildContextFilesProperty('Optional reference files. Max 20 files, 200KB each, 500KB total.'),
       ...baseInputSchemaProperties,
-      mode: buildModeProperty('autopilot', 'Execution mode. Default: autopilot (direct autonomous execution).'),
     },
     required: ['prompt'],
   },

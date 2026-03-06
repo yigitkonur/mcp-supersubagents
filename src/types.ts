@@ -304,8 +304,6 @@ export interface SpawnOptions {
   switchAttempted?: boolean;
   /** Reasoning effort level for the session */
   reasoningEffort?: ReasoningEffort;
-  /** Execution mode: fleet (parallel agents), plan (plan-then-execute), autopilot (direct execution) */
-  mode?: AgentMode;
 }
 
 export interface ToolContext {

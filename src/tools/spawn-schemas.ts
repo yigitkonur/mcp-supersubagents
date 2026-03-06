@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { ALL_ACCEPTED_MODELS, MODEL_IDS, DEFAULT_MODEL } from '../models.js';
-import { REASONING_EFFORTS, AGENT_MODES } from '../types.js';
 import {
   TASK_TIMEOUT_DEFAULT_MS,
   TASK_TIMEOUT_MAX_MS,
@@ -18,7 +17,7 @@ export const contextFilesRequired = z.array(contextFileSchema).min(1).max(20);
 /** Context files optional (planner, researcher, classic) */
 export const contextFilesOptional = z.array(contextFileSchema).max(20).optional();
 
-/** Base fields shared by all spawn schemas. Roles extend this with context_files and mode defaults. */
+/** Base fields shared by all spawn schemas. Roles extend this with context_files. */
 export const baseSpawnFields = {
   prompt: z.string().min(1).max(100000),
   model: z.enum(ALL_ACCEPTED_MODELS as readonly [string, ...string[]]).optional(),
@@ -27,7 +26,6 @@ export const baseSpawnFields = {
     .default(TASK_TIMEOUT_DEFAULT_MS).optional(),
   depends_on: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1).max(50)).max(10).optional(),
-  reasoning_effort: z.enum(REASONING_EFFORTS as unknown as [string, ...string[]]).optional(),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -45,13 +43,6 @@ export const baseInputSchemaProperties = {
     type: 'string',
     description: 'Working directory override (absolute path). Usually omit — server auto-detects project root. Set only if the agent needs a different root.',
   },
-  timeout: {
-    type: 'integer',
-    description: `Max duration in milliseconds. Default: 30 min (${TASK_TIMEOUT_DEFAULT_MS}ms). Max: 1 hr (${TASK_TIMEOUT_MAX_MS}ms). Min: 15 min (${TASK_TIMEOUT_MIN_MS}ms).`,
-    default: TASK_TIMEOUT_DEFAULT_MS,
-    minimum: TASK_TIMEOUT_MIN_MS,
-    maximum: TASK_TIMEOUT_MAX_MS,
-  },
   depends_on: {
     type: 'array',
     items: { type: 'string', minLength: 1 },
@@ -62,11 +53,6 @@ export const baseInputSchemaProperties = {
     items: { type: 'string', minLength: 1, maxLength: 50 },
     maxItems: 10,
     description: 'Tags for grouping related tasks, e.g. "auth", "frontend", "v2-migration". Max 10 labels, 50 chars each.',
-  },
-  reasoning_effort: {
-    type: 'string',
-    enum: ['low', 'medium', 'high', 'xhigh'],
-    description: 'Reasoning depth. low=fast drafts, medium=standard tasks (default behavior), high=complex multi-file logic, xhigh=deep multi-step reasoning. Most tasks work fine without setting this.',
   },
 } as const;
 
@@ -85,9 +71,6 @@ export function buildAnnotations(title: string) {
 export const SPAWN_TOOL_EXECUTION = {
   taskSupport: 'forbidden',
 } as const;
-
-/** Mode enum values for JSON schema. */
-export const MODE_ENUM = [...AGENT_MODES] as string[];
 
 // ---------------------------------------------------------------------------
 // MCP JSON Schema helpers for role-specific properties
@@ -111,16 +94,6 @@ export function buildContextFilesProperty(description: string, opts?: { required
     ...(opts?.required ? { minItems: 1 } : {}),
     maxItems: 20,
     description,
-  };
-}
-
-/** Build mode property for MCP inputSchema. `defaultMode` and `description` vary per role. */
-export function buildModeProperty(defaultMode: string, description: string) {
-  return {
-    type: 'string' as const,
-    enum: MODE_ENUM,
-    description,
-    default: defaultMode,
   };
 }
 

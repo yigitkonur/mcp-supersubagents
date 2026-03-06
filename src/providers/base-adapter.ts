@@ -97,7 +97,7 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
     try {
       // Assemble final prompt with mode suffix
       const { getModeSuffixPrompt } = await import('../config/mode-prompts.js');
-      const suffix = getModeSuffixPrompt(options.mode);
+      const suffix = getModeSuffixPrompt('autopilot');
       const finalPrompt = suffix ? `${options.prompt}\n\n${suffix}` : options.prompt;
 
       await this.executeSession(handle, finalPrompt, abortController.signal, options);

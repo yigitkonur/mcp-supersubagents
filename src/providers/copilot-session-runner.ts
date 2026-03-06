@@ -16,14 +16,14 @@
 
 import type { ProviderSpawnOptions } from './types.js';
 import { taskManager } from '../services/task-manager.js';
-import { isTerminalStatus, TaskStatus, DEFAULT_AGENT_MODE } from '../types.js';
+import { isTerminalStatus, TaskStatus } from '../types.js';
 
 /**
  * Run a Copilot SDK session for an existing task.
  * Called by CopilotProviderAdapter.spawn().
  */
 export async function runCopilotSession(options: ProviderSpawnOptions): Promise<void> {
-  const { taskId, prompt, cwd, model, timeout, mode, reasoningEffort } = options;
+  const { taskId, prompt, cwd, model, timeout } = options;
 
   const task = taskManager.getTask(taskId);
   if (!task || isTerminalStatus(task.status)) {
@@ -42,7 +42,6 @@ export async function runCopilotSession(options: ProviderSpawnOptions): Promise<
     cwd,
     model,
     timeout,
-    mode: mode ?? DEFAULT_AGENT_MODE,
   });
 
   // executeWaitingTask handles: PENDING→RUNNING, session creation, binding,

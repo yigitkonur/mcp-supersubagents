@@ -16,6 +16,7 @@ import type {
   ChainEntry,
 } from './types.js';
 import type { Provider } from '../types.js';
+import { canRunModel } from '../models.js';
 
 export interface ProviderSelection {
   provider: ProviderAdapter;
@@ -83,20 +84,26 @@ class ProviderRegistry {
    * before walking the rest of the chain. This enables model-aware routing:
    * codex models prefer the codex provider.
    */
-  selectProvider(preferredProviderId?: string): ProviderSelection | null {
+  selectProvider(preferredProviderId?: string, model?: string): ProviderSelection | null {
     // Try preferred provider first (e.g., codex for GPT models)
     if (preferredProviderId) {
       const idx = this.chain.findIndex(e => e.id === preferredProviderId);
       if (idx >= 0) {
         const provider = this.providers.get(preferredProviderId);
         if (provider) {
-          const availability = provider.checkAvailability();
-          if (availability.available) {
-            return { provider, chainIndex: idx };
+          if (model && !canRunModel(model, preferredProviderId)) {
+            console.error(
+              `[provider-registry] Preferred provider '${preferredProviderId}' cannot run model '${model}', skipping`
+            );
+          } else {
+            const availability = provider.checkAvailability();
+            if (availability.available) {
+              return { provider, chainIndex: idx };
+            }
+            console.error(
+              `[provider-registry] Preferred provider '${preferredProviderId}' unavailable: ${availability.reason ?? 'unknown'}`
+            );
           }
-          console.error(
-            `[provider-registry] Preferred provider '${preferredProviderId}' unavailable: ${availability.reason ?? 'unknown'}`
-          );
         }
       }
     }
@@ -107,6 +114,11 @@ class ProviderRegistry {
 
       const provider = this.providers.get(entry.id);
       if (!provider) continue;
+
+      if (model && !canRunModel(model, entry.id)) {
+        console.error(`[provider-registry] Provider '${entry.id}' cannot run model '${model}', skipping`);
+        continue;
+      }
 
       const availability = provider.checkAvailability();
       if (availability.available) {
@@ -126,6 +138,11 @@ class ProviderRegistry {
       const provider = this.providers.get(entry.id);
       if (!provider) continue;
 
+      if (model && !canRunModel(model, entry.id)) {
+        console.error(`[provider-registry] Fallback provider '${entry.id}' cannot run model '${model}', skipping`);
+        continue;
+      }
+
       const availability = provider.checkAvailability();
       if (availability.available) {
         console.error(`[provider-registry] No primary provider available, using fallback '${entry.id}'`);
@@ -141,7 +158,7 @@ class ProviderRegistry {
    * Select the next fallback provider after a failure.
    * Returns the next available provider in the chain AFTER the failed one.
    */
-  selectFallback(failedProviderId: string): ProviderSelection | null {
+  selectFallback(failedProviderId: string, model?: string): ProviderSelection | null {
     // Find the failed provider's position in the chain
     const failedIndex = this.chain.findIndex(e => e.id === failedProviderId);
     const startIndex = failedIndex >= 0 ? failedIndex + 1 : 0;
@@ -150,6 +167,11 @@ class ProviderRegistry {
       const entry = this.chain[i];
       const provider = this.providers.get(entry.id);
       if (!provider) continue;
+
+      if (model && !canRunModel(model, entry.id)) {
+        console.error(`[provider-registry] Fallback provider '${entry.id}' cannot run model '${model}', skipping`);
+        continue;
+      }
 
       const availability = provider.checkAvailability();
       if (availability.available) {

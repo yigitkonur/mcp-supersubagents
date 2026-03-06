@@ -159,6 +159,16 @@ export function getEmbeddedReasoningEffort(model: string): string | undefined {
   return MODEL_REGISTRY[model]?.effort;
 }
 
+/**
+ * Check if a provider has a translation entry for this model.
+ * Returns true for unknown models (let the provider decide).
+ */
+export function canRunModel(model: string, providerId: string): boolean {
+  const entry = MODEL_REGISTRY[model];
+  if (!entry) return true;
+  return providerId in entry.providerModels;
+}
+
 // ---------------------------------------------------------------------------
 // Model resolution (user input → canonical ModelId)
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { providerRegistry } from '../providers/registry.js';
 import { progressRegistry } from '../services/progress-registry.js';
-import { TaskStatus, DEFAULT_AGENT_MODE } from '../types.js';
+import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
 import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
@@ -194,7 +194,6 @@ export async function handleSendMessage(
       cwd,
       model: task.model ?? 'claude-sonnet-4.6',
       timeout,
-      mode: task.mode ?? DEFAULT_AGENT_MODE,
     });
 
     const newTask = taskManager.getTask(newTaskId);

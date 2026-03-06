@@ -1,15 +1,13 @@
 import { z } from 'zod';
 import { DEFAULT_MODEL } from '../models.js';
-import { AGENT_MODES } from '../types.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildModeProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
 
 // --- Zod schema (researcher-specific: context_files optional) ---
 
 const LaunchSuperResearcherSchema = z.object({
   ...baseSpawnFields,
   context_files: contextFilesOptional,
-  mode: z.enum(AGENT_MODES as readonly [string, ...string[]]).default('fleet').optional(),
 });
 
 // --- Tool definition ---
@@ -34,7 +32,6 @@ Output goes to \`.agent-workspace/researches/[topic]/\`. After completion, read 
         enum: baseInputSchemaProperties.model.enum,
         description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
       },
-      mode: buildModeProperty('fleet', 'Execution mode. Default: fleet (parallel sub-agents for multi-angle research).'),
     },
     required: ['prompt'],
   },

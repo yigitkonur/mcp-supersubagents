@@ -94,7 +94,6 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
         options.timeout,
         {
           preferredModel: options.model,
-          mode: options.mode,
         },
       );
     });
