@@ -280,7 +280,12 @@ taskManager.onStatusChange((task, previousStatus) => {
       params: { ...mcpTask },
     }).catch(logNotifyError);
 
-    // 2. Progress notification for state transition
+    // 2. Track successful fallbacks (task completed after at least one fallback hop)
+    if (task.status === TaskStatus.COMPLETED && (task.fallbackCount ?? 0) > 0) {
+      providerRegistry.recordFallbackSuccess();
+    }
+
+    // 3. Progress notification for state transition
     progressRegistry.sendProgress(task.id, `Status: ${previousStatus} → ${task.status}`);
 
     // 3. Unregister progress on terminal states
@@ -711,6 +716,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         with_pending_questions: allTasks.filter(t => t.pendingQuestion).map(t => t.id),
       },
       sdk: sdkStats,
+      providers: providerRegistry.getAllStats(),
     };
     
     return {

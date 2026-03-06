@@ -45,6 +45,11 @@ export function parseChainString(chainStr: string): ChainEntry[] {
 class ProviderRegistry {
   private providers = new Map<string, ProviderAdapter>();
   private chain: ChainEntry[] = [];
+  private fallbackStats = {
+    totalFallbacks: 0,
+    successfulFallbacks: 0,
+    byProvider: {} as Record<string, { failures: number; fallbacksFrom: number }>,
+  };
 
   /**
    * Register a provider adapter. Called at startup.
@@ -214,12 +219,33 @@ class ProviderRegistry {
     );
   }
 
+  /** Record a fallback attempt (called when a provider fails and we try the next one) */
+  recordFallback(failedProviderId: string): void {
+    this.fallbackStats.totalFallbacks++;
+    if (!this.fallbackStats.byProvider[failedProviderId]) {
+      this.fallbackStats.byProvider[failedProviderId] = { failures: 0, fallbacksFrom: 0 };
+    }
+    this.fallbackStats.byProvider[failedProviderId].failures++;
+    this.fallbackStats.byProvider[failedProviderId].fallbacksFrom++;
+  }
+
+  /** Record a successful fallback (the replacement provider completed the task) */
+  recordFallbackSuccess(): void {
+    this.fallbackStats.successfulFallbacks++;
+  }
+
+  /** Get fallback stats for monitoring */
+  getFallbackStats() {
+    return { ...this.fallbackStats };
+  }
+
   /** Aggregate stats from all providers for system:///status */
-  getAllStats(): Record<string, Record<string, unknown>> {
-    const stats: Record<string, Record<string, unknown>> = {};
+  getAllStats(): Record<string, unknown> {
+    const stats: Record<string, unknown> = {};
     for (const [id, provider] of this.providers) {
       stats[id] = provider.getStats();
     }
+    stats._fallbacks = this.fallbackStats;
     return stats;
   }
 }

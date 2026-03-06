@@ -53,12 +53,13 @@ export async function triggerFallback(request: FallbackRequest): Promise<boolean
     return false;
   }
 
-  // Increment fallback counter
+  // Increment fallback counter and record metrics
   taskManager.updateTask(taskId, {
     fallbackCount: (freshTask.fallbackCount ?? 0) + 1,
     switchAttempted: true,
     provider: selection.provider.id,
   });
+  providerRegistry.recordFallback(failedProviderId);
 
   // Calculate remaining timeout
   const taskTimeout = freshTask.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
