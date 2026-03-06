@@ -26,7 +26,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "node build/index.js",
     "clean": "rm -rf build",
-    "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs"
+    "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs",
+    "test:compat": "node scripts/model-provider-compat-test.mjs"
   },
   "keywords": [
     "mcp",
