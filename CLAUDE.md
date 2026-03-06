@@ -46,7 +46,7 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ENABLE_OPUS` | `false` | Show claude-opus-4.6 in tool schema enum (opus always usable via alias) |
+| `MODEL_OVERRIDE` | (unset) | Force all requests to use this model (canonical name or alias). Overrides user-specified model. |
 | `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable Claude Agent SDK in the provider chain |
 | `DISABLE_CODEX_FALLBACK` | `false` | Disable Codex SDK in the provider chain |
 

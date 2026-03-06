@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MODEL_IDS, DEFAULT_MODEL } from '../models.js';
+import { MODEL_IDS, DEFAULT_MODEL, getAvailableModelIds } from '../models.js';
 import {
   TASK_TIMEOUT_DEFAULT_MS,
   TASK_TIMEOUT_MAX_MS,
@@ -36,7 +36,7 @@ export const baseSpawnFields = {
 export const baseInputSchemaProperties = {
   model: {
     type: 'string',
-    enum: MODEL_IDS,
+    get enum() { return getAvailableModelIds(); },
     description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
   },
   cwd: {

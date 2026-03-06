@@ -7,7 +7,7 @@ import { applyTemplate, isValidTaskType, type TaskType } from '../templates/inde
 import { progressRegistry } from '../services/progress-registry.js';
 import { TaskStatus, isTerminalStatus, type ToolContext, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError, type McpToolResponse } from '../utils/format.js';
-import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort, getModelFamily, formatModelHelp, formatModelProviderTable } from '../models.js';
+import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort, getModelFamily, formatModelHelp, formatModelProviderTable, getModelOverride } from '../models.js';
 import { clientContext } from '../services/client-context.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import {
@@ -259,6 +259,9 @@ export async function handleSharedSpawn(
       `provider: \`${selectedProvider.id}\` | model: \`${providerModel}\``,
       resolution.resolution.resolvedFrom
         ? `model_alias: \`${resolution.resolution.resolvedFrom}\` → \`${model}\``
+        : null,
+      getModelOverride()
+        ? `model_override: \`MODEL_OVERRIDE=${getModelOverride()}\` → all requests forced to \`${model}\``
         : null,
       task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',

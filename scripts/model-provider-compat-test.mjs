@@ -13,7 +13,7 @@
 import process from 'node:process';
 
 // Import from built JS — run `pnpm build` first
-import { canRunModel, getPreferredProvider, resolveModelForProvider, resolveModel, MODEL_ALIASES } from '../build/models.js';
+import { canRunModel, getPreferredProvider, resolveModelForProvider, resolveModel, MODEL_ALIASES, getAvailableModelIds, getModelOverride, MODEL_IDS } from '../build/models.js';
 import { parseChainString } from '../build/providers/registry.js';
 
 // ---------------------------------------------------------------------------
@@ -241,10 +241,6 @@ async function main() {
 
   await test('gpt-5.4-medium can run on codex', () => {
     assertEqual(canRunModel('gpt-5.4-medium', 'codex'), true, 'gpt-5.4-medium on codex');
-  });
-
-  await test('gpt-5.3-codex-xhigh can run on codex', () => {
-    assertEqual(canRunModel('gpt-5.3-codex-xhigh', 'codex'), true, 'gpt-5.3-codex-xhigh on codex');
   });
 
   section('canRunModel() — unknown models');
@@ -519,10 +515,10 @@ async function main() {
     assertEqual(r.resolution.resolvedFrom, undefined, 'no alias');
   });
 
-  await test('undefined model returns default', () => {
+  await test('undefined model returns default (gpt-5.4-high)', () => {
     const r = resolveModel(undefined);
     assert(r.ok === true, 'should be ok');
-    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'default model');
+    assertEqual(r.resolution.model, 'gpt-5.4-high', 'default model');
   });
 
   await test('claude-opus-4.6 returns ok result', () => {
@@ -555,17 +551,17 @@ async function main() {
     assertEqual(r.resolution.resolvedFrom, 'opus', 'resolvedFrom set');
   });
 
-  await test('gpt-5.4 → gpt-5.4-xhigh', () => {
+  await test('gpt-5.4 → gpt-5.4-high', () => {
     const r = resolveModel('gpt-5.4');
     assert(r.ok === true, 'should be ok');
-    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'resolved model');
+    assertEqual(r.resolution.model, 'gpt-5.4-high', 'resolved model');
     assertEqual(r.resolution.resolvedFrom, 'gpt-5.4', 'resolvedFrom set');
   });
 
-  await test('o4-mini → gpt-5.3-codex-medium', () => {
+  await test('o4-mini → gpt-5.4-medium', () => {
     const r = resolveModel('o4-mini');
     assert(r.ok === true, 'should be ok');
-    assertEqual(r.resolution.model, 'gpt-5.3-codex-medium', 'resolved model');
+    assertEqual(r.resolution.model, 'gpt-5.4-medium', 'resolved model');
   });
 
   await test('SONNET (uppercase) → claude-sonnet-4.6 (case-insensitive)', () => {
@@ -574,22 +570,16 @@ async function main() {
     assertEqual(r.resolution.model, 'claude-sonnet-4.6', 'resolved model');
   });
 
-  await test('gpt-5.3-codex alias → gpt-5.3-codex-xhigh', () => {
-    const r = resolveModel('gpt-5.3-codex');
-    assert(r.ok === true, 'should be ok');
-    assertEqual(r.resolution.model, 'gpt-5.3-codex-xhigh', 'resolved model');
-  });
-
   await test('claude-sonnet alias → claude-sonnet-4.6', () => {
     const r = resolveModel('claude-sonnet');
     assert(r.ok === true, 'should be ok');
     assertEqual(r.resolution.model, 'claude-sonnet-4.6', 'resolved model');
   });
 
-  await test('default alias → gpt-5.4-xhigh', () => {
+  await test('default alias → gpt-5.4-high', () => {
     const r = resolveModel('default');
     assert(r.ok === true, 'should be ok');
-    assertEqual(r.resolution.model, 'gpt-5.4-xhigh', 'resolved model');
+    assertEqual(r.resolution.model, 'gpt-5.4-high', 'resolved model');
   });
 
   await test('all aliases resolve to valid canonical models', () => {
@@ -598,6 +588,32 @@ async function main() {
       assert(r.ok === true, `alias '${alias}' should resolve ok`);
       assertEqual(r.resolution.model, target, `alias '${alias}' target`);
     }
+  });
+
+  // =========================================================================
+  // 8. getAvailableModelIds() and getModelOverride()
+  // =========================================================================
+
+  section('getAvailableModelIds() — dynamic enum');
+
+  await test('returns all 5 models when no provider checker set', () => {
+    const ids = getAvailableModelIds();
+    assertEqual(ids.length, 5, 'model count');
+    assert(ids.includes('gpt-5.4-xhigh'), 'has gpt-5.4-xhigh');
+    assert(ids.includes('gpt-5.4-high'), 'has gpt-5.4-high');
+    assert(ids.includes('gpt-5.4-medium'), 'has gpt-5.4-medium');
+    assert(ids.includes('claude-sonnet-4.6'), 'has claude-sonnet-4.6');
+    assert(ids.includes('claude-opus-4.6'), 'has claude-opus-4.6');
+  });
+
+  await test('MODEL_IDS has exactly 5 entries', () => {
+    assertEqual(MODEL_IDS.length, 5, 'MODEL_IDS count');
+  });
+
+  section('getModelOverride() — env var');
+
+  await test('returns undefined when MODEL_OVERRIDE not set', () => {
+    assertEqual(getModelOverride(), undefined, 'should be undefined');
   });
 
   // =========================================================================

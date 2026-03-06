@@ -25,7 +25,7 @@ interface ModelEntry {
 const MODEL_REGISTRY: Record<string, ModelEntry> = {
   // --- GPT-5.4 (Codex family) ---
   'gpt-5.4-xhigh': {
-    display: 'GPT-5.4 — maximum reasoning effort (default)',
+    display: 'GPT-5.4 — maximum reasoning effort',
     family: 'codex',
     effort: 'xhigh',
     providerModels: {
@@ -35,7 +35,7 @@ const MODEL_REGISTRY: Record<string, ModelEntry> = {
     },
   },
   'gpt-5.4-high': {
-    display: 'GPT-5.4 — high reasoning effort',
+    display: 'GPT-5.4 — high reasoning effort (default)',
     family: 'codex',
     effort: 'high',
     providerModels: {
@@ -51,28 +51,6 @@ const MODEL_REGISTRY: Record<string, ModelEntry> = {
     providerModels: {
       codex:        'gpt-5.4',
       copilot:      'gpt-5.4 (medium)',
-      'claude-cli': 'claude-sonnet-4.6',
-    },
-  },
-
-  // --- GPT-5.3 Codex (Codex family) ---
-  'gpt-5.3-codex-xhigh': {
-    display: 'GPT-5.3 Codex — maximum reasoning effort',
-    family: 'codex',
-    effort: 'xhigh',
-    providerModels: {
-      codex:        'gpt-5.3-codex',
-      copilot:      'gpt-5.3-codex (xhigh)',
-      'claude-cli': 'claude-opus-4.6',
-    },
-  },
-  'gpt-5.3-codex-medium': {
-    display: 'GPT-5.3 Codex — balanced reasoning effort',
-    family: 'codex',
-    effort: 'medium',
-    providerModels: {
-      codex:        'gpt-5.3-codex',
-      copilot:      'gpt-5.3-codex (medium)',
       'claude-cli': 'claude-sonnet-4.6',
     },
   },
@@ -102,13 +80,9 @@ const MODEL_REGISTRY: Record<string, ModelEntry> = {
 
 export const MODEL_ALIASES: Record<string, string> = {
   // GPT-5.4 shortcuts
-  'gpt-5.4':           'gpt-5.4-xhigh',
-  'gpt5.4':            'gpt-5.4-xhigh',
+  'gpt-5.4':           'gpt-5.4-high',
+  'gpt5.4':            'gpt-5.4-high',
   'gpt-5.4-max':       'gpt-5.4-xhigh',
-  // GPT-5.3 shortcuts
-  'gpt-5.3':           'gpt-5.3-codex-xhigh',
-  'gpt-5.3-codex':     'gpt-5.3-codex-xhigh',
-  'gpt5.3':            'gpt-5.3-codex-xhigh',
   // Claude shortcuts
   'sonnet':            'claude-sonnet-4.6',
   'claude-sonnet':     'claude-sonnet-4.6',
@@ -117,8 +91,8 @@ export const MODEL_ALIASES: Record<string, string> = {
   'claude-opus':       'claude-opus-4.6',
   'opus-4.6':          'claude-opus-4.6',
   // Legacy / common names
-  'o4-mini':           'gpt-5.3-codex-medium',
-  'default':           'gpt-5.4-xhigh',
+  'o4-mini':           'gpt-5.4-medium',
+  'default':           'gpt-5.4-high',
 };
 
 // ---------------------------------------------------------------------------
@@ -131,7 +105,7 @@ export const MODELS: Record<string, string> = Object.fromEntries(
 );
 
 export type ModelId = keyof typeof MODEL_REGISTRY & string;
-export const DEFAULT_MODEL: ModelId = 'gpt-5.4-xhigh';
+export const DEFAULT_MODEL: ModelId = 'gpt-5.4-high';
 export const OPUS_MODEL: ModelId = 'claude-opus-4.6';
 
 /** All model IDs exposed in tool schema enums. */
@@ -139,6 +113,50 @@ export const MODEL_IDS: ModelId[] = Object.keys(MODEL_REGISTRY) as ModelId[];
 
 /** All accepted model values for Zod validation. */
 export const ALL_ACCEPTED_MODELS: readonly ModelId[] = [...MODEL_IDS] as const;
+
+// ---------------------------------------------------------------------------
+// MODEL_OVERRIDE — force all requests to a single model
+// ---------------------------------------------------------------------------
+
+/** If set, ALL spawn requests use this model regardless of user input. */
+const MODEL_OVERRIDE_RAW = process.env.MODEL_OVERRIDE?.trim() || undefined;
+
+export function getModelOverride(): string | undefined {
+  return MODEL_OVERRIDE_RAW;
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic model availability — dependency-injected to avoid circular imports
+// ---------------------------------------------------------------------------
+
+type ProviderChecker = () => {
+  ids: string[];
+  canRun: (model: string, pid: string) => boolean;
+  isAvailable: (pid: string) => boolean;
+};
+
+let providerChecker: ProviderChecker | null = null;
+
+/** Called by server init after providers are registered. */
+export function setProviderChecker(checker: ProviderChecker): void {
+  providerChecker = checker;
+}
+
+/**
+ * Return model IDs that can run on at least one currently-available provider.
+ * Used for dynamic MCP tool schema enum — hides models with no viable provider.
+ * Falls back to all MODEL_IDS if provider checker is not set (startup race) or no providers available.
+ */
+export function getAvailableModelIds(): ModelId[] {
+  if (!providerChecker) return MODEL_IDS;
+  const { ids, canRun, isAvailable } = providerChecker();
+  if (ids.length === 0) return MODEL_IDS;
+
+  const available = MODEL_IDS.filter(modelId =>
+    ids.some(pid => canRun(modelId, pid) && isAvailable(pid))
+  );
+  return available.length > 0 ? available : MODEL_IDS;
+}
 
 // ---------------------------------------------------------------------------
 // Model family + provider routing
@@ -218,8 +236,22 @@ export type ModelResolutionResult =
  * Validate and resolve model selection.
  * Returns a result type: ok with the resolved model, or error with help text.
  * Supports canonical names and aliases (case-insensitive).
+ * Respects MODEL_OVERRIDE env var — when set, forces that model for all requests.
  */
 export function resolveModel(requested?: string, _taskType?: string): ModelResolutionResult {
+  // MODEL_OVERRIDE forces all requests to a single model
+  if (MODEL_OVERRIDE_RAW) {
+    if (MODEL_OVERRIDE_RAW in MODEL_REGISTRY) {
+      return { ok: true, resolution: { model: MODEL_OVERRIDE_RAW as ModelId, resolvedFrom: requested ? `override(${requested})` : undefined } };
+    }
+    const overrideLower = MODEL_OVERRIDE_RAW.toLowerCase();
+    const overrideTarget = MODEL_ALIASES[overrideLower];
+    if (overrideTarget && overrideTarget in MODEL_REGISTRY) {
+      return { ok: true, resolution: { model: overrideTarget as ModelId, resolvedFrom: requested ? `override(${requested})` : undefined } };
+    }
+    console.error(`[models] MODEL_OVERRIDE='${MODEL_OVERRIDE_RAW}' is not a valid model — ignoring`);
+  }
+
   if (!requested) return { ok: true, resolution: { model: DEFAULT_MODEL } };
 
   // Direct match against known models
@@ -269,7 +301,7 @@ export function formatModelHelp(attempted: string): string {
     '**How model routing works:**',
     '- GPT models → Codex provider first, then Copilot, then Claude as fallback',
     '- Claude models → Claude CLI first, then Copilot',
-    '- Omit `model` entirely to use the default (`gpt-5.4-xhigh`)',
+    `- Omit \`model\` entirely to use the default (\`${DEFAULT_MODEL}\`)`,
   ].join('\n');
 }
 

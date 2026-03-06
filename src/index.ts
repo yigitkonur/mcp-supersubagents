@@ -37,6 +37,7 @@ import { TaskStatus, isTerminalStatus } from './types.js';
 import type { ToolContext, Provider } from './types.js';
 import { createRequire } from 'module';
 import { providerRegistry, parseChainString } from './providers/index.js';
+import { setProviderChecker, canRunModel } from './models.js';
 import { triggerFallback } from './providers/fallback-handler.js';
 import { createTaskHandle } from './providers/task-handle-impl.js';
 import { CopilotProviderAdapter } from './providers/copilot-adapter.js';
@@ -955,6 +956,17 @@ async function main() {
   const chainStr = process.env.PROVIDER_CHAIN || 'codex,copilot,!claude-cli';
   const chain = parseChainString(chainStr);
   providerRegistry.configureChain(chain);
+
+  // Wire up dynamic model availability checker (dependency injection to avoid circular imports)
+  setProviderChecker(() => ({
+    ids: providerRegistry.getProviderIds(),
+    canRun: (model: string, pid: string) => canRunModel(model, pid),
+    isAvailable: (pid: string) => {
+      const p = providerRegistry.getProvider(pid);
+      return p ? p.checkAvailability().available : false;
+    },
+  }));
+
   const chainDisplay = chain.map((e, i) => {
     const label = e.fallbackOnly ? `!${e.id} (fallback-only)` : i === 0 ? `${e.id} (primary)` : e.id;
     return label;
