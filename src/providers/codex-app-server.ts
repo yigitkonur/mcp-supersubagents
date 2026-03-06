@@ -740,10 +740,7 @@ export class CodexAppServerClient {
       return;
     }
 
-    if (method === 'turn/completed') {
-      if (turnId) {
-        this.turnId = turnId;
-      }
+    if (method === 'turn/completed' || method === 'turn/failed') {
       this.turnId = null;
     }
   }

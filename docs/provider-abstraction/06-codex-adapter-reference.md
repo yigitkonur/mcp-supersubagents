@@ -15,15 +15,15 @@ The adapter auto-detects the `codex` CLI binary at startup. If found, app-server
 
 ```typescript
 const CAPABILITIES: ProviderCapabilities = {
-  supportsSessionResume: true,   // via thread/resume (app-server mode)
-  supportsUserInput: true,       // via ask_user question registry
+  supportsSessionResume: USE_APP_SERVER, // via thread/resume (app-server mode only)
+  supportsUserInput: USE_APP_SERVER,     // via ask_user question registry (app-server mode only)
   supportsFleetMode: false,
   supportsCredentialRotation: false,
   maxConcurrency: MAX_CONCURRENCY, // default 5
 };
 ```
 
-Session resume and user input are enabled via the app-server protocol. Fleet mode and credential rotation are not supported. API keys are static (no rotation).
+Session resume and user input are enabled only when the provider is running in app-server mode. In forced SDK mode (`CODEX_USE_SDK=true`) or when the app-server binary is unavailable, both capabilities are reported as unsupported. Fleet mode and credential rotation are not supported. API keys are static (no rotation).
 
 ## Availability Check
 
@@ -238,6 +238,8 @@ async sendMessage(taskId: string, message: string, options): Promise<string> {
 
 The `executeResumeSession()` method starts a new `CodexAppServerClient`, calls `client.resumeThread(existingThreadId, ...)` to reconnect to the conversation, then runs a turn with the follow-up message. The original task stays terminal — only the new task transitions through PENDING → RUNNING → COMPLETED|FAILED.
 
+If the provider is in SDK mode, `sendMessage()` now fails immediately with a clear "only supported in app-server mode" error instead of attempting a broken resume path.
+
 ## Cancellation — `turn/interrupt` Before Process Kill
 
 The adapter implements a graceful abort sequence:
@@ -315,6 +317,7 @@ The `CodexAppServerClient` class implements the Codex app-server v2 JSON-RPC 2.0
 | Process registration | Registers PID with `processRegistry` on `start()`, unregisters on `destroy()` |
 | Kill escalation | `destroy()` sends SIGTERM, waits 3s, sends SIGKILL |
 | Graceful interrupt | `interruptTurn()` sends `turn/interrupt` with `threadId + turnId` and a 5s timeout |
+| Turn lifecycle cleanup | `trackTurnLifecycle()` clears `turnId` on both `turn/completed` and `turn/failed` |
 
 ### Thread ID Extraction
 

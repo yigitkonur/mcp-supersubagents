@@ -38,6 +38,7 @@ import type { TaskHandle } from './task-handle.js';
 import { BaseProviderAdapter } from './base-adapter.js';
 import { createProviderPolicy, type ProviderPolicy } from './resilience.js';
 import { getEmbeddedReasoningEffort } from '../models.js';
+import { TaskStatus } from '../types.js';
 import {
   CodexAppServerClient,
   CodexRpcError,
@@ -93,8 +94,8 @@ console.error(
 );
 
 const CAPABILITIES: ProviderCapabilities = {
-  supportsSessionResume: true,
-  supportsUserInput: true,
+  supportsSessionResume: USE_APP_SERVER,
+  supportsUserInput: USE_APP_SERVER,
   supportsFleetMode: false,
   supportsCredentialRotation: false,
   maxConcurrency: MAX_CONCURRENCY,
@@ -518,6 +519,10 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
    * Returns the new task ID.
    */
   async sendMessage(taskId: string, message: string, options: ProviderSpawnOptions): Promise<string> {
+    if (!USE_APP_SERVER) {
+      throw new Error('Codex sendMessage/session resume is only supported in app-server mode');
+    }
+
     const { taskManager } = await import('../services/task-manager.js');
     const { createTaskHandle } = await import('./task-handle-impl.js');
 
@@ -549,7 +554,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         const current = taskManager.getTask(newTaskId);
         if (current && !this.isTaskTerminal(current.status)) {
           taskManager.updateTask(newTaskId, {
-            status: 'failed' as any,
+            status: TaskStatus.FAILED,
             error: `Resume failed: ${err instanceof Error ? err.message : String(err)}`,
             endTime: new Date().toISOString(),
           });
