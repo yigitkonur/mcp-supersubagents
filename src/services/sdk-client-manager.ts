@@ -324,8 +324,11 @@ class SDKClientManager {
     };
 
     if (githubToken) {
-      options.githubToken = githubToken;
-      options.useLoggedInUser = false;
+      // CC-018: Pass token via env instead of githubToken option.
+      // The githubToken option causes the CLI's internal listModels() to return 400,
+      // breaking the agentic loop. Passing via GITHUB_TOKEN env var uses the CLI's
+      // native auth path which handles model listing correctly.
+      options.env = { ...process.env, GITHUB_TOKEN: githubToken };
     }
 
     const client = new CopilotClient(options);

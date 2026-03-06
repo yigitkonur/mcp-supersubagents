@@ -27,6 +27,9 @@ const activeFallbackControllers = new Map<string, AbortController>();
 
 const parsedMaxFallbacks = parseInt(process.env.MAX_CONCURRENT_CLAUDE_FALLBACKS || '3', 10);
 const MAX_CONCURRENT_FALLBACKS = Number.isFinite(parsedMaxFallbacks) && parsedMaxFallbacks > 0 ? parsedMaxFallbacks : 3;
+
+const parsedMaxTurns = parseInt(process.env.CLAUDE_FALLBACK_MAX_TURNS || '100', 10);
+const MAX_TURNS = Number.isFinite(parsedMaxTurns) && parsedMaxTurns >= 1 && parsedMaxTurns <= 100 ? parsedMaxTurns : 100;
 let activeFallbackCount = 0;
 const fallbackQueue: Array<() => void> = [];
 
@@ -165,6 +168,7 @@ function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record
     allowedTools: disallowedTools ? undefined : allowedTools,
     disallowedTools,
     maxBudgetUsd,
+    maxTurns: MAX_TURNS,
     streamingInput: 'always',
     canUseTool: async (
       toolName: string,

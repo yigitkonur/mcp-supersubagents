@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): GitHub Copilot SDK (primary), OpenAI Codex SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `copilot,codex,!claude-cli`). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
+An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): OpenAI Codex SDK (primary), GitHub Copilot SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `codex,copilot,!claude-cli`). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
 
 ## Build & Run
 
@@ -40,7 +40,7 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PROVIDER_CHAIN` | `copilot,codex,!claude-cli` | Comma-separated provider IDs in selection order. Prefix `!` = fallback-only (skipped during primary selection, used only when earlier providers fail). |
+| `PROVIDER_CHAIN` | `codex,copilot,!claude-cli` | Comma-separated provider IDs in selection order. Prefix `!` = fallback-only (skipped during primary selection, used only when earlier providers fail). |
 
 ### Feature flags
 
@@ -86,6 +86,7 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 |---|---|---|
 | `CLAUDE_FALLBACK_MODEL` | `sonnet` | Override fallback model |
 | `CLAUDE_FALLBACK_PERMISSION_MODE` | `bypassPermissions` | Claude permission mode |
+| `CLAUDE_FALLBACK_MAX_TURNS` | `100` | Maximum agentic turns per session (1-100) |
 | `MAX_CONCURRENT_CLAUDE_FALLBACKS` | `3` | Max simultaneous Claude sessions |
 | `DEBUG_CLAUDE_FALLBACK` | `false` | Verbose stream-part logging |
 

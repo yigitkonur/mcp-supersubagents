@@ -35,7 +35,7 @@ Coder writes detailed testing notes to \`.agent-workspace/implementation/[topic]
       model: {
         type: 'string',
         enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. Use gpt-5.3-codex-xhigh for maximum reasoning.`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
       },
       mode: buildModeProperty('fleet', 'Execution mode. Default: fleet (parallel sub-agents).'),
     },

@@ -469,6 +469,13 @@ class SDKSessionAdapter {
       console.error(`[sdk-session-adapter] Ignoring session.idle for ${taskId} — ${binding.rotationInProgress ? 'rotation' : 'error handling'} in progress`);
       return;
     }
+    // CC-018: Ignore spurious session.idle that fires before any real work (turnCount == 0).
+    // This happens when fleet.start() triggers an internal agentic cycle that idles
+    // before the actual prompt is sent via session.send().
+    if (binding.turnCount === 0) {
+      console.error(`[sdk-session-adapter] Ignoring early session.idle for ${taskId} — no turns yet (likely from fleet.start() init)`);
+      return;
+    }
     if (!binding.isCompleted) {
       binding.isCompleted = true;
       
@@ -528,6 +535,15 @@ class SDKSessionAdapter {
     // The Copilot SDK wraps HTTP errors as generic errors with statusCode: undefined,
     // embedding the code only in the message string (e.g., "Failed to list models: 400").
     const statusCode = rawStatusCode ?? this.extractEmbeddedStatusCode(message);
+
+    // CC-018: "Failed to list models" is non-fatal — the Copilot CLI recovers internally
+    // and the agentic loop continues (session.idle still fires). Treating this as fatal
+    // causes premature task failure. Log as warning and let the session continue.
+    if (message && /Failed to list models/i.test(message)) {
+      taskManager.appendOutput(taskId, `[warning] Non-fatal: ${message} (status: ${statusCode || 'unknown'}) — CLI recovers internally`);
+      taskManager.appendOutputFileOnly(taskId, `[warning-detail] ${errorType}: ${message} stack=${stack}`);
+      return;
+    }
 
     taskManager.appendOutput(taskId, `[error] ${errorType}: ${message} (status: ${statusCode || 'unknown'})`);
 

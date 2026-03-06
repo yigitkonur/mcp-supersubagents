@@ -32,7 +32,7 @@ Output goes to \`.agent-workspace/researches/[topic]/\`. After completion, read 
       model: {
         type: 'string',
         enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. Researcher is optimized for speed — Sonnet is recommended. Use Opus only for deep architectural analysis.`,
+        description: `Model to use. Default: ${DEFAULT_MODEL}. All models are optional — omit to use the default.`,
       },
       mode: buildModeProperty('fleet', 'Execution mode. Default: fleet (parallel sub-agents for multi-angle research).'),
     },

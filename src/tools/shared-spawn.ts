@@ -7,7 +7,7 @@ import { applyTemplate, isValidTaskType, type TaskType } from '../templates/inde
 import { progressRegistry } from '../services/progress-registry.js';
 import { TaskStatus, isTerminalStatus, DEFAULT_AGENT_MODE, AGENT_MODES, type ToolContext, type AgentMode, type ReasoningEffort, type Provider } from '../types.js';
 import { mcpText, mcpValidationError, type McpToolResponse } from '../utils/format.js';
-import { resolveModel, getPreferredProvider, resolveModelForProvider } from '../models.js';
+import { resolveModel, getPreferredProvider, resolveModelForProvider, getEmbeddedReasoningEffort } from '../models.js';
 import { clientContext } from '../services/client-context.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
 import {
@@ -227,7 +227,7 @@ export async function handleSharedSpawn(
         model: providerModel,
         timeout,
         mode,
-        reasoningEffort: params.reasoning_effort as ReasoningEffort | undefined,
+        reasoningEffort: (params.reasoning_effort || getEmbeddedReasoningEffort(model)) as ReasoningEffort | undefined,
         labels: labels.length > 0 ? labels : undefined,
         taskType,
       }, handle).catch((err) => {

@@ -949,9 +949,14 @@ async function main() {
   providerRegistry.register(new CodexProviderAdapter());
   providerRegistry.register(new ClaudeProviderAdapter());
 
-  const chainStr = process.env.PROVIDER_CHAIN || 'copilot,codex,!claude-cli';
-  providerRegistry.configureChain(parseChainString(chainStr));
-  console.error(`[index] Provider chain: ${chainStr}`);
+  const chainStr = process.env.PROVIDER_CHAIN || 'codex,copilot,!claude-cli';
+  const chain = parseChainString(chainStr);
+  providerRegistry.configureChain(chain);
+  const chainDisplay = chain.map((e, i) => {
+    const label = e.fallbackOnly ? `!${e.id} (fallback-only)` : i === 0 ? `${e.id} (primary)` : e.id;
+    return label;
+  }).join(' → ');
+  console.error(`[index] Provider chain: ${chainDisplay}`);
   
   // Check SDK availability
   const sdkAvailable = await checkSDKAvailable().catch(() => false);

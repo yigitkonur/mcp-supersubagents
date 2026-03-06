@@ -8,7 +8,7 @@
  * Resilience: Cockatiel bulkhead (concurrency) + circuit breaker (health).
  *
  * Configuration via environment variables:
- * - OPENAI_API_KEY or CODEX_API_KEY (required)
+ * - OPENAI_API_KEY or CODEX_API_KEY (optional if Codex CLI has its own auth via ~/.codex/auth.json)
  * - CODEX_PATH — override CLI binary path
  * - CODEX_MODEL — default model (default: o4-mini)
  * - CODEX_SANDBOX_MODE — sandbox mode (default: workspace-write)
@@ -17,6 +17,9 @@
  * - DISABLE_CODEX_FALLBACK — disable Codex in fallback chain (default: false)
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type {
   ProviderCapabilities,
   ProviderSpawnOptions,
@@ -25,12 +28,16 @@ import type {
 import type { TaskHandle } from './task-handle.js';
 import { BaseProviderAdapter } from './base-adapter.js';
 import { createProviderPolicy, type ProviderPolicy } from './resilience.js';
+import { getEmbeddedReasoningEffort } from '../models.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 const CODEX_API_KEY = process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || '';
+
+/** Check if the Codex CLI has its own auth configured (ChatGPT OAuth or API key in auth.json). */
+const HAS_CLI_AUTH = existsSync(join(homedir(), '.codex', 'auth.json'));
 const CODEX_PATH = process.env.CODEX_PATH || undefined;
 const CODEX_MODEL = process.env.CODEX_MODEL || 'o4-mini';
 const CODEX_SANDBOX_MODE = (process.env.CODEX_SANDBOX_MODE || 'workspace-write') as
@@ -91,10 +98,10 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         reason: 'Codex disabled (DISABLE_CODEX_FALLBACK=true)',
       };
     }
-    if (!CODEX_API_KEY) {
+    if (!CODEX_API_KEY && !HAS_CLI_AUTH) {
       return {
         available: false,
-        reason: 'No API key configured (set OPENAI_API_KEY or CODEX_API_KEY)',
+        reason: 'No auth configured (set OPENAI_API_KEY or CODEX_API_KEY, or run `codex auth` for CLI auth)',
       };
     }
     if (!policy.isHealthy()) {
@@ -129,7 +136,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
     options: ProviderSpawnOptions,
   ): Promise<void> {
     const { Codex } = await import('@openai/codex-sdk');
-    const { model } = options;
+    const { model, reasoningEffort } = options;
 
     // Execute through resilience policy (bulkhead + circuit breaker)
     await policy.execute(async () => {
@@ -137,7 +144,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       handle.setProvider('codex');
 
       const codex = new Codex({
-        apiKey: CODEX_API_KEY,
+        ...(CODEX_API_KEY ? { apiKey: CODEX_API_KEY } : {}),
         codexPathOverride: CODEX_PATH,
       });
 
@@ -149,6 +156,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         sandboxMode: CODEX_SANDBOX_MODE,
         approvalPolicy: CODEX_APPROVAL_POLICY,
         skipGitRepoCheck: true,
+        ...(reasoningEffort ? { modelReasoningEffort: reasoningEffort } : {}),
       });
 
       // prompt already has mode suffix (base class assembled it)
@@ -311,6 +319,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       queueSlots: policyStats.queueSlots,
       maxConcurrency: MAX_CONCURRENCY,
       apiKeyConfigured: !!CODEX_API_KEY,
+      cliAuthConfigured: HAS_CLI_AUTH,
       model: CODEX_MODEL,
       sandboxMode: CODEX_SANDBOX_MODE,
       approvalPolicy: CODEX_APPROVAL_POLICY,
