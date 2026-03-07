@@ -206,16 +206,15 @@ export async function handleSendMessage(
     const parts: (string | null)[] = [
       `✅ **Message sent**`,
       `task_id: \`${newTaskId}\``,
-      newTask?.outputFilePath ? `output_file: \`${newTask.outputFilePath}\`` : null,
       '',
       `**Message:** "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`,
       `**Continued from:** \`${task.id}\``,
       '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
-      '',
+      newTask?.outputFilePath ? `read logs: \`cat -n ${newTask.outputFilePath}\`` : null,
+      newTask?.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
       '**Optional progress check:**',
-      newTask?.outputFilePath ? `- \`tail -20 ${newTask.outputFilePath}\` — Last 20 lines` : null,
-      `- Read resource: \`task:///${newTaskId}\``,
+      newTask?.outputFilePath ? `- Check if line count increases: \`wc -l ${newTask.outputFilePath}\`` : null,
+      `- Use MCP tools for resource: \`task:///${newTaskId}\``,
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

@@ -128,13 +128,11 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
       const successParts: (string | null)[] = [
         `✅ **Structured answers submitted** (${result.answeredCount} question(s))`,
         `task_id: \`${taskId}\``,
-        task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
-        '',
-        'Task execution resumed. MCP notifications will alert on completion—no need to poll.',
-        '',
+        task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
+        task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
         '**Optional progress check:**',
-        task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-        `- Read resource: \`task:///${taskId}\``,
+        task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
+        `- Use MCP tools for resource: \`task:///${taskId}\``,
       ];
       return mcpText(successParts.filter(Boolean).join('\n'));
     }
@@ -170,16 +168,15 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
     const parts: (string | null)[] = [
       `✅ **Answer submitted**`,
       `task_id: \`${taskId}\``,
-      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
       question ? `**Question:** ${question.question}` : null,
       `**Answer:** ${result.resolvedAnswer}`,
       '',
-      'Task execution resumed. MCP notifications will alert on completion—no need to poll.',
-      '',
+      task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
+      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
       '**Optional progress check:**',
-      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      `- Read resource: \`task:///${taskId}\``,
+      task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
+      `- Use MCP tools for resource: \`task:///${taskId}\``,
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

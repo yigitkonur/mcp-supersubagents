@@ -263,14 +263,11 @@ export async function handleSharedSpawn(
       getModelOverride()
         ? `model_override: \`MODEL_OVERRIDE=${getModelOverride()}\` → all requests forced to \`${model}\``
         : null,
-      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
-      '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
-      '',
+      task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
+      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
       '**Optional progress check:**',
-      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      task.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
-      `- Read resource: \`task:///${taskId}\``,
+      task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
+      `- Use MCP tools for resource: \`task:///${taskId}\``,
       qualityTip ? '' : null,
       qualityTip,
     ].filter(Boolean);
