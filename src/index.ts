@@ -34,7 +34,7 @@ import { processRegistry } from './services/process-registry.js';
 import { mcpText, mcpValidationError } from './utils/format.js';
 import { extractToolNameFromDetail } from './utils/tool-summarizer.js';
 import { TaskStatus, isTerminalStatus } from './types.js';
-import type { ToolContext, Provider } from './types.js';
+import type { ToolContext, Provider, PendingQuestion, TaskState } from './types.js';
 import { createRequire } from 'module';
 import { providerRegistry, parseChainString } from './providers/index.js';
 import { setProviderChecker, canRunModel } from './models.js';
@@ -44,6 +44,7 @@ import { CopilotProviderAdapter } from './providers/copilot-adapter.js';
 import { ClaudeProviderAdapter } from './providers/claude-adapter.js';
 import { CodexProviderAdapter } from './providers/codex-adapter.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from './config/timeouts.js';
+import { hookStateWriter } from './services/hook-state-writer.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json');
@@ -52,7 +53,7 @@ const server = new Server(
   { name: 'mcp-supersubagents', version: PKG_VERSION },
   {
     capabilities: {
-      tools: {},
+      tools: { listChanged: true },
       tasks: {
         list: {},
         cancel: {},
@@ -237,6 +238,19 @@ const logNotifyError = process.env.DEBUG_NOTIFICATIONS
   ? (e: unknown) => console.error('[notify]', e instanceof Error ? e.message : e)
   : () => {};
 
+// --- Tool list changed notification (Approach 1: description hack) ---
+let toolListChangedTimer: NodeJS.Timeout | null = null;
+const TOOL_LIST_CHANGED_DEBOUNCE_MS = 1000;
+
+function scheduleToolListChanged(): void {
+  if (toolListChangedTimer || isShuttingDown) return;
+  toolListChangedTimer = setTimeout(() => {
+    toolListChangedTimer = null;
+    server.sendToolListChanged().catch(logNotifyError);
+  }, TOOL_LIST_CHANGED_DEBOUNCE_MS);
+  toolListChangedTimer.unref();
+}
+
 // Single onOutput registration: forwards to progress + debounced resource updates
 taskManager.onOutput((taskId, line) => {
   // 1. Forward to progress registry (if client registered a progressToken)
@@ -291,7 +305,17 @@ taskManager.onStatusChange((task, previousStatus) => {
       progressRegistry.unregister(task.id);
     }
 
-    // 4. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
+    // 4. Tool list changed notification (triggers tool description refresh with live status banner)
+    if (isTerminalStatus(task.status) || task.status === TaskStatus.RUNNING || task.status === TaskStatus.RATE_LIMITED) {
+      scheduleToolListChanged();
+    }
+
+    // 5. Hook state writer (persists events for PostToolUse hook bridge)
+    if (isTerminalStatus(task.status)) {
+      hookStateWriter.notifyStatusChange(task).catch(() => {});
+    }
+
+    // 6. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
     const uri = taskIdToUri(task.id);
     const sessionUri = `${uri}/session`;
     if (!statusUpdateTimers.has(task.id)) {
@@ -361,7 +385,10 @@ server.oninitialized = async () => {
   // Load persisted tasks for this workspace (also triggers auto-retry for rate-limited tasks)
   const cwd = clientContext.getDefaultCwd();
   await taskManager.setCwd(cwd);
-  
+
+  // Initialize hook state writer with workspace cwd for PostToolUse hook bridge
+  hookStateWriter.setCwd(cwd);
+
   console.error(`[index] MCP initialized - accounts: ${accountManager.getTokenCount()}, cwd: ${cwd}`);
 };
 
@@ -736,6 +763,230 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
   
+  // Helper: build how_to_answer object for any pending question
+  function buildHowToAnswer(taskId: string, q: PendingQuestion) {
+    if (q.structuredQuestions?.length) {
+      return {
+        tool: 'answer-agent',
+        instructions: 'Call answer-agent with task_id and an answers map. Per question: "N" selects by number, "N: detail" selects and adds context, "OTHER: text" is custom. All keys required.',
+        format: {
+          task_id: taskId,
+          answers: Object.fromEntries(
+            q.structuredQuestions.map(sq => [
+              sq.id,
+              sq.options?.length
+                ? `"1"–"${sq.options.length}" | "N: detail" | "OTHER: text"`
+                : '"OTHER: text"',
+            ])
+          ),
+        },
+      };
+    }
+    return {
+      tool: 'answer-agent',
+      instructions: 'Call answer-agent with task_id and answer. "N" picks a numbered choice; "OTHER: text" is freeform.',
+      format: {
+        task_id: taskId,
+        answer: q.choices?.length
+          ? `"1"–"${q.choices.length}" | "OTHER: text"`
+          : '"OTHER: text"',
+      },
+    };
+  }
+
+  /**
+   * Render task:///{id} as well-structured markdown instead of raw JSON.
+   * When a pending question exists, appends an actionable answer-agent call block
+   * with dynamically selected param (answer vs answers) and concrete examples.
+   */
+  function renderTaskMarkdown(task: TaskState, mcpStatus: string, msgStats: { round: number; totalMessages: number }, filtered: string[]): string {
+    const lines: string[] = [];
+
+    // Header
+    lines.push(`# Task: ${task.id}`);
+    lines.push('');
+
+    // Status table
+    lines.push('| Field | Value |');
+    lines.push('|---|---|');
+    lines.push(`| **Status** | \`${mcpStatus}\` |`);
+    if (task.model) lines.push(`| **Model** | \`${task.model}\` |`);
+    if (task.provider) lines.push(`| **Provider** | \`${task.provider}\` |`);
+    lines.push(`| **Turn** | ${msgStats.round} |`);
+    lines.push(`| **Output lines** | ${task.output.length} |`);
+    lines.push(`| **Started** | ${task.startTime} |`);
+    if (task.endTime) lines.push(`| **Ended** | ${task.endTime} |`);
+    if (task.exitCode !== undefined) lines.push(`| **Exit code** | ${task.exitCode} |`);
+    if (task.error) lines.push(`| **Error** | ${task.error} |`);
+    if (task.cwd) lines.push(`| **Working dir** | \`${task.cwd}\` |`);
+    if (task.labels?.length) lines.push(`| **Labels** | ${task.labels.join(', ')} |`);
+    if (task.dependsOn?.length) lines.push(`| **Depends on** | ${task.dependsOn.map((d: string) => `\`${d}\``).join(', ')} |`);
+    if (task.sessionId) lines.push(`| **Session** | \`${task.sessionId}\` |`);
+    lines.push(`| **Can resume** | ${canSendMessage(task) ? 'yes — use `message-agent`' : 'no'} |`);
+    lines.push('');
+
+    // Output file + what to do next (context-dependent)
+    if (task.outputFilePath) {
+      lines.push('## Read Logs');
+      lines.push('');
+      lines.push('```bash');
+      lines.push(`cat -n ${task.outputFilePath}`);
+      lines.push('```');
+      lines.push('');
+      lines.push(`Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.`);
+      lines.push('');
+    }
+
+    if (mcpStatus === 'working') {
+      lines.push('## What to do next');
+      lines.push('');
+      lines.push('The agent is still working. If you need to wait, run `sleep 30` and then read this resource again.');
+      if (task.outputFilePath) {
+        lines.push(`For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.`);
+      }
+      lines.push('If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.');
+      lines.push('');
+    } else if (mcpStatus === 'completed') {
+      lines.push('## Result');
+      lines.push('');
+      lines.push('The agent has finished successfully. Read the output above for results.');
+      if (task.outputFilePath) {
+        lines.push(`Full execution log: \`cat -n ${task.outputFilePath}\``);
+      }
+      lines.push('');
+    } else if (mcpStatus === 'failed') {
+      lines.push('## What to do next');
+      lines.push('');
+      if (canSendMessage(task)) {
+        lines.push(`This task failed but can be resumed. Use the \`message-agent\` tool with \`task_id: "${task.id}"\` and a message describing what to do differently.`);
+      } else {
+        lines.push('This task failed and the session is no longer available. Use a `launch-*` tool to start a new task.');
+      }
+      lines.push('');
+    }
+
+    // Rate limit info
+    if (task.retryInfo) {
+      lines.push('## Rate Limit');
+      lines.push('');
+      lines.push(`- **Reason:** ${task.retryInfo.reason}`);
+      lines.push(`- **Retry:** ${task.retryInfo.retryCount}/${task.retryInfo.maxRetries}`);
+      if (task.retryInfo.nextRetryTime) lines.push(`- **Next retry:** ${task.retryInfo.nextRetryTime}`);
+      lines.push('');
+    }
+
+    // Metrics
+    const hasMetrics = task.sessionMetrics || task.completionMetrics || task.quotaInfo;
+    if (hasMetrics) {
+      lines.push('## Metrics');
+      lines.push('');
+      if (task.sessionMetrics) {
+        const tokens = (task.sessionMetrics.totalTokens?.input || 0) + (task.sessionMetrics.totalTokens?.output || 0);
+        lines.push(`- **Turns:** ${task.sessionMetrics.turnCount} | **Tokens:** ${tokens.toLocaleString()} | **Tools used:** ${Object.keys(task.sessionMetrics.toolMetrics || {}).length}`);
+      }
+      if (task.completionMetrics) {
+        lines.push(`- **API calls:** ${task.completionMetrics.totalApiCalls} | **Code:** +${task.completionMetrics.codeChanges.linesAdded} −${task.completionMetrics.codeChanges.linesRemoved} (${task.completionMetrics.codeChanges.filesModified.length} files)`);
+      }
+      if (task.quotaInfo) {
+        lines.push(`- **Quota remaining:** ${task.quotaInfo.remainingPercentage}%${task.quotaInfo.resetDate ? ` (resets ${task.quotaInfo.resetDate})` : ''}`);
+      }
+      lines.push('');
+    }
+
+    // Failure context
+    if (task.failureContext) {
+      lines.push('## Failure Details');
+      lines.push('');
+      lines.push(`- **Type:** ${task.failureContext.errorType}`);
+      if (task.failureContext.statusCode) lines.push(`- **HTTP status:** ${task.failureContext.statusCode}`);
+      lines.push(`- **Recoverable:** ${task.failureContext.recoverable ? 'yes' : 'no'}`);
+      lines.push('');
+    }
+
+    // Pending question — the actionable part
+    if (task.pendingQuestion) {
+      lines.push('## ⚠️ ACTION REQUIRED — Agent is paused');
+      lines.push('');
+      const pq = task.pendingQuestion;
+      const isMulti = !!(pq.structuredQuestions?.length);
+
+      if (isMulti && pq.structuredQuestions) {
+        // Multi-question (Codex)
+        for (let i = 0; i < pq.structuredQuestions.length; i++) {
+          const sq = pq.structuredQuestions[i];
+          lines.push(`### Q${i + 1} [${sq.id}] — ${sq.question}`);
+          if (sq.options?.length) {
+            for (let j = 0; j < sq.options.length; j++) {
+              const opt = sq.options[j];
+              lines.push(`  ${j + 1}. **${opt.label}**${opt.description ? ` — ${opt.description}` : ''}`);
+            }
+          }
+          if (sq.allowFreeform) {
+            lines.push(`  OTHER: <any custom text>`);
+          }
+          lines.push('');
+        }
+
+        // Build concrete call example
+        const answersExample: Record<string, string> = {};
+        for (const sq of pq.structuredQuestions) {
+          answersExample[sq.id] = sq.options?.length ? '"1"' : '"YOUR_ANSWER"';
+        }
+
+        lines.push('### How to answer');
+        lines.push('');
+        lines.push('You **MUST** call the `answer-agent` tool now with the `answers` parameter (multi-question):');
+        lines.push('');
+        lines.push('```json');
+        lines.push(JSON.stringify({ task_id: task.id, answers: answersExample }, null, 2));
+        lines.push('```');
+        lines.push('');
+        lines.push('**Answer formats** (per question):');
+        lines.push('- `"N"` — select option by number (e.g. `"2"`)');
+        lines.push('- `"N: detail"` — select + add context (e.g. `"1: Smile Dental in Antalya"`)');
+        lines.push('- `"OTHER: text"` — fully custom answer (e.g. `"OTHER: implants, whitening"`)');
+      } else {
+        // Single question (Copilot/Claude)
+        lines.push(`**Question:** ${pq.question}`);
+        lines.push('');
+        if (pq.choices?.length) {
+          for (let j = 0; j < pq.choices.length; j++) {
+            lines.push(`  ${j + 1}. ${pq.choices[j]}`);
+          }
+          lines.push('');
+        }
+
+        const answerExample = pq.choices?.length ? '"1"' : '"YOUR_ANSWER"';
+
+        lines.push('### How to answer');
+        lines.push('');
+        lines.push('You **MUST** call the `answer-agent` tool now with the `answer` parameter (single question):');
+        lines.push('');
+        lines.push('```json');
+        lines.push(JSON.stringify({ task_id: task.id, answer: answerExample }, null, 2));
+        lines.push('```');
+        lines.push('');
+        if (pq.choices?.length) {
+          lines.push('**Answer formats:**');
+          lines.push(`- \`"N"\` — select option by number, 1–${pq.choices.length}`);
+          lines.push('- `"OTHER: text"` — custom freeform answer');
+        }
+      }
+      lines.push('');
+    }
+
+    // Output tail
+    if (filtered.length > 0) {
+      lines.push('## Recent Output (last 50 lines)');
+      lines.push('');
+      lines.push('```');
+      lines.push(filtered.slice(-50).join('\n'));
+      lines.push('```');
+    }
+
+    return lines.join('\n');
+  }
+
   // Handle task:///all - compact markdown table
   if (uri === TASK_ALL_URI) {
     const allTasks = taskManager.getAllTasks();
@@ -850,90 +1101,14 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
   const msgStats = extractMessageStats(task.output);
   const filtered = filterOutputForResource(task.output);
-  const md: string[] = [];
-
-  md.push(`# ${task.id}`);
-  md.push('');
-
-  // Compact status table — essentials only
-  const turns = task.sessionMetrics?.turnCount ?? msgStats.round;
-  const totalTokens = task.sessionMetrics
-    ? (task.sessionMetrics.totalTokens?.input || 0) + (task.sessionMetrics.totalTokens?.output || 0)
-    : undefined;
-  md.push('| Field | Value |');
-  md.push('|---|---|');
-  // Descriptive status — same logic as task:///all
-  let detailStatus = task.status as string;
-  if (task.status === TaskStatus.WAITING && task.dependsOn?.length) {
-    detailStatus = `waiting → ${task.dependsOn.join(', ')}`;
-  } else if (task.status === TaskStatus.WAITING_ANSWER) {
-    detailStatus = 'waiting_answer ⏸';
-  }
-  md.push(`| Status | ${detailStatus} |`);
-  md.push(`| Model | ${task.model || '—'} |`);
-  md.push(`| Turns | ${turns} |`);
-  md.push(`| Output lines | ${task.output.length} |`);
-  if (totalTokens) md.push(`| Tokens | ${totalTokens.toLocaleString()} |`);
-  md.push(`| Started | ${formatRelativeTime(task.startTime)} |`);
-  if (task.endTime) md.push(`| Ended | ${formatRelativeTime(task.endTime)} |`);
-  if (task.error) md.push(`| Error | ${task.error.slice(0, 120)} |`);
-  if (task.exitCode !== undefined && task.exitCode !== null) md.push(`| Exit code | ${task.exitCode} |`);
-  if (canSendMessage(task)) md.push(`| Resumable | yes — use \`message-agent\` |`);
-
-  // Pending question — compact
-  if (task.pendingQuestion) {
-    md.push('');
-    md.push('## Pending Question');
-    md.push('');
-    md.push(`**Q:** ${task.pendingQuestion.question}`);
-    if (task.pendingQuestion.choices?.length) {
-      for (let i = 0; i < task.pendingQuestion.choices.length; i++) {
-        md.push(`  ${i + 1}. ${task.pendingQuestion.choices[i]}`);
-      }
-    }
-    md.push('');
-    md.push(`Answer: \`answer-agent { "task_id": "${task.id}", "answer": "1" }\``);
-  }
-
-  // Rate limit info
-  if (task.retryInfo) {
-    md.push('');
-    md.push(`**Rate limited:** retry ${task.retryInfo.retryCount}/${task.retryInfo.maxRetries} — ${task.retryInfo.reason || 'unknown'}`);
-    if (task.retryInfo.nextRetryTime) md.push(`Next retry: ${formatRelativeTime(task.retryInfo.nextRetryTime)}`);
-  }
-
-  // Metrics — single line
-  if (task.completionMetrics) {
-    const cm = task.completionMetrics;
-    md.push('');
-    md.push(`**Metrics:** ${cm.totalApiCalls} API calls · +${cm.codeChanges.linesAdded}/-${cm.codeChanges.linesRemoved} lines · ${cm.codeChanges.filesModified.length} files`);
-  }
-
-  // Output tail — 20 lines, filtered to actionable prefixes only
-  const actionable = filtered.filter(l =>
-    l.startsWith('[tool]') || l.startsWith('[file]') || l.startsWith('[error]') ||
-    l.startsWith('[question]') || l.startsWith('--- Turn') || l.startsWith('[assistant]')
-  );
-  const tail = actionable.slice(-20);
-  if (tail.length > 0) {
-    md.push('');
-    md.push('## Recent Activity');
-    md.push('');
-    md.push('```');
-    for (const line of tail) md.push(line);
-    md.push('```');
-  }
-
-  // Output file pointer
-  const outputPath = task.outputFilePath || `{cwd}/.super-agents/${task.id}.output`;
-  md.push('');
-  md.push(`> Full logs: \`cat -n ${outputPath}\``);
+  
+  const mcpStatus = buildMCPTask(task).status;
 
   return {
     contents: [{
       uri,
       mimeType: 'text/markdown',
-      text: md.join('\n'),
+      text: renderTaskMarkdown(task, mcpStatus, msgStats, filtered),
     }],
   };
   } catch (err) {
@@ -969,6 +1144,12 @@ questionRegistry.onQuestionAsked((taskId, question) => {
   // Also send progress notification for clients that support progress but not task status
   progressRegistry.sendProgress(taskId, `⏸️ QUESTION: ${question.question}`);
 
+  // Tool list changed notification (triggers tool description refresh with question banner)
+  scheduleToolListChanged();
+
+  // Hook state writer (persists question event for PostToolUse hook bridge)
+  hookStateWriter.notifyQuestion(taskId, question).catch(() => {});
+
   // Send resource update for subscribed clients
   const uri = taskIdToUri(taskId);
   const sessionUri = `${uri}/session`;
@@ -997,7 +1178,7 @@ async function main() {
   providerRegistry.register(new CodexProviderAdapter());
   providerRegistry.register(new ClaudeProviderAdapter());
 
-  const chainStr = process.env.PROVIDER_CHAIN || 'codex,copilot,!claude-cli';
+  const chainStr = process.env.PROVIDER_CHAIN || 'codex,!claude-cli';
   const chain = parseChainString(chainStr);
   providerRegistry.configureChain(chain);
 
@@ -1066,6 +1247,10 @@ async function main() {
     if (monitorTimer) {
       clearInterval(monitorTimer);
       monitorTimer = null;
+    }
+    if (toolListChangedTimer) {
+      clearTimeout(toolListChangedTimer);
+      toolListChangedTimer = null;
     }
     for (const timer of resourceUpdateTimers.values()) {
       clearTimeout(timer);

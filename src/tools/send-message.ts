@@ -14,6 +14,7 @@ import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
 import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { buildStatusBanner } from '../services/tool-description-banner.js';
 const resumeInProgress = new Set<string>();
 
 const SendMessageSchema = z.object({
@@ -23,15 +24,20 @@ const SendMessageSchema = z.object({
   cwd: z.string().optional(),
 });
 
-export const messageAgentTool = {
-  name: 'message-agent',
-  description: `Send a follow-up message to an existing agent session. Resumes the session — the agent continues from where it left off.
+const MESSAGE_AGENT_BASE_DESC = `Send a follow-up message to an existing agent session. Resumes the session — the agent continues from where it left off.
 
 **Returns a NEW task_id** — the original task stays terminal. Monitor the new ID for progress.
 
 **When to call:** Continue a completed/failed/rate-limited agent with follow-up instructions, or resume with default "continue".
 
-**Find task_id:** Read \`task:///all\` — pick a terminal task (\`completed\`, \`failed\`, \`rate_limited\`) to resume.`,
+**Find task_id:** Read \`task:///all\` — pick a terminal task (\`completed\`, \`failed\`, \`rate_limited\`) to resume.`;
+
+export const messageAgentTool = {
+  name: 'message-agent',
+  get description(): string {
+    const banner = buildStatusBanner();
+    return banner ? `${MESSAGE_AGENT_BASE_DESC}\n\n${banner}` : MESSAGE_AGENT_BASE_DESC;
+  },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -216,7 +222,14 @@ export async function handleSendMessage(
       `**Message:** "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`,
       `**Continued from:** \`${task.id}\``,
       '',
-      '**Monitor:** Read `task:///all` every ~30s — shows status, deps, and pending questions for all tasks.',
+      newTask?.outputFilePath ? `read logs: \`cat -n ${newTask.outputFilePath}\`` : null,
+      newTask?.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
+      '',
+      '**What to do next:**',
+      '- The agent is now resuming work. Run `sleep 30` and then check status.',
+      `- To check status, read the MCP resource \`task:///${newTaskId}\` — it will show current progress, output, and whether the agent needs input.`,
+      newTask?.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${newTask.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+      '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

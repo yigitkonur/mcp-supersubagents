@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { DEFAULT_MODEL } from '../models.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesOptional, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty, buildModelProperty } from './spawn-schemas.js';
 
 // --- Zod schema (general-purpose: context_files optional) ---
 
@@ -23,6 +24,7 @@ export const launchClassicAgentTool = {
       prompt: buildPromptProperty(200, 'Task brief. MUST include: OBJECTIVE (what to do), CONTEXT (background and constraints), DELIVERABLES (expected outputs). Min 200 chars.'),
       context_files: buildContextFilesProperty('Optional reference files. Max 20 files, 200KB each, 500KB total.'),
       ...baseInputSchemaProperties,
+      model: buildModelProperty(`Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`),
     },
     required: ['prompt'],
   },
