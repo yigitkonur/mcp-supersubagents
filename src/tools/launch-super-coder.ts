@@ -22,7 +22,7 @@ export const launchSuperCoderTool = {
 After planner completes, read \`task:///{id}\` to get workspace path, then pass ALL .md files from that workspace as context_files here. Don't cherry-pick — send everything.
 Coder writes detailed testing notes to \`.agent-workspace/implementation/[topic]/HANDOFF.md\` — including Playwright hints for UI or curl commands for APIs — which the tester consumes.
 
-**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` every ~30s to monitor all tasks (status, deps, questions). Statuses: \`running\`, \`waiting → <dep>\`, \`waiting_answer ⏸\`, \`completed\`, \`failed\`.`,
 
   inputSchema: {
     type: 'object' as const,

@@ -62,6 +62,42 @@ function parseResourceJson(readResult, uri) {
   }
 }
 
+/** Extract raw text from a resource read result */
+function getResourceText(readResult, uri) {
+  const first = readResult?.contents?.[0];
+  if (!first || typeof first.text !== 'string') {
+    throw new Error(`Resource ${uri} did not return text content`);
+  }
+  return first.text;
+}
+
+/** Parse status from task:///{id} markdown (looks for "| Status | <value> |") */
+function parseStatusFromTaskMarkdown(md) {
+  const match = md.match(/\|\s*Status\s*\|\s*(\S+)\s*\|/);
+  return match ? match[1] : null;
+}
+
+/** Parse task:///all markdown table into array of {id, status} */
+function parseTasksFromAllMarkdown(md) {
+  const tasks = [];
+  // Match data rows in the table (skip header + separator)
+  const lines = md.split('\n');
+  let inTable = false;
+  for (const line of lines) {
+    if (line.startsWith('| ID ')) { inTable = true; continue; }
+    if (inTable && line.startsWith('|---')) continue;
+    if (inTable && line.startsWith('| ')) {
+      const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+      if (cells.length >= 2) {
+        tasks.push({ id: cells[0], status: cells[1] });
+      }
+    } else if (inTable) {
+      break; // end of table
+    }
+  }
+  return tasks;
+}
+
 function resolveProvider(task) {
   return task?.provider ?? task?.sessionMetrics?.provider ?? 'n/a';
 }
@@ -113,8 +149,8 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
 
   while (Date.now() - startedAt < waitTimeoutMs) {
     const taskRead = await client.readResource({ uri: `task:///${taskId}` });
-    const task = parseResourceJson(taskRead, `task:///${taskId}`);
-    const status = task?.status;
+    const md = getResourceText(taskRead, `task:///${taskId}`);
+    const status = parseStatusFromTaskMarkdown(md);
 
     if (status !== lastStatus) {
       log(`task ${taskId} status: ${status}`);
@@ -122,7 +158,7 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
     }
 
     if (TERMINAL_STATUSES.has(status)) {
-      return task;
+      return { id: taskId, status, _raw: md };
     }
 
     await sleep(POLL_INTERVAL_MS);
@@ -148,12 +184,15 @@ async function spawnAndWait(client, cwd, index, prompt, taskTimeoutMs, waitTimeo
   log(`spawned task #${index}: ${taskId}`);
 
   // Must be readable immediately in the same persistent session.
-  await client.readResource({ uri: `task:///${taskId}` });
+  const immediateRead = await client.readResource({ uri: `task:///${taskId}` });
+  const immediateMd = getResourceText(immediateRead, `task:///${taskId}`);
+  assert(immediateMd.includes(taskId), `task:///${taskId} did not contain task ID in response`);
 
   const finalTask = await waitForTerminalStatus(client, taskId, waitTimeoutMs);
   assert(finalTask.status, `Task ${taskId} returned without status`);
 
-  if (finalTask.timeoutReason === 'server_restart') {
+  // Check for server_restart in the markdown error field
+  if (finalTask._raw && finalTask._raw.includes('server_restart')) {
     throw new Error(`Task ${taskId} ended with server_restart (persistent session check failed)`);
   }
 
@@ -239,42 +278,44 @@ async function main() {
     const first = await spawnAndWait(client, cwd, 1, firstPrompt, taskTimeoutMs, waitTimeoutMs);
     const second = await spawnAndWait(client, cwd, 2, secondPrompt, taskTimeoutMs, waitTimeoutMs);
 
+    // Load persisted tasks for provider/fallback checks (on-disk JSON, not MCP resource)
     const persistedMap = await loadPersistedTaskMap(cwd);
-    const mergedFirst = mergeTaskFromPersisted(first, persistedMap.get(first.id));
-    const mergedSecond = mergeTaskFromPersisted(second, persistedMap.get(second.id));
+    const persistedFirst = persistedMap.get(first.id);
+    const persistedSecond = persistedMap.get(second.id);
 
     const allTasksRead = await client.readResource({ uri: 'task:///all' });
-    const allTasks = parseResourceJson(allTasksRead, 'task:///all');
-    assert(Array.isArray(allTasks.tasks), 'task:///all did not return tasks array');
-    log(`task:///all visible in-session (count=${allTasks.count})`);
+    const allTasksMd = getResourceText(allTasksRead, 'task:///all');
+    const parsedTasks = parseTasksFromAllMarkdown(allTasksMd);
+    assert(parsedTasks.length >= 2, `task:///all should list at least 2 tasks, got ${parsedTasks.length}`);
+    log(`task:///all visible in-session (count=${parsedTasks.length})`);
 
     log('final task outcomes:');
-    log(`- ${mergedFirst.id}: ${mergedFirst.status}`);
-    log(`- ${mergedSecond.id}: ${mergedSecond.status}`);
-    const firstProvider = resolveProvider(mergedFirst);
-    const secondProvider = resolveProvider(mergedSecond);
-    log(`- ${mergedFirst.id} provider: ${firstProvider} fallbackActivated: ${mergedFirst.sessionMetrics?.fallbackActivated ?? false}`);
-    log(`- ${mergedSecond.id} provider: ${secondProvider} fallbackActivated: ${mergedSecond.sessionMetrics?.fallbackActivated ?? false}`);
+    log(`- ${first.id}: ${first.status}`);
+    log(`- ${second.id}: ${second.status}`);
+    const firstProvider = resolveProvider(persistedFirst);
+    const secondProvider = resolveProvider(persistedSecond);
+    log(`- ${first.id} provider: ${firstProvider} fallbackActivated: ${persistedFirst?.sessionMetrics?.fallbackActivated ?? false}`);
+    log(`- ${second.id} provider: ${secondProvider} fallbackActivated: ${persistedSecond?.sessionMetrics?.fallbackActivated ?? false}`);
 
     if (requireCompleted) {
-      assert(mergedFirst.status === 'completed', `Task ${mergedFirst.id} not completed (status=${mergedFirst.status})`);
-      assert(mergedSecond.status === 'completed', `Task ${mergedSecond.id} not completed (status=${mergedSecond.status})`);
+      assert(first.status === 'completed', `Task ${first.id} not completed (status=${first.status})`);
+      assert(second.status === 'completed', `Task ${second.id} not completed (status=${second.status})`);
       log('requireCompleted=true check passed');
     }
 
     if (expectedProvider) {
-      assert(firstProvider === expectedProvider, `Task ${mergedFirst.id} provider mismatch: expected=${expectedProvider} actual=${firstProvider}`);
-      assert(secondProvider === expectedProvider, `Task ${mergedSecond.id} provider mismatch: expected=${expectedProvider} actual=${secondProvider}`);
+      assert(firstProvider === expectedProvider, `Task ${first.id} provider mismatch: expected=${expectedProvider} actual=${firstProvider}`);
+      assert(secondProvider === expectedProvider, `Task ${second.id} provider mismatch: expected=${expectedProvider} actual=${secondProvider}`);
       log(`expectedProvider=${expectedProvider} check passed`);
     }
 
     if (expectFallbackActivated === 'true') {
-      assert(mergedFirst.sessionMetrics?.fallbackActivated === true, `Task ${mergedFirst.id} fallbackActivated was not true`);
-      assert(mergedSecond.sessionMetrics?.fallbackActivated === true, `Task ${mergedSecond.id} fallbackActivated was not true`);
+      assert(persistedFirst?.sessionMetrics?.fallbackActivated === true, `Task ${first.id} fallbackActivated was not true`);
+      assert(persistedSecond?.sessionMetrics?.fallbackActivated === true, `Task ${second.id} fallbackActivated was not true`);
       log('expectFallbackActivated=true check passed');
     } else if (expectFallbackActivated === 'false') {
-      assert(mergedFirst.sessionMetrics?.fallbackActivated !== true, `Task ${mergedFirst.id} fallbackActivated unexpectedly true`);
-      assert(mergedSecond.sessionMetrics?.fallbackActivated !== true, `Task ${mergedSecond.id} fallbackActivated unexpectedly true`);
+      assert(persistedFirst?.sessionMetrics?.fallbackActivated !== true, `Task ${first.id} fallbackActivated unexpectedly true`);
+      assert(persistedSecond?.sessionMetrics?.fallbackActivated !== true, `Task ${second.id} fallbackActivated unexpectedly true`);
       log('expectFallbackActivated=false check passed');
     }
 

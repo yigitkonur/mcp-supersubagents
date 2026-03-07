@@ -682,6 +682,15 @@ function canSendMessage(task: { status: TaskStatus; sessionId?: string }): boole
   return !!(task.sessionId && allowedStatuses.includes(task.status));
 }
 
+function formatRelativeTime(iso: string | undefined): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0 || !Number.isFinite(ms)) return '—';
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  return `${Math.round(ms / 3_600_000)}h ago`;
+}
+
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   try {
   const uri = request.params.uri;
@@ -708,6 +717,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
           completed: allTasks.filter(t => t.status === TaskStatus.COMPLETED).length,
           failed: allTasks.filter(t => t.status === TaskStatus.FAILED).length,
           rate_limited: allTasks.filter(t => t.status === TaskStatus.RATE_LIMITED).length,
+          waiting_answer: allTasks.filter(t => t.status === TaskStatus.WAITING_ANSWER).length,
           pending: allTasks.filter(t => t.status === TaskStatus.PENDING).length,
           waiting: allTasks.filter(t => t.status === TaskStatus.WAITING).length,
         },
@@ -726,43 +736,69 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
   
-  // Handle task:///all - replaces list_tasks
+  // Handle task:///all - compact markdown table
   if (uri === TASK_ALL_URI) {
     const allTasks = taskManager.getAllTasks();
-    
-    const data = {
-      count: allTasks.length,
-      tasks: allTasks.map(task => {
-        const stats = task.cachedStats || { round: 0, totalMessages: 0 };
-        return {
-          id: task.id,
-          status: task.status,
-          round: stats.round,
-          total_messages: stats.totalMessages,
-          last_user_message: stats.lastUserMessage,
-          labels: task.labels,
-          has_pending_question: !!task.pendingQuestion,
-          pending_question: task.pendingQuestion?.question,
-          can_send_message: canSendMessage(task),
-          session_id: task.sessionId,
-          started: task.startTime,
-          ended: task.endTime,
-        };
-      }),
-      pending_questions: allTasks
-        .filter(t => t.pendingQuestion)
-        .map(t => {
-          const q = t.pendingQuestion;
-          if (!q) return null;
-          return { task_id: t.id, question: q.question, choices: q.choices };
-        }).filter(Boolean),
-    };
-    
+    const activeCount = allTasks.filter(t => !isTerminalStatus(t.status)).length;
+    const lines: string[] = [];
+
+    lines.push(`# Tasks (${activeCount} active, ${allTasks.length} total)`);
+    lines.push('');
+
+    if (allTasks.length === 0) {
+      lines.push('No tasks yet. Use a `launch-*` tool to create one.');
+    } else {
+      lines.push('| ID | Status | Prompt | Lines | Last Activity |');
+      lines.push('|---|---|---|---|---|');
+      for (const task of allTasks) {
+        const prompt = (task.prompt || '').replace(/\n/g, ' ').slice(0, 30);
+        const promptCell = prompt.length >= 30 ? prompt + '…' : prompt;
+        const outputLines = task.output?.length ?? 0;
+        const lastActivity = formatRelativeTime(task.lastOutputAt || task.endTime || task.startTime);
+
+        // Build descriptive status cell
+        let statusCell: string = task.status;
+        if (task.status === TaskStatus.WAITING && task.dependsOn?.length) {
+          statusCell = `waiting → ${task.dependsOn.join(', ')}`;
+        } else if (task.status === TaskStatus.WAITING_ANSWER) {
+          statusCell = 'waiting_answer ⏸';
+        } else if (task.status === TaskStatus.RATE_LIMITED && task.retryInfo) {
+          statusCell = `rate_limited (retry ${task.retryInfo.retryCount}/${task.retryInfo.maxRetries})`;
+        }
+
+        lines.push(`| ${task.id} | ${statusCell} | ${promptCell} | ${outputLines} | ${lastActivity} |`);
+      }
+      lines.push('');
+      lines.push('> Details: `task:///{id}` · Full logs: `cat -n <output_file>` · Poll: read `task:///all` every 30s to track progress');
+    }
+
+    // Pending questions section
+    const tasksWithQuestions = allTasks.filter(t => t.pendingQuestion);
+    if (tasksWithQuestions.length > 0) {
+      lines.push('');
+      lines.push(`## Pending Questions (${tasksWithQuestions.length})`);
+      lines.push('');
+      for (const task of tasksWithQuestions) {
+        const pq = task.pendingQuestion!;
+        lines.push(`### ${task.id}`);
+        lines.push('');
+        lines.push(`**Q:** ${pq.question}`);
+        if (pq.choices?.length) {
+          for (let i = 0; i < pq.choices.length; i++) {
+            lines.push(`  ${i + 1}. ${pq.choices[i]}`);
+          }
+        }
+        lines.push('');
+        lines.push(`Answer: \`answer-agent { "task_id": "${task.id}", "answer": "1" }\``);
+        lines.push('');
+      }
+    }
+
     return {
       contents: [{
         uri,
-        mimeType: 'application/json',
-        text: JSON.stringify(data),
+        mimeType: 'text/markdown',
+        text: lines.join('\n'),
       }],
     };
   }
@@ -802,7 +838,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
   
-  // Handle task:///{id} - replaces get_status
+  // Handle task:///{id} - compact markdown detail
   const taskId = uriToTaskId(uri);
   if (!taskId) {
     throw new McpError(ErrorCode.InvalidParams, `Invalid resource URI: ${uri}`);
@@ -814,82 +850,90 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
   const msgStats = extractMessageStats(task.output);
   const filtered = filterOutputForResource(task.output);
-  
-  const data = {
-    id: task.id,
-    status: task.status,
-    session_id: task.sessionId,
-    can_send_message: canSendMessage(task),
-    
-    // Progress tracking
-    progress: {
-      round: msgStats.round,
-      total_messages: msgStats.totalMessages,
-    },
-    
-    // Output (filtered for token efficiency)
-    output_lines: task.output.length,
-    output_tail: filtered.slice(-50).join('\n'),
-    
-    // Timing
-    started: task.startTime,
-    ended: task.endTime,
-    exit_code: task.exitCode,
-    error: task.error,
-    
-    // Config
-    cwd: task.cwd,
-    model: task.model,
-    labels: task.labels,
-    depends_on: task.dependsOn,
-    
-    // Pending question (if any)
-    pending_question: task.pendingQuestion ? {
-      question: task.pendingQuestion.question,
-      choices: task.pendingQuestion.choices,
-      allow_freeform: task.pendingQuestion.allowFreeform,
-    } : undefined,
-    
-    // Rate limit info
-    retry_info: task.retryInfo ? {
-      reason: task.retryInfo.reason,
-      retry_count: task.retryInfo.retryCount,
-      max_retries: task.retryInfo.maxRetries,
-      next_retry: task.retryInfo.nextRetryTime,
-    } : undefined,
-    
-    // SDK metrics
-    quota_info: task.quotaInfo ? {
-      remaining_pct: task.quotaInfo.remainingPercentage,
-      reset_date: task.quotaInfo.resetDate,
-    } : undefined,
-    completion_metrics: task.completionMetrics ? {
-      api_calls: task.completionMetrics.totalApiCalls,
-      code_changes: {
-        added: task.completionMetrics.codeChanges.linesAdded,
-        removed: task.completionMetrics.codeChanges.linesRemoved,
-        files: task.completionMetrics.codeChanges.filesModified.length,
-      },
-    } : undefined,
-    session_metrics: task.sessionMetrics ? {
-      turns: task.sessionMetrics.turnCount,
-      tokens: (task.sessionMetrics.totalTokens?.input || 0) + (task.sessionMetrics.totalTokens?.output || 0),
-      tools: Object.keys(task.sessionMetrics.toolMetrics || {}).length,
-    } : undefined,
-    
-    // Failure context
-    failure_context: task.failureContext ? {
-      type: task.failureContext.errorType,
-      status_code: task.failureContext.statusCode,
-      recoverable: task.failureContext.recoverable,
-    } : undefined,
-  };
+  const md: string[] = [];
+
+  md.push(`# ${task.id}`);
+  md.push('');
+
+  // Compact status table — essentials only
+  const turns = task.sessionMetrics?.turnCount ?? msgStats.round;
+  const totalTokens = task.sessionMetrics
+    ? (task.sessionMetrics.totalTokens?.input || 0) + (task.sessionMetrics.totalTokens?.output || 0)
+    : undefined;
+  md.push('| Field | Value |');
+  md.push('|---|---|');
+  // Descriptive status — same logic as task:///all
+  let detailStatus = task.status as string;
+  if (task.status === TaskStatus.WAITING && task.dependsOn?.length) {
+    detailStatus = `waiting → ${task.dependsOn.join(', ')}`;
+  } else if (task.status === TaskStatus.WAITING_ANSWER) {
+    detailStatus = 'waiting_answer ⏸';
+  }
+  md.push(`| Status | ${detailStatus} |`);
+  md.push(`| Model | ${task.model || '—'} |`);
+  md.push(`| Turns | ${turns} |`);
+  md.push(`| Output lines | ${task.output.length} |`);
+  if (totalTokens) md.push(`| Tokens | ${totalTokens.toLocaleString()} |`);
+  md.push(`| Started | ${formatRelativeTime(task.startTime)} |`);
+  if (task.endTime) md.push(`| Ended | ${formatRelativeTime(task.endTime)} |`);
+  if (task.error) md.push(`| Error | ${task.error.slice(0, 120)} |`);
+  if (task.exitCode !== undefined && task.exitCode !== null) md.push(`| Exit code | ${task.exitCode} |`);
+  if (canSendMessage(task)) md.push(`| Resumable | yes — use \`message-agent\` |`);
+
+  // Pending question — compact
+  if (task.pendingQuestion) {
+    md.push('');
+    md.push('## Pending Question');
+    md.push('');
+    md.push(`**Q:** ${task.pendingQuestion.question}`);
+    if (task.pendingQuestion.choices?.length) {
+      for (let i = 0; i < task.pendingQuestion.choices.length; i++) {
+        md.push(`  ${i + 1}. ${task.pendingQuestion.choices[i]}`);
+      }
+    }
+    md.push('');
+    md.push(`Answer: \`answer-agent { "task_id": "${task.id}", "answer": "1" }\``);
+  }
+
+  // Rate limit info
+  if (task.retryInfo) {
+    md.push('');
+    md.push(`**Rate limited:** retry ${task.retryInfo.retryCount}/${task.retryInfo.maxRetries} — ${task.retryInfo.reason || 'unknown'}`);
+    if (task.retryInfo.nextRetryTime) md.push(`Next retry: ${formatRelativeTime(task.retryInfo.nextRetryTime)}`);
+  }
+
+  // Metrics — single line
+  if (task.completionMetrics) {
+    const cm = task.completionMetrics;
+    md.push('');
+    md.push(`**Metrics:** ${cm.totalApiCalls} API calls · +${cm.codeChanges.linesAdded}/-${cm.codeChanges.linesRemoved} lines · ${cm.codeChanges.filesModified.length} files`);
+  }
+
+  // Output tail — 20 lines, filtered to actionable prefixes only
+  const actionable = filtered.filter(l =>
+    l.startsWith('[tool]') || l.startsWith('[file]') || l.startsWith('[error]') ||
+    l.startsWith('[question]') || l.startsWith('--- Turn') || l.startsWith('[assistant]')
+  );
+  const tail = actionable.slice(-20);
+  if (tail.length > 0) {
+    md.push('');
+    md.push('## Recent Activity');
+    md.push('');
+    md.push('```');
+    for (const line of tail) md.push(line);
+    md.push('```');
+  }
+
+  // Output file pointer
+  const outputPath = task.outputFilePath || `{cwd}/.super-agents/${task.id}.output`;
+  md.push('');
+  md.push(`> Full logs: \`cat -n ${outputPath}\``);
 
   return {
     contents: [{
       uri,
-      mimeType: 'application/json',
-      text: JSON.stringify(data),
+      mimeType: 'text/markdown',
+      text: md.join('\n'),
     }],
   };
   } catch (err) {

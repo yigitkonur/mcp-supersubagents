@@ -59,7 +59,8 @@ class QuestionRegistry {
     sessionId: string,
     question: string,
     choices?: string[],
-    allowFreeform: boolean = true
+    allowFreeform: boolean = true,
+    providerName: string = 'Agent',
   ): Promise<UserInputResponse> {
     // Enforce max concurrent pending questions to prevent unbounded memory growth
     if (this.bindings.size >= MAX_PENDING_QUESTIONS && !this.bindings.has(taskId.toLowerCase())) {
@@ -103,8 +104,8 @@ class QuestionRegistry {
         sessionId,
       };
 
-      taskManager.updateTask(taskId, { pendingQuestion });
-      taskManager.appendOutput(taskId, `\n[question] Copilot is asking: ${question}`);
+      taskManager.updateTask(taskId, { pendingQuestion, status: TaskStatus.WAITING_ANSWER });
+      taskManager.appendOutput(taskId, `\n[question] ${providerName} is asking: ${question}`);
       
       if (choices && choices.length > 0) {
         const choiceList = choices.map((c, i) => `  ${i + 1}. ${c}`).join('\n');
@@ -162,8 +163,8 @@ class QuestionRegistry {
       wasFreeform: parseResult.wasFreeform!,
     });
 
-    // Clear the pending question from task state
-    taskManager.updateTask(taskId, { pendingQuestion: undefined });
+    // Clear the pending question and resume running
+    taskManager.updateTask(taskId, { pendingQuestion: undefined, status: TaskStatus.RUNNING });
     taskManager.appendOutput(taskId, `[question] Answer submitted: ${parseResult.answer}`);
 
     // Remove from registry
@@ -294,9 +295,15 @@ class QuestionRegistry {
 
       clearTimeout(binding.timeoutId);
       binding.reject(new Error(`Question cleared: ${reason}`));
-      
+
       taskManager.updateTask(taskId, { pendingQuestion: undefined });
-      
+
+      // Restore to RUNNING if still in WAITING_ANSWER
+      const t = taskManager.getTask(taskId);
+      if (t && t.status === TaskStatus.WAITING_ANSWER) {
+        taskManager.updateTask(taskId, { status: TaskStatus.RUNNING });
+      }
+
       this.bindings.delete(normalizedId);
 
       console.error(`[question-registry] Question cleared for task ${taskId}: ${reason}`);

@@ -20,7 +20,7 @@ export const launchSuperTesterTool = {
 **Workflow:** researcher → planner → coder → **TESTER**
 Chain with depends_on after coder.
 
-**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` every ~30s to monitor all tasks (status, deps, questions). Statuses: \`running\`, \`waiting → <dep>\`, \`waiting_answer ⏸\`, \`completed\`, \`failed\`.`,
 
   inputSchema: {
     type: 'object' as const,

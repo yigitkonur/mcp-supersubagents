@@ -17,6 +17,7 @@ import {
   assemblePromptWithContext,
 } from '../utils/brief-validator.js';
 import { baseSpawnFields, contextFileSchema } from './spawn-schemas.js';
+import { getQuestionGuidance } from '../config/question-guidance.js';
 
 /**
  * Shared error recovery: attempt fallback, mark FAILED if no fallback available.
@@ -183,14 +184,18 @@ export async function handleSharedSpawn(
     );
   }
 
-  // 6. Create the task (provider-agnostic)
+  // 6. Append provider-specific question guidance to the prompt
+  const questionGuidance = getQuestionGuidance(selection.provider.id);
+  const promptWithGuidance = finalPrompt + questionGuidance;
+
+  // 7. Create the task (provider-agnostic)
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
   const cwd = params.cwd || clientContext.getDefaultCwd();
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const taskType = config.taskType || 'super-coder';
 
   try {
-    const task = taskManager.createTask(finalPrompt, cwd, model, {
+    const task = taskManager.createTask(promptWithGuidance, cwd, model, {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
       provider: selection.provider.id,
@@ -215,7 +220,9 @@ export async function handleSharedSpawn(
         '',
         `**Waiting on:** ${depsList}`,
         '',
-        'Task will auto-start when dependencies complete. Continue with other work.',
+        'Task will auto-start when dependencies complete.',
+        '',
+        '**Monitor:** Read `task:///all` — shows all tasks with status, deps, and pending questions in one table. Re-read every ~30s to track progress.',
       ].filter(Boolean);
       return mcpText(parts.join('\n'));
     }
@@ -232,7 +239,7 @@ export async function handleSharedSpawn(
       const handle = createTaskHandle(taskId);
       selectedProvider.spawn({
         taskId,
-        prompt: finalPrompt,
+        prompt: promptWithGuidance,
         cwd,
         model: providerModel,
         timeout,
@@ -247,7 +254,7 @@ export async function handleSharedSpawn(
           reason: `${selectedProvider.id}_spawn_error`,
           err,
           cwd,
-          promptOverride: finalPrompt,
+          promptOverride: promptWithGuidance,
         });
       });
     });
@@ -265,12 +272,11 @@ export async function handleSharedSpawn(
         : null,
       task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
-      '',
-      '**Optional progress check:**',
-      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      task.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
-      `- Read resource: \`task:///${taskId}\``,
+      '**Monitor:** Read `task:///all` every ~30s — compact table shows status, deps, and pending questions for all tasks.',
+      `- \`waiting_answer\` → agent needs input — answer via \`answer-agent\``,
+      `- \`waiting → <id>\` → blocked on another task`,
+      `- For detail: \`task:///${taskId}\``,
+      task.outputFilePath ? `- Full logs: \`cat -n ${task.outputFilePath}\`` : null,
       qualityTip ? '' : null,
       qualityTip,
     ].filter(Boolean);

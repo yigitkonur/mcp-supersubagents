@@ -17,9 +17,9 @@ const AnswerQuestionSchema = z.object({
 
 export const answerAgentTool = {
   name: 'answer-agent',
-  description: `Submit an answer to a pending question from an agent. When an agent pauses because it asked a question (via ask_user tool), use this to respond and resume execution.
+  description: `Submit an answer to a pending question from an agent. When an agent pauses because it asked a question, use this to respond and resume execution.
 
-**When to call:** An agent's status shows "input_required" or the \`task:///all\` resource shows a pending question for a task.
+**When to call:** Read \`task:///all\` — tasks with status \`waiting_answer\` have a "Pending Questions" section showing the question, choices, and an example answer-agent call.
 
 **Answer formats:**
 - **Choice by number**: \`"1"\`, \`"2"\`, \`"3"\` — selects the corresponding option
@@ -32,14 +32,14 @@ answer-agent { "task_id": "abc123", "answer": "2" }
 answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
 \`\`\`
 
-**Find pending questions:** Read MCP Resource \`task:///all\` — tasks with \`has_pending_question: true\` need answers.`,
+**Find pending questions:** Read \`task:///all\` — look for the "Pending Questions" section.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: {
         type: 'string',
         minLength: 1,
-        description: 'Task ID with pending question. Find via task:///all — look for has_pending_question: true.',
+        description: 'Task ID with pending question. Find via task:///all — look for waiting_answer status.',
       },
       answer: {
         type: 'string',
@@ -119,16 +119,11 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
     const parts: (string | null)[] = [
       `✅ **Answer submitted**`,
       `task_id: \`${taskId}\``,
-      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
       '',
       question ? `**Question:** ${question.question}` : null,
       `**Answer:** ${result.resolvedAnswer}`,
       '',
-      'Task execution resumed. MCP notifications will alert on completion—no need to poll.',
-      '',
-      '**Optional progress check:**',
-      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      `- Read resource: \`task:///${taskId}\``,
+      'Task resumed. Read `task:///all` every ~30s to track progress — status changes to `running`.',
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

@@ -1,12 +1,12 @@
 import type { Task as MCPTask } from '@modelcontextprotocol/sdk/types.js';
-import { TaskState, TaskStatus, isTerminalStatus } from '../types.js';
+import { TaskState, TaskStatus } from '../types.js';
 import { TASK_TTL_MS } from '../config/timeouts.js';
 
 type MCPStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
 
 /**
- * Map internal 8-state model to MCP 5-state model.
- * Note: input_required is handled separately in buildMCPTask based on pendingQuestion.
+ * Map internal 9-state model to MCP 5-state model.
+ * WAITING_ANSWER maps directly to input_required — no override hack needed.
  */
 export function mapInternalStatusToMCP(status: TaskStatus): MCPStatus {
   switch (status) {
@@ -15,6 +15,8 @@ export function mapInternalStatusToMCP(status: TaskStatus): MCPStatus {
     case TaskStatus.RUNNING:
     case TaskStatus.RATE_LIMITED:
       return 'working';
+    case TaskStatus.WAITING_ANSWER:
+      return 'input_required';
     case TaskStatus.COMPLETED:
       return 'completed';
     case TaskStatus.FAILED:
@@ -158,6 +160,14 @@ export function buildStatusMessage(task: TaskState): string {
     case TaskStatus.CANCELLED:
       return 'Cancelled';
 
+    case TaskStatus.WAITING_ANSWER: {
+      const q = task.pendingQuestion?.question ?? '';
+      const preview = q.length > 40 ? q.slice(0, 40) + '…' : q;
+      const parts: string[] = ['Waiting for answer'];
+      if (preview) parts.push(`question: ${preview}`);
+      return parts.join(' | ');
+    }
+
     case TaskStatus.RATE_LIMITED: {
       const parts: string[] = ['⏸ Paused (rate limited)'];
       
@@ -236,6 +246,9 @@ export function computePollInterval(task: TaskState): number | undefined {
     case TaskStatus.WAITING:
       return 60_000;
 
+    case TaskStatus.WAITING_ANSWER:
+      return 10_000;
+
     case TaskStatus.RATE_LIMITED: {
       // Use quota reset date if available for more accurate polling
       if (task.quotaInfo?.resetDate) {
@@ -288,9 +301,7 @@ function getLastUpdatedAt(task: TaskState): string {
  * Includes enhanced status message with SDK metrics.
  */
 export function buildMCPTask(task: TaskState): MCPTask {
-  const baseStatus = mapInternalStatusToMCP(task.status);
-  // Override to input_required when task has a pending question
-  const status = task.pendingQuestion && !isTerminalStatus(task.status) ? 'input_required' : baseStatus;
+  const status = mapInternalStatusToMCP(task.status);
   return {
     taskId: task.id,
     status,
