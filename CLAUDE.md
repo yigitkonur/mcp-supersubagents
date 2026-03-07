@@ -73,11 +73,12 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` or `CODEX_API_KEY` | (required for Codex) | API key for Codex SDK |
+| `OPENAI_API_KEY` or `CODEX_API_KEY` | (optional*) | API key for Codex (*or use `codex auth` for CLI auth via `~/.codex/auth.json`) |
 | `CODEX_PATH` | auto-detect | Override Codex CLI binary path |
 | `CODEX_MODEL` | `o4-mini` | Default model for Codex tasks |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Sandbox: `read-only`, `workspace-write`, `danger-full-access` |
 | `CODEX_APPROVAL_POLICY` | `never` | Approval: `never`, `on-request`, `on-failure`, `untrusted` |
+| `CODEX_USE_SDK` | `false` | Force SDK mode instead of app-server protocol (app-server is default when `codex` binary is found) |
 | `MAX_CONCURRENT_CODEX_SESSIONS` | `5` | Max simultaneous Codex sessions |
 
 ### Claude fallback
@@ -103,7 +104,7 @@ class TaskManager { ... }
 export const taskManager = new TaskManager();
 ```
 
-Singletons: `taskManager`, `accountManager`, `sdkClientManager`, `sdkSessionAdapter`, `processRegistry`, `questionRegistry`, `progressRegistry`, `subscriptionRegistry`, `clientContext`, `providerRegistry`.
+Singletons: `taskManager`, `accountManager`, `sdkClientManager`, `sdkSessionAdapter`, `processRegistry`, `questionRegistry`, `progressRegistry`, `subscriptionRegistry`, `clientContext`, `providerRegistry`, `hookStateWriter`.
 
 Services import each other's singletons directly. Circular dependencies are broken with lazy `await import()` inside methods (e.g., `task-manager.ts` imports `claude-code-runner.ts` lazily).
 
@@ -118,7 +119,8 @@ All AI backends implement the `ProviderAdapter` interface (`types.ts`). The `Pro
 | `copilot-adapter.ts` | Wraps Copilot SDK (`sdk-spawner.ts`, `sdk-session-adapter.ts`, `sdk-client-manager.ts`) |
 | `copilot-session-runner.ts` | Bridge: delegates `spawn()` to `executeWaitingTask()` in sdk-spawner |
 | `claude-adapter.ts` | Wraps `claude-code-runner.ts` |
-| `codex-adapter.ts` | Full OpenAI Codex SDK integration (`@openai/codex-sdk`) |
+| `codex-adapter.ts` | Codex provider: app-server protocol (default) with SDK fallback (`@openai/codex-sdk`) |
+| `codex-app-server.ts` | JSON-RPC client for the Codex app-server v2 protocol |
 | `fallback-handler.ts` | Generic fallback: `triggerFallback()` walks chain for next available provider |
 | `index.ts` | Public API re-exports |
 
@@ -139,7 +141,7 @@ MCP client calls spawn_agent
     7. setImmediate → provider.spawn() (returns task ID immediately)
   → Provider-specific execution:
     Copilot: copilot-session-runner.ts → executeWaitingTask() → runSDKSession()
-    Codex:   codex-adapter.ts → Codex SDK thread.runStreamed()
+    Codex:   codex-adapter.ts → app-server (thread/start + turn/start) or SDK fallback
     Claude:  claude-adapter.ts → runClaudeCodeSession()
   → On provider failure:
     triggerFallback() → providerRegistry.selectFallback() → next provider
@@ -258,6 +260,46 @@ processRegistry.killTask(taskId):
 - **Callbacks** — task-manager registers `onExecute`, `onRetry`, `onOutput`, `onStatusChange`; session adapter registers `onRotationRequest` with the spawner
 - **No event bus** — communication is explicit, no pub/sub between services
 
+### Proactive Task Notifications
+
+Claude Code's MCP implementation has gaps that prevent standard notification paths from working reliably ([anthropics/claude-code#31893](https://github.com/anthropics/claude-code/issues/31893)):
+
+- `notifications/tasks/status` — custom method, Claude Code has no handler
+- `notifications/progress` — only works mid-tool-call with a progressToken
+- `sendResourceUpdated` — requires client subscription, Claude Code rarely subscribes
+- `sendResourceListChanged` — re-fetches the resource *list* but doesn't re-read individual resources
+
+Two complementary workarounds are implemented together:
+
+**Approach 1: Tool Description Hack + `list_changed`** (`src/services/tool-description-banner.ts`)
+
+When a task reaches terminal status or asks a question, the server sends `notifications/tools/list_changed` (debounced 1s). Claude Code re-fetches the tool list. The `description` fields on `answer-agent` and `message-agent` are TypeScript getters that call `buildStatusBanner()` / `buildStatusBannerForAnswerAgent()` — returning the base description plus a live status footer (max 500 chars) showing running/completed/question-pending tasks. The banner is computed on-demand from `taskManager.getAllTasks()` and `questionRegistry.getAllPendingQuestions()`.
+
+```
+message-agent description footer:
+---
+AGENT STATUS: 2 running | 1 needs answer | 1 just completed
+- abc123 [completed] coder (2min ago)  output: /path/.super-agents/abc123.output
+- def456 [input_required] — waiting for answer
+Read task:///all for full details.
+```
+
+**Approach 2: Hooks Bridge** (`src/services/hook-state-writer.ts` + `scripts/super-agents-hook.sh`)
+
+The server writes task events to `{cwd}/.super-agents/hook-state.json`. A PostToolUse hook script reads unseen events (`seenAt: null`) and returns `{"additionalContext": "..."}`, which Claude Code injects into the conversation after every tool call. This provides mid-turn reactivity.
+
+The hook state file uses a Map keyed by taskId (latest event wins), atomic writes (temp → fdatasync → rename), and stale event cleanup (seenAt + 1 hour). The bash script uses `jq` with `python3` fallback, runs in ~10ms.
+
+```
+Notification flow:
+  Task completes/fails/asks question
+    → onStatusChange / onQuestionAsked callbacks in index.ts
+    → scheduleToolListChanged() — debounced, sends tools/list_changed
+    → hookStateWriter.notifyStatusChange() / notifyQuestion() — writes hook-state.json
+    → Next tool call: hook script reads unseen events → additionalContext injection
+    → Next ListTools request: getter computes fresh banner from live state
+```
+
 ---
 
 ## Critical Code Patterns
@@ -356,6 +398,9 @@ File limits: max 20 files, 200KB each, 500KB total. Files must be absolute paths
 - **`approveAll` from SDK** — The permission handler uses the SDK-exported `approveAll` helper for the default `allow_all` mode. Only the `safe` mode (`COPILOT_PERMISSION_MODE=safe`) uses a custom handler.
 - **Claude fallback uses `bypassPermissions`** — Changed from `plan` for parity with Copilot's `approveAll` handler. Override with `CLAUDE_FALLBACK_PERMISSION_MODE=plan` if needed. Mode suffix prompts are appended to the fallback prompt for fleet/plan behavioral differentiation.
 - **`autonomous` and `enable_fleet` are legacy** — Both remain in schemas for backward compatibility. `resolveMode()` in `sdk-spawner.ts` resolves: explicit `mode` > `enableFleet` legacy flag > default `fleet`. Setting `autonomous: false` has no effect on mode — all modes auto-run.
+- **Tool descriptions are getters, not static strings** — `messageAgentTool.description` and `answerAgentTool.description` are TypeScript `get` accessors that compute a live status banner on every access. Do not convert them back to plain string properties — the banner is computed from `taskManager`/`questionRegistry` state at call time. The `McpToolDefinition` interface accepts this because getter properties satisfy `string` type.
+- **`scheduleToolListChanged()` is debounced and `.unref()`'d** — Multiple rapid status changes produce a single `tools/list_changed` notification (1s debounce). The timer is `.unref()`'d so it doesn't prevent process exit. Cleared in the shutdown handler alongside other timers.
+- **Hook state file is best-effort** — `hookStateWriter` uses swallow-tier error handling (log to stderr, never throw). The hook script also exits 0 on all error paths. Neither can block or crash the server.
 
 ---
 

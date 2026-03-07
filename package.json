@@ -7,10 +7,12 @@
   "bin": {
     "mcp-supersubagents": "build/index.js",
     "copilot-mcp-server": "build/index.js",
-    "super-subagents": "build/index.js"
+    "super-subagents": "build/index.js",
+    "super-agents-install-hooks": "scripts/install-hooks.sh"
   },
   "files": [
-    "build"
+    "build",
+    "scripts"
   ],
   "repository": {
     "type": "git",
@@ -28,7 +30,8 @@
     "clean": "rm -rf build",
     "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs",
     "test:compat": "node scripts/model-provider-compat-test.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "install-hooks": "bash scripts/install-hooks.sh"
   },
   "keywords": [
     "mcp",

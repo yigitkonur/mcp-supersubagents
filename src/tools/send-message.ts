@@ -14,6 +14,7 @@ import { TaskStatus } from '../types.js';
 import type { ToolContext } from '../types.js';
 import { mcpText, mcpError } from '../utils/format.js';
 import { TASK_TIMEOUT_MAX_MS, TASK_TIMEOUT_MIN_MS, TASK_TIMEOUT_DEFAULT_MS } from '../config/timeouts.js';
+import { buildStatusBanner } from '../services/tool-description-banner.js';
 const resumeInProgress = new Set<string>();
 
 const SendMessageSchema = z.object({
@@ -23,15 +24,20 @@ const SendMessageSchema = z.object({
   cwd: z.string().optional(),
 });
 
-export const messageAgentTool = {
-  name: 'message-agent',
-  description: `Send a follow-up message to an existing agent session. Resumes the session — the agent continues from where it left off.
+const MESSAGE_AGENT_BASE_DESC = `Send a follow-up message to an existing agent session. Resumes the session — the agent continues from where it left off.
 
 **Returns a NEW task_id** — the original task stays terminal. Monitor the new ID for progress.
 
 **When to call:** Continue a completed/failed/rate-limited agent with follow-up instructions, or resume with default "continue".
 
-**Find task_id:** Read \`task:///all\` — look for \`can_send_message: true\`.`,
+**Find task_id:** Read \`task:///all\` — look for \`can_send_message: true\`.`;
+
+export const messageAgentTool = {
+  name: 'message-agent',
+  get description(): string {
+    const banner = buildStatusBanner();
+    return banner ? `${MESSAGE_AGENT_BASE_DESC}\n\n${banner}` : MESSAGE_AGENT_BASE_DESC;
+  },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -106,14 +112,18 @@ export async function handleSendMessage(
     );
   }
 
-  // Check if the session is still alive via the provider-specific SDK client manager.
-  // For Copilot: sessions can be destroyed during unbind, sweeps, or rotation.
-  const { sdkClientManager } = await import('../services/sdk-client-manager.js');
-  if (!sdkClientManager.getSession(task.sessionId)) {
-    return mcpError(
-      `Session "${task.sessionId}" is no longer active`,
-      'The session was destroyed (unbind, sweep, or rotation). Use a launch-* tool to start a new task.'
-    );
+  // Provider-agnostic session validation.
+  // Each provider validates its own session internally in sendMessage().
+  // For Copilot specifically, we can do an early check via sdkClientManager
+  // to give a better error message before attempting the full sendMessage flow.
+  if (task.provider === 'copilot') {
+    const { sdkClientManager } = await import('../services/sdk-client-manager.js');
+    if (!sdkClientManager.getSession(task.sessionId)) {
+      return mcpError(
+        `Session "${task.sessionId}" is no longer active`,
+        'The session was destroyed (unbind, sweep, or rotation). Use a launch-* tool to start a new task.'
+      );
+    }
   }
 
   // Check if task is in a state that can receive messages
@@ -146,14 +156,16 @@ export async function handleSendMessage(
     );
   }
 
-  // FB-006: Check if session is mid-rotation before attempting resume
-  const { sdkSessionAdapter } = await import('../services/sdk-session-adapter.js');
-  const binding = sdkSessionAdapter.getBinding(taskId);
-  if (binding?.rotationInProgress) {
-    return mcpError(
-      'Task session is currently being rotated to a different account',
-      'Please retry in a few seconds once rotation completes.'
-    );
+  // FB-006: Check if session is mid-rotation before attempting resume (Copilot-specific)
+  if (task.provider === 'copilot') {
+    const { sdkSessionAdapter } = await import('../services/sdk-session-adapter.js');
+    const binding = sdkSessionAdapter.getBinding(taskId);
+    if (binding?.rotationInProgress) {
+      return mcpError(
+        'Task session is currently being rotated to a different account',
+        'Please retry in a few seconds once rotation completes.'
+      );
+    }
   }
 
   const sessionId = task.sessionId;
