@@ -115,11 +115,20 @@ preflight() {
 
 # ── Check: already installed? ────────────────────────────────────────────────
 
-is_installed() {
+is_installed_new_format() {
   [ -f "$SETTINGS_FILE" ] || return 1
   local count
   count=$(jq -r --arg cmd "$HOOK_SCRIPT" '
-    [.hooks.PostToolUse // [] | .[] | select(.command == $cmd)] | length
+    [.hooks.PostToolUse // [] | .[] | select(.hooks) | .hooks[] | select(.command == $cmd)] | length
+  ' "$SETTINGS_FILE" 2>/dev/null || echo "0")
+  [ "$count" != "0" ]
+}
+
+has_old_format() {
+  [ -f "$SETTINGS_FILE" ] || return 1
+  local count
+  count=$(jq -r --arg cmd "$HOOK_SCRIPT" '
+    [.hooks.PostToolUse // [] | .[] | select(.command == $cmd) | select(.hooks == null)] | length
   ' "$SETTINGS_FILE" 2>/dev/null || echo "0")
   [ "$count" != "0" ]
 }
@@ -132,12 +141,17 @@ do_install() {
   # Make hook script executable
   chmod +x "$HOOK_SCRIPT"
 
-  # Already installed? (idempotent)
-  if is_installed; then
+  # Already installed in new format? (idempotent)
+  if is_installed_new_format; then
     green "Hook already installed — nothing to do."
     dim   "  Script:   ${HOOK_SCRIPT}"
     dim   "  Settings: ${SETTINGS_FILE}"
     return 0
+  fi
+
+  # Migrate from old format if present
+  if has_old_format; then
+    yellow "  Found old hook format — migrating to new format..."
   fi
 
   # Create settings.json if missing
@@ -151,11 +165,16 @@ do_install() {
   dim "  Backed up to ${SETTINGS_FILE}.bak"
 
   # Merge hook entry (preserves all existing keys and other hooks)
+  # New format: hooks array with type/command objects (no matcher = match all)
+  # Also removes any old-format entries for this script (migration)
   local updated
   updated=$(jq --arg cmd "$HOOK_SCRIPT" '
     .hooks.PostToolUse = (
-      [(.hooks.PostToolUse // [])[] | select(.command != $cmd)]
-      + [{"matcher": ".*", "command": $cmd}]
+      [(.hooks.PostToolUse // [])[]
+        | select(.command != $cmd)
+        | select((.hooks // [] | map(select(.command == $cmd)) | length) == 0)
+      ]
+      + [{"hooks": [{"type": "command", "command": $cmd}]}]
     )
   ' "$SETTINGS_FILE")
 
@@ -185,16 +204,20 @@ do_uninstall() {
     return 0
   fi
 
-  if ! is_installed; then
+  if ! is_installed_new_format && ! has_old_format; then
     yellow "Hook not found in settings.json — nothing to uninstall."
     return 0
   fi
 
   cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak"
 
+  # Remove both old-format (.command at top level) and new-format (.hooks[].command) entries
   local updated
   updated=$(jq --arg cmd "$HOOK_SCRIPT" '
-    .hooks.PostToolUse = [(.hooks.PostToolUse // [])[] | select(.command != $cmd)]
+    .hooks.PostToolUse = [(.hooks.PostToolUse // [])[]
+      | select(.command != $cmd)
+      | select((.hooks // [] | map(select(.command == $cmd)) | length) == 0)
+    ]
     | if (.hooks.PostToolUse | length) == 0 then del(.hooks.PostToolUse) else . end
     | if (.hooks | length) == 0 then del(.hooks) else . end
   ' "$SETTINGS_FILE")
@@ -211,8 +234,11 @@ do_check() {
   preflight || true
 
   echo ""
-  if is_installed; then
+  if is_installed_new_format; then
     green "Hook status: INSTALLED"
+    dim   "  Script: ${HOOK_SCRIPT}"
+  elif has_old_format; then
+    yellow "Hook status: INSTALLED (old format — run install to migrate)"
     dim   "  Script: ${HOOK_SCRIPT}"
   else
     yellow "Hook status: NOT INSTALLED"
