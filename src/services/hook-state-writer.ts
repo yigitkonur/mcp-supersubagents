@@ -42,15 +42,17 @@ interface HookStateFile {
   events: Record<string, HookEvent>;
 }
 
-let knownDirExists = false;
-
 class HookStateWriter {
   private cwd: string | null = null;
+  private knownDirExists = false;
   private writeInProgress = false;
   private pendingWrite = false;
   private pendingEvents: Map<string, HookEvent> = new Map();
 
   setCwd(cwd: string): void {
+    if (cwd !== this.cwd) {
+      this.knownDirExists = false;
+    }
     this.cwd = cwd;
   }
 
@@ -114,7 +116,7 @@ class HookStateWriter {
   }
 
   private async ensureDir(): Promise<boolean> {
-    if (knownDirExists) return true;
+    if (this.knownDirExists) return true;
     const dir = join(this.cwd!, OUTPUT_DIR_NAME);
     try {
       await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -123,7 +125,7 @@ class HookStateWriter {
         console.error('[hook-state] Output directory is a symlink, refusing to use');
         return false;
       }
-      knownDirExists = true;
+      this.knownDirExists = true;
       return true;
     } catch (err) {
       console.error('[hook-state] Failed to create output dir:', err);
@@ -141,12 +143,13 @@ class HookStateWriter {
       return;
     }
     this.writeInProgress = true;
+    let eventsToWrite: Map<string, HookEvent> | undefined;
 
     try {
       if (!(await this.ensureDir())) return;
 
       // Drain pending events into a local snapshot
-      const eventsToWrite = new Map(this.pendingEvents);
+      eventsToWrite = new Map(this.pendingEvents);
       this.pendingEvents.clear();
 
       // Read existing state to preserve seenAt values from hook script
@@ -194,6 +197,15 @@ class HookStateWriter {
     } catch (err) {
       // Swallow-tier: log to stderr, never throw
       console.error('[hook-state] Failed to write state file:', err);
+      // Re-queue events so the next flush can retry them
+      if (eventsToWrite) {
+        for (const [taskId, event] of eventsToWrite) {
+          if (!this.pendingEvents.has(taskId)) {
+            this.pendingEvents.set(taskId, event);
+          }
+        }
+        this.pendingWrite = true;
+      }
     } finally {
       this.writeInProgress = false;
 

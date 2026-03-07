@@ -31,7 +31,8 @@ export function buildStatusBanner(): string {
   const needsAnswer: { id: string; taskType?: string }[] = [];
 
   for (const task of allTasks) {
-    if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING || task.status === TaskStatus.WAITING) {
+    const hasPendingQuestion = questionRegistry.hasPendingQuestion(task.id);
+    if ((task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING || task.status === TaskStatus.WAITING) && !hasPendingQuestion) {
       running.push({ id: task.id, taskType: task.taskType });
     }
 
@@ -63,7 +64,7 @@ export function buildStatusBanner(): string {
   const summaryParts: string[] = [];
   if (running.length > 0) summaryParts.push(`${running.length} running`);
   if (needsAnswer.length > 0) summaryParts.push(`${needsAnswer.length} needs answer`);
-  if (recentlyTerminal.length > 0) summaryParts.push(`${recentlyTerminal.length} just completed`);
+  if (recentlyTerminal.length > 0) summaryParts.push(`${recentlyTerminal.length} recently finished`);
   parts.push(`AGENT STATUS: ${summaryParts.join(' | ')}`);
 
   // Recently terminal tasks (most recent first, limit 3)

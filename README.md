@@ -506,7 +506,26 @@ This works out of the box — no configuration needed. Claude Code re-fetches to
 
 For mid-turn notifications (delivered after every tool call rather than waiting for the next turn), add a PostToolUse hook. The server writes task events to `{cwd}/.super-agents/hook-state.json`, and a bundled script reads unseen events and injects them as context.
 
-**Setup:**
+**One-line setup:**
+
+```bash
+# From the repo / after npm install:
+pnpm install-hooks        # or: bash scripts/install-hooks.sh
+
+# After global npm install:
+npx super-agents-install-hooks
+
+# Check status without modifying anything:
+bash scripts/install-hooks.sh --check
+
+# Remove:
+bash scripts/install-hooks.sh --uninstall
+```
+
+The installer checks your Claude Code environment, safely merges the hook into `~/.claude/settings.json` (preserving existing hooks), creates a backup, and reports status. Requires `jq`.
+
+<details>
+<summary>Manual setup (alternative)</summary>
 
 Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
 
@@ -522,6 +541,7 @@ Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/
   }
 }
 ```
+</details>
 
 > **Requirements:** `jq` (preferred) or `python3` (fallback). The script runs in ~10ms and exits 0 on all error paths — it won't slow down or break your workflow.
 

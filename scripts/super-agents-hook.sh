@@ -61,7 +61,7 @@ if [ "$USE_JQ" = "1" ]; then
         "[SUPER-AGENT \(.type | ascii_upcase)] Task \(.taskId) has \(.status)."
         + if .outputFile then " Output: \(.outputFile)" else "" end
       end
-  ' "$STATE_FILE" 2>/dev/null)
+  ' "$STATE_FILE" 2>/dev/null || true)
 
   if [ -z "$CONTEXT" ]; then
     exit 0
@@ -73,7 +73,7 @@ if [ "$USE_JQ" = "1" ]; then
     .events |= with_entries(
       if .value.seenAt == null then .value.seenAt = $now else . end
     )
-  ' "$STATE_FILE" 2>/dev/null)
+  ' "$STATE_FILE" 2>/dev/null || true)
 
   if [ -n "$UPDATED" ]; then
     TMP_FILE="${STATE_FILE}.tmp.$$"
@@ -86,12 +86,12 @@ if [ "$USE_JQ" = "1" ]; then
   printf '{"additionalContext":%s}\n' "$ESCAPED"
 
 else
-  # Python3 fallback
-  python3 -c "
+  # Python3 fallback — uses heredoc to avoid shell expansion / injection
+  python3 - "$STATE_FILE" << 'PYEOF'
 import json, sys, os
 from datetime import datetime, timezone
 
-state_file = '${STATE_FILE}'
+state_file = sys.argv[1]
 try:
     with open(state_file, 'r') as f:
         data = json.load(f)
@@ -107,7 +107,7 @@ if not unseen:
 lines = []
 for tid, ev in unseen.items():
     if ev.get('type') == 'input_required':
-        line = f'[SUPER-AGENT QUESTION] Task {ev[\"taskId\"]} is asking: \"{ev.get(\"question\", \"unknown\")}\"'
+        line = f'[SUPER-AGENT QUESTION] Task {ev["taskId"]} is asking: "{ev.get("question", "unknown")}"'
         choices = ev.get('choices', [])
         if choices:
             opts = ', '.join(f'{i+1}. {c}' for i, c in enumerate(choices))
@@ -116,9 +116,9 @@ for tid, ev in unseen.items():
             line += ' Use answer-agent to respond.'
     else:
         etype = ev.get('type', 'unknown').upper()
-        line = f'[SUPER-AGENT {etype}] Task {ev[\"taskId\"]} has {ev.get(\"status\", \"unknown\")}.'
+        line = f'[SUPER-AGENT {etype}] Task {ev["taskId"]} has {ev.get("status", "unknown")}.'
         if ev.get('outputFile'):
-            line += f' Output: {ev[\"outputFile\"]}'
+            line += f' Output: {ev["outputFile"]}'
     lines.append(line)
 
 # Mark events as seen
@@ -137,5 +137,5 @@ except Exception:
 
 context = '\n'.join(lines)
 print(json.dumps({'additionalContext': context}))
-"
+PYEOF
 fi
