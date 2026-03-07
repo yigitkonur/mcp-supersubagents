@@ -9,15 +9,14 @@ import { z } from 'zod';
 import { taskManager } from '../services/task-manager.js';
 import { questionRegistry } from '../services/question-registry.js';
 import { mcpText, mcpError } from '../utils/format.js';
+import { buildStatusBannerForAnswerAgent } from '../services/tool-description-banner.js';
 
 const AnswerQuestionSchema = z.object({
   task_id: z.string().min(1).describe('Task ID with pending question'),
   answer: z.string().min(1).max(10000).describe('Answer: choice number (1, 2, 3...), exact choice text, or "CUSTOM: your answer"'),
 });
 
-export const answerAgentTool = {
-  name: 'answer-agent',
-  description: `Submit an answer to a pending question from an agent. When an agent pauses because it asked a question (via ask_user tool), use this to respond and resume execution.
+const ANSWER_AGENT_BASE_DESC = `Submit an answer to a pending question from an agent. When an agent pauses because it asked a question (via ask_user tool), use this to respond and resume execution.
 
 **When to call:** An agent's status shows "input_required" or the \`task:///all\` resource shows a pending question for a task.
 
@@ -32,7 +31,14 @@ answer-agent { "task_id": "abc123", "answer": "2" }
 answer-agent { "task_id": "abc123", "answer": "CUSTOM: Use TypeScript instead" }
 \`\`\`
 
-**Find pending questions:** Read MCP Resource \`task:///all\` — tasks with \`has_pending_question: true\` need answers.`,
+**Find pending questions:** Read MCP Resource \`task:///all\` — tasks with \`has_pending_question: true\` need answers.`;
+
+export const answerAgentTool = {
+  name: 'answer-agent',
+  get description(): string {
+    const banner = buildStatusBannerForAnswerAgent();
+    return banner ? `${ANSWER_AGENT_BASE_DESC}\n\n${banner}` : ANSWER_AGENT_BASE_DESC;
+  },
   inputSchema: {
     type: 'object' as const,
     properties: {

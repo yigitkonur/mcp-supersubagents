@@ -44,6 +44,7 @@ import { CopilotProviderAdapter } from './providers/copilot-adapter.js';
 import { ClaudeProviderAdapter } from './providers/claude-adapter.js';
 import { CodexProviderAdapter } from './providers/codex-adapter.js';
 import { TASK_TIMEOUT_DEFAULT_MS } from './config/timeouts.js';
+import { hookStateWriter } from './services/hook-state-writer.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json');
@@ -52,7 +53,7 @@ const server = new Server(
   { name: 'mcp-supersubagents', version: PKG_VERSION },
   {
     capabilities: {
-      tools: {},
+      tools: { listChanged: true },
       tasks: {
         list: {},
         cancel: {},
@@ -237,6 +238,19 @@ const logNotifyError = process.env.DEBUG_NOTIFICATIONS
   ? (e: unknown) => console.error('[notify]', e instanceof Error ? e.message : e)
   : () => {};
 
+// --- Tool list changed notification (Approach 1: description hack) ---
+let toolListChangedTimer: NodeJS.Timeout | null = null;
+const TOOL_LIST_CHANGED_DEBOUNCE_MS = 1000;
+
+function scheduleToolListChanged(): void {
+  if (toolListChangedTimer || isShuttingDown) return;
+  toolListChangedTimer = setTimeout(() => {
+    toolListChangedTimer = null;
+    server.sendToolListChanged().catch(logNotifyError);
+  }, TOOL_LIST_CHANGED_DEBOUNCE_MS);
+  toolListChangedTimer.unref();
+}
+
 // Single onOutput registration: forwards to progress + debounced resource updates
 taskManager.onOutput((taskId, line) => {
   // 1. Forward to progress registry (if client registered a progressToken)
@@ -291,7 +305,17 @@ taskManager.onStatusChange((task, previousStatus) => {
       progressRegistry.unregister(task.id);
     }
 
-    // 4. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
+    // 4. Tool list changed notification (triggers tool description refresh with live status banner)
+    if (isTerminalStatus(task.status) || task.status === TaskStatus.RUNNING || task.status === TaskStatus.RATE_LIMITED) {
+      scheduleToolListChanged();
+    }
+
+    // 5. Hook state writer (persists events for PostToolUse hook bridge)
+    if (isTerminalStatus(task.status)) {
+      hookStateWriter.notifyStatusChange(task).catch(() => {});
+    }
+
+    // 6. Debounced resource updated notification (max 1/sec per task, same pattern as onOutput)
     const uri = taskIdToUri(task.id);
     const sessionUri = `${uri}/session`;
     if (!statusUpdateTimers.has(task.id)) {
@@ -361,7 +385,10 @@ server.oninitialized = async () => {
   // Load persisted tasks for this workspace (also triggers auto-retry for rate-limited tasks)
   const cwd = clientContext.getDefaultCwd();
   await taskManager.setCwd(cwd);
-  
+
+  // Initialize hook state writer with workspace cwd for PostToolUse hook bridge
+  hookStateWriter.setCwd(cwd);
+
   console.error(`[index] MCP initialized - accounts: ${accountManager.getTokenCount()}, cwd: ${cwd}`);
 };
 
@@ -925,6 +952,12 @@ questionRegistry.onQuestionAsked((taskId, question) => {
   // Also send progress notification for clients that support progress but not task status
   progressRegistry.sendProgress(taskId, `⏸️ QUESTION: ${question.question}`);
 
+  // Tool list changed notification (triggers tool description refresh with question banner)
+  scheduleToolListChanged();
+
+  // Hook state writer (persists question event for PostToolUse hook bridge)
+  hookStateWriter.notifyQuestion(taskId, question).catch(() => {});
+
   // Send resource update for subscribed clients
   const uri = taskIdToUri(taskId);
   const sessionUri = `${uri}/session`;
@@ -1022,6 +1055,10 @@ async function main() {
     if (monitorTimer) {
       clearInterval(monitorTimer);
       monitorTimer = null;
+    }
+    if (toolListChangedTimer) {
+      clearTimeout(toolListChangedTimer);
+      toolListChangedTimer = null;
     }
     for (const timer of resourceUpdateTimers.values()) {
       clearTimeout(timer);

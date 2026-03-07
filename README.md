@@ -22,7 +22,7 @@
 
 ## Quick Navigation
 
-[Get Started](#get-started) &#8226; [Why Super Subagents](#why-super-subagents) &#8226; [Tools](#tool-reference) &#8226; [Templates](#agent-templates) &#8226; [Configuration](#environment-variables) &#8226; [Examples](#recommended-workflows)
+[Get Started](#get-started) &#8226; [Why Super Subagents](#why-super-subagents) &#8226; [Tools](#tool-reference) &#8226; [Notifications](#proactive-notifications) &#8226; [Templates](#agent-templates) &#8226; [Configuration](#environment-variables) &#8226; [Examples](#recommended-workflows)
 
 ---
 
@@ -75,7 +75,7 @@ You (main session):  "Spawn three tasks: refactor auth, write API tests, update 
 You:                 Continue working on other things — or spawn more tasks.
 ```
 
-Each agent runs as an autonomous session in the background. When it finishes, you get notified via MCP. If it hits a rate limit, it rotates to another GitHub account automatically. Task IDs are human-readable (`brave-tiger-42`, `calm-falcon-17`) so you can track them at a glance.
+Each agent runs as an autonomous session in the background. When it finishes, you get [proactively notified](#proactive-notifications) — no polling needed. If it hits a rate limit, it rotates to another GitHub account automatically. Task IDs are human-readable (`brave-tiger-42`, `calm-falcon-17`) so you can track them at a glance.
 
 ---
 
@@ -473,6 +473,77 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 
 ---
 
+## Proactive Notifications
+
+MCP servers can send notifications when tasks complete or need attention, but Claude Code's current MCP implementation doesn't fully support the standard notification paths ([anthropics/claude-code#31893](https://github.com/anthropics/claude-code/issues/31893)). Super Subagents works around this with two complementary mechanisms that work together — no polling required.
+
+### How you get notified
+
+**1. Live status in tool descriptions (automatic)**
+
+When a task completes or asks a question, the server triggers a tool list refresh. The `message-agent` and `answer-agent` tool descriptions include a live status footer showing what just happened:
+
+```
+message-agent description footer:
+---
+AGENT STATUS: 2 running | 1 needs answer | 1 just completed
+- abc123 [completed] coder (2min ago)  output: .super-agents/abc123.output
+- def456 [input_required] — waiting for answer
+Read task:///all for full details.
+```
+
+```
+answer-agent description footer:
+---
+ACTION REQUIRED — 1 task waiting for your answer:
+- def456: "Which database?" Options: 1) PostgreSQL 2) MongoDB
+Use answer-agent { "task_id": "def456", "answer": "1" }
+```
+
+This works out of the box — no configuration needed. Claude Code re-fetches tool descriptions automatically when the server signals `tools/list_changed`.
+
+**2. Hooks bridge (opt-in, recommended)**
+
+For mid-turn notifications (delivered after every tool call rather than waiting for the next turn), add a PostToolUse hook. The server writes task events to `{cwd}/.super-agents/hook-state.json`, and a bundled script reads unseen events and injects them as context.
+
+**Setup:**
+
+Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "command": "/path/to/node_modules/mcp-supersubagents/scripts/super-agents-hook.sh"
+      }
+    ]
+  }
+}
+```
+
+> **Requirements:** `jq` (preferred) or `python3` (fallback). The script runs in ~10ms and exits 0 on all error paths — it won't slow down or break your workflow.
+
+When a task completes or asks a question, you'll see context injected after the next tool call:
+
+```
+[SUPER-AGENT COMPLETED] Task abc123 has completed. Output: .super-agents/abc123.output
+[SUPER-AGENT QUESTION] Task def456 is asking: "Which database?" Options: 1. PostgreSQL, 2. MongoDB. Use answer-agent to respond.
+```
+
+### Why two approaches?
+
+| | Tool Description Hack | Hooks Bridge |
+|---|---|---|
+| **Trigger** | On next `ListTools` request (next turn or tool call) | After every tool call (mid-turn) |
+| **Setup** | Automatic, zero config | Requires hook configuration |
+| **Best for** | Cross-turn awareness | Immediate mid-turn reactivity |
+
+Both approaches are complementary. The tool description hack ensures Claude always sees current status when it considers which tools to call. The hooks bridge provides faster notification within a turn.
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -482,9 +553,10 @@ Questions time out after 30 minutes. The agent resumes automatically once you su
 | `GITHUB_PAT_TOKEN_1`..`_N` | -- | Numbered PAT tokens (alternative to comma-separated) |
 | `GH_PAT_TOKEN` | -- | Fallback PAT token(s), comma-separated |
 | `GITHUB_TOKEN` / `GH_TOKEN` | -- | Single token fallback |
-| `OPENAI_API_KEY` / `CODEX_API_KEY` | -- | API key for Codex SDK provider |
+| `OPENAI_API_KEY` / `CODEX_API_KEY` | -- | API key for Codex provider |
 | `CODEX_MODEL` | `o4-mini` | Default model for Codex tasks |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Sandbox mode: `read-only`, `workspace-write`, `danger-full-access` |
+| `CODEX_USE_SDK` | `false` | Force legacy SDK mode instead of app-server protocol |
 | `MAX_CONCURRENT_CODEX_SESSIONS` | `5` | Max simultaneous Codex sessions |
 | `ENABLE_OPUS` | `false` | Show `claude-opus-4.6` in tool descriptions (opus is always usable via alias) |
 | `DISABLE_CLAUDE_CODE_FALLBACK` | `false` | Disable automatic fallback to Claude Agent SDK |
