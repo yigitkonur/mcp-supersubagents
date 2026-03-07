@@ -232,6 +232,12 @@ export type ModelResolutionResult =
   | { ok: true; resolution: ModelResolution }
   | { ok: false; error: ModelResolutionError };
 
+function findCanonicalModelCaseInsensitive(requested: string): ModelId | undefined {
+  const normalized = requested.toLowerCase();
+  const matched = MODEL_IDS.find((modelId) => modelId.toLowerCase() === normalized);
+  return matched as ModelId | undefined;
+}
+
 /**
  * Validate and resolve model selection.
  * Returns a result type: ok with the resolved model, or error with help text.
@@ -254,9 +260,10 @@ export function resolveModel(requested?: string, _taskType?: string): ModelResol
 
   if (!requested) return { ok: true, resolution: { model: DEFAULT_MODEL } };
 
-  // Direct match against known models
-  if (requested in MODEL_REGISTRY) {
-    return { ok: true, resolution: { model: requested as ModelId } };
+  // Direct match against known models (case-insensitive)
+  const canonicalMatch = findCanonicalModelCaseInsensitive(requested);
+  if (canonicalMatch) {
+    return { ok: true, resolution: { model: canonicalMatch, resolvedFrom: canonicalMatch === requested ? undefined : requested } };
   }
 
   // Alias match (case-insensitive)

@@ -322,11 +322,11 @@ export class CodexAppServerClient {
       env.OPENAI_API_KEY = this.apiKey;
     }
 
-    console.error(`[codex-app-server] Spawning: ${this.codexPath} app-server --listen stdio://`);
+    console.error(`[codex-app-server] Spawning: ${this.codexPath} app-server --listen stdio:// --enable default_mode_request_user_input`);
 
     this.process = spawn(
       this.codexPath,
-      ['app-server', '--listen', 'stdio://'],
+      ['app-server', '--listen', 'stdio://', '--enable', 'default_mode_request_user_input'],
       { stdio: ['pipe', 'pipe', 'pipe'], env },
     );
 

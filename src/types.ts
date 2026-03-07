@@ -222,6 +222,41 @@ export interface SessionMetrics {
 // User Input / Question Types (SDK ask_user tool support)
 // ============================================================================
 
+/** A single option within a structured question from Codex app-server. */
+export interface StructuredQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/**
+ * A fully-structured question from Codex's `item/tool/requestUserInput` protocol.
+ * Preserves all per-question metadata for MCP clients to render proper UI.
+ */
+export interface StructuredQuestion {
+  /** Unique question ID used as the key in the `answers` response map. */
+  id: string;
+  /** Short UI label shown as a chip/tag (e.g. "Build System"). */
+  header: string;
+  /** The full question text. */
+  question: string;
+  /** Predefined answer options, or undefined for freeform-only questions. */
+  options?: StructuredQuestionOption[];
+  /** Whether freeform (custom) text answers are allowed beyond options. */
+  allowFreeform: boolean;
+  /** True if the answer should be masked in the UI (e.g. passwords). */
+  isSecret: boolean;
+}
+
+/**
+ * Discriminated union for resolved question responses.
+ * Replaces direct use of the Copilot SDK's `UserInputResponse` type so that
+ * both single-question (Copilot/Claude) and multi-question (Codex) flows
+ * share a single registry contract.
+ */
+export type QuestionResponse =
+  | { kind: 'single'; answer: string; wasFreeform: boolean }
+  | { kind: 'structured'; answers: Record<string, { answers: string[] }> };
+
 /**
  * Pending question from SDK's ask_user tool.
  * Task is paused waiting for user response.
@@ -237,6 +272,14 @@ export interface PendingQuestion {
   askedAt: string;
   /** Session ID that asked the question */
   sessionId: string;
+  /** Human-readable provider/source label for the prompt, e.g. Copilot or Codex */
+  source?: string;
+  /**
+   * Fully-structured per-question metadata for Codex multi-question flows.
+   * Populated when Codex sends `item/tool/requestUserInput` with 1+ questions.
+   * Use question IDs as keys in the `answers` map when calling answer-agent.
+   */
+  structuredQuestions?: StructuredQuestion[];
 }
 
 export interface TaskState {

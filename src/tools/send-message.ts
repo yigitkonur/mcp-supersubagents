@@ -218,16 +218,18 @@ export async function handleSendMessage(
     const parts: (string | null)[] = [
       `✅ **Message sent**`,
       `task_id: \`${newTaskId}\``,
-      newTask?.outputFilePath ? `output_file: \`${newTask.outputFilePath}\`` : null,
       '',
       `**Message:** "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`,
       `**Continued from:** \`${task.id}\``,
       '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
+      newTask?.outputFilePath ? `read logs: \`cat -n ${newTask.outputFilePath}\`` : null,
+      newTask?.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
       '',
-      '**Optional progress check:**',
-      newTask?.outputFilePath ? `- \`tail -20 ${newTask.outputFilePath}\` — Last 20 lines` : null,
-      `- Read resource: \`task:///${newTaskId}\``,
+      '**What to do next:**',
+      '- The agent is now resuming work. Run `sleep 30` and then check status.',
+      `- To check status, read the MCP resource \`task:///${newTaskId}\` — it will show current progress, output, and whether the agent needs input.`,
+      newTask?.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${newTask.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+      '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MODEL_IDS, DEFAULT_MODEL, getAvailableModelIds } from '../models.js';
+import { DEFAULT_MODEL, getAvailableModelIds, MODEL_ALIASES } from '../models.js';
 import {
   TASK_TIMEOUT_DEFAULT_MS,
   TASK_TIMEOUT_MAX_MS,
@@ -36,8 +36,14 @@ export const baseSpawnFields = {
 export const baseInputSchemaProperties = {
   model: {
     type: 'string',
-    get enum() { return getAvailableModelIds(); },
-    description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
+    get enum() {
+      const available = getAvailableModelIds();
+      const aliases = Object.entries(MODEL_ALIASES)
+        .filter(([, target]) => available.includes(target as typeof available[number]))
+        .map(([alias]) => alias);
+      return [...available, ...aliases];
+    },
+    description: `Model to use. Default: ${DEFAULT_MODEL}. Accepts canonical IDs and aliases such as sonnet, opus, gpt-5.4, and o4-mini.`,
   },
   cwd: {
     type: 'string',
@@ -55,6 +61,17 @@ export const baseInputSchemaProperties = {
     description: 'Tags for grouping related tasks, e.g. "auth", "frontend", "v2-migration". Max 10 labels, 50 chars each.',
   },
 } as const;
+
+/** Build a model property that preserves lazy enum evaluation in final tool schemas. */
+export function buildModelProperty(description?: string) {
+  return {
+    type: 'string' as const,
+    get enum() {
+      return baseInputSchemaProperties.model.enum;
+    },
+    description: description || baseInputSchemaProperties.model.description,
+  };
+}
 
 /** Build the standard MCP tool annotations block. Only `title` varies per tool. */
 export function buildAnnotations(title: string) {

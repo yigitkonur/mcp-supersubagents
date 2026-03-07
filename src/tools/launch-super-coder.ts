@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { DEFAULT_MODEL } from '../models.js';
 import { createLaunchHandler } from './shared-spawn.js';
-import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty } from './spawn-schemas.js';
+import { baseSpawnFields, contextFilesRequired, baseInputSchemaProperties, buildAnnotations, SPAWN_TOOL_EXECUTION, buildContextFilesProperty, buildPromptProperty, buildModelProperty } from './spawn-schemas.js';
 
 // --- Zod schema (coder-specific: context_files REQUIRED, no .optional()) ---
 
@@ -30,11 +30,7 @@ Coder writes detailed testing notes to \`.agent-workspace/implementation/[topic]
       prompt: buildPromptProperty(1000, 'Implementation brief. MUST include: OBJECTIVE (what to build), FILES TO MODIFY (absolute paths), SUCCESS CRITERIA (how to verify), CONSTRAINTS (what NOT to do), PATTERNS (existing code to follow). Min 1000 chars.'),
       context_files: buildContextFilesProperty('REQUIRED. ONLY .md files accepted — .ts/.js/.json will be rejected. Create specs via launch-super-planner first. Max 20 files, 200KB each, 500KB total.', { required: true }),
       ...baseInputSchemaProperties,
-      model: {
-        type: 'string',
-        enum: baseInputSchemaProperties.model.enum,
-        description: `Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`,
-      },
+      model: buildModelProperty(`Model to use. Default: ${DEFAULT_MODEL}. Also accepts aliases: sonnet, opus, gpt-5.4, o4-mini, etc.`),
     },
     required: ['prompt', 'context_files'],
   },

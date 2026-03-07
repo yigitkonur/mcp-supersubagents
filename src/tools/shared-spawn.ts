@@ -263,14 +263,15 @@ export async function handleSharedSpawn(
       getModelOverride()
         ? `model_override: \`MODEL_OVERRIDE=${getModelOverride()}\` → all requests forced to \`${model}\``
         : null,
-      task.outputFilePath ? `output_file: \`${task.outputFilePath}\`` : null,
+      task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
+      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
       '',
-      'The agent is working in the background. MCP notifications will alert on completion—no need to poll.',
-      '',
-      '**Optional progress check:**',
-      task.outputFilePath ? `- \`tail -20 ${task.outputFilePath}\` — Last 20 lines` : null,
-      task.outputFilePath ? `- \`wc -l ${task.outputFilePath}\` — Line count` : null,
-      `- Read resource: \`task:///${taskId}\``,
+      '**What to do next:**',
+      '- If you still have more agents to launch, launch them now — all agents run in parallel.',
+      '- Once all agents are launched, run `sleep 30` and then check status.',
+      `- To check status, read the MCP resource \`task:///${taskId}\` — it will show current progress, output, and whether the agent needs input.`,
+      task.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+      '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
       qualityTip ? '' : null,
       qualityTip,
     ].filter(Boolean);
