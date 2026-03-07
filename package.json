@@ -1,6 +1,6 @@
 {
   "name": "mcp-supersubagents",
-  "version": "1.10.4",
+  "version": "1.10.5",
   "description": "MCP server for spawning and managing AI sub-agents (Codex, Copilot, Claude) — parallel task execution with planner, coder, researcher & tester specialists",
   "type": "module",
   "main": "build/index.js",
@@ -27,7 +27,8 @@
     "start": "node build/index.js",
     "clean": "rm -rf build",
     "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs",
-    "test:compat": "node scripts/model-provider-compat-test.mjs"
+    "test:compat": "node scripts/model-provider-compat-test.mjs",
+    "release": "node scripts/release.mjs"
   },
   "keywords": [
     "mcp",
