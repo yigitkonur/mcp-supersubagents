@@ -129,10 +129,12 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
         `✅ **Structured answers submitted** (${result.answeredCount} question(s))`,
         `task_id: \`${taskId}\``,
         task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
-        task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
-        '**Optional progress check:**',
-        task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
-        `- Use MCP tools for resource: \`task:///${taskId}\``,
+        task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
+        '',
+        '**What to do next:**',
+        `- Run \`sleep 30\` to give the agent time to continue, then read \`task:///${taskId}\` to check status.`,
+        '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
+        task.outputFilePath ? `- Quick progress check: \`wc -l ${task.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
       ];
       return mcpText(successParts.filter(Boolean).join('\n'));
     }
@@ -173,10 +175,12 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
       `**Answer:** ${result.resolvedAnswer}`,
       '',
       task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
-      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
-      '**Optional progress check:**',
-      task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
-      `- Use MCP tools for resource: \`task:///${taskId}\``,
+      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
+      '',
+      '**What to do next:**',
+      `- Run \`sleep 30\` to give the agent time to continue, then read \`task:///${taskId}\` to check status.`,
+      '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
+      task.outputFilePath ? `- Quick progress check: \`wc -l ${task.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

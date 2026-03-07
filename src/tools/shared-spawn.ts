@@ -264,10 +264,13 @@ export async function handleSharedSpawn(
         ? `model_override: \`MODEL_OVERRIDE=${getModelOverride()}\` → all requests forced to \`${model}\``
         : null,
       task.outputFilePath ? `read logs: \`cat -n ${task.outputFilePath}\`` : null,
-      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines (e.g., to skip the first 5 lines: \`tail -n +5 <file>\`).` : null,
-      '**Optional progress check:**',
-      task.outputFilePath ? `- Check if line count increases: \`wc -l ${task.outputFilePath}\`` : null,
-      `- Use MCP tools for resource: \`task:///${taskId}\``,
+      task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
+      '',
+      '**What to do next:**',
+      '- If you need to launch additional agents, do so now — agents run in parallel.',
+      `- Once all agents are launched, run \`sleep 30\` to give them time to work, then read \`task:///${taskId}\` to check status.`,
+      '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
+      task.outputFilePath ? `- Quick progress check: \`wc -l ${task.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
       qualityTip ? '' : null,
       qualityTip,
     ].filter(Boolean);
