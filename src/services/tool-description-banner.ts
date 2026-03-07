@@ -10,7 +10,6 @@
 
 import { taskManager } from './task-manager.js';
 import { questionRegistry } from './question-registry.js';
-import { mapInternalStatusToMCP } from './task-status-mapper.js';
 import { TaskStatus, isTerminalStatus } from '../types.js';
 
 const BANNER_MAX_CHARS = 500;
@@ -41,7 +40,7 @@ export function buildStatusBanner(): string {
       if (agoMs <= RECENTLY_TERMINAL_WINDOW_MS) {
         recentlyTerminal.push({
           id: task.id,
-          status: mapInternalStatusToMCP(task.status),
+          status: task.status,
           taskType: task.taskType,
           agoMs,
           outputFile: task.outputFilePath,
@@ -78,7 +77,7 @@ export function buildStatusBanner(): string {
 
   // Tasks needing answers
   for (const t of needsAnswer) {
-    parts.push(`- ${t.id} [input_required]${t.taskType ? ' ' + t.taskType.replace('super-', '') : ''} — waiting for answer`);
+    parts.push(`- ${t.id} [waiting_answer]${t.taskType ? ' ' + t.taskType.replace('super-', '') : ''} — waiting for answer`);
   }
 
   parts.push('Read task:///all for full details.');

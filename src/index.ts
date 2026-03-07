@@ -799,7 +799,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
    * When a pending question exists, appends an actionable answer-agent call block
    * with dynamically selected param (answer vs answers) and concrete examples.
    */
-  function renderTaskMarkdown(task: TaskState, mcpStatus: string, msgStats: { round: number; totalMessages: number }, filtered: string[]): string {
+  function renderTaskMarkdown(task: TaskState, status: string, msgStats: { round: number; totalMessages: number }, filtered: string[]): string {
     const lines: string[] = [];
 
     // Header
@@ -809,7 +809,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     // Status table
     lines.push('| Field | Value |');
     lines.push('|---|---|');
-    lines.push(`| **Status** | \`${mcpStatus}\` |`);
+    lines.push(`| **Status** | \`${status}\` |`);
     if (task.model) lines.push(`| **Model** | \`${task.model}\` |`);
     if (task.provider) lines.push(`| **Provider** | \`${task.provider}\` |`);
     lines.push(`| **Turn** | ${msgStats.round} |`);
@@ -837,7 +837,8 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       lines.push('');
     }
 
-    if (mcpStatus === 'working') {
+    const isActive = status === TaskStatus.RUNNING || status === TaskStatus.PENDING || status === TaskStatus.WAITING || status === TaskStatus.RATE_LIMITED;
+    if (isActive) {
       lines.push('## What to do next');
       lines.push('');
       lines.push('The agent is still working. If you need to wait, run `sleep 30` and then read this resource again.');
@@ -846,7 +847,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       }
       lines.push('If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.');
       lines.push('');
-    } else if (mcpStatus === 'completed') {
+    } else if (status === TaskStatus.COMPLETED) {
       lines.push('## Result');
       lines.push('');
       lines.push('The agent has finished successfully. Read the output above for results.');
@@ -854,7 +855,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         lines.push(`Full execution log: \`cat -n ${task.outputFilePath}\``);
       }
       lines.push('');
-    } else if (mcpStatus === 'failed') {
+    } else if (status === TaskStatus.FAILED || status === TaskStatus.TIMED_OUT) {
       lines.push('## What to do next');
       lines.push('');
       if (canSendMessage(task)) {
@@ -1102,13 +1103,11 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const msgStats = extractMessageStats(task.output);
   const filtered = filterOutputForResource(task.output);
   
-  const mcpStatus = buildMCPTask(task).status;
-
   return {
     contents: [{
       uri,
       mimeType: 'text/markdown',
-      text: renderTaskMarkdown(task, mcpStatus, msgStats, filtered),
+      text: renderTaskMarkdown(task, task.status, msgStats, filtered),
     }],
   };
   } catch (err) {

@@ -18,7 +18,6 @@
 import { readFile, rename, open as openFile, mkdir, lstat } from 'fs/promises';
 import { join } from 'path';
 import { TaskState, TaskStatus, isTerminalStatus, PendingQuestion } from '../types.js';
-import { mapInternalStatusToMCP } from './task-status-mapper.js';
 
 const HOOK_STATE_FILE = 'hook-state.json';
 const OUTPUT_DIR_NAME = '.super-agents';
@@ -62,14 +61,13 @@ class HookStateWriter {
   async notifyStatusChange(task: TaskState): Promise<void> {
     if (!this.cwd || !isTerminalStatus(task.status)) return;
 
-    const mcpStatus = mapInternalStatusToMCP(task.status);
     const type = this.statusToEventType(task.status);
     if (!type) return;
 
     const event: HookEvent = {
       type,
       taskId: task.id,
-      status: mcpStatus,
+      status: task.status,
       outputFile: task.outputFilePath,
       prompt: task.prompt ? task.prompt.slice(0, 200) : undefined,
       labels: task.labels,

@@ -361,13 +361,12 @@ async function main() {
       const taskId = extractTaskId(extractText(spawnResult));
       log(`spawned dentist task: ${taskId}`);
 
-      // Poll for input_required status (max 10 min)
-      // Resources now return markdown, so we parse status from the markdown table.
-      // task:///{id} uses MCP-mapped status: input_required (from internal WAITING_ANSWER)
+      // Poll for waiting_answer status (max 10 min)
+      // Resources now return markdown with internal 9-state status strings.
       const waitStart = Date.now();
       const MAX_WAIT_MS = 600_000;
       let lastTaskMd = '';
-      let gotInputRequired = false;
+      let gotWaitingAnswer = false;
 
       while (Date.now() - waitStart < MAX_WAIT_MS) {
         const taskRead = await client.readResource({ uri: `task:///${taskId}` });
@@ -375,15 +374,15 @@ async function main() {
         const status = parseStatusFromTaskMarkdown(lastTaskMd);
         log(`dentist task status: ${status}`);
 
-        // input_required = MCP-mapped status when agent asks a question
+        // waiting_answer = internal status when agent asks a question
         // Also check for ACTION REQUIRED section in markdown as a fallback
-        if (status === 'input_required' || lastTaskMd.includes('ACTION REQUIRED')) {
-          gotInputRequired = true;
-          log('task entered input_required — pending question detected');
+        if (status === 'waiting_answer' || lastTaskMd.includes('ACTION REQUIRED')) {
+          gotWaitingAnswer = true;
+          log('task entered waiting_answer — pending question detected');
           break;
         }
         if (TERMINAL_STATUSES.has(status)) {
-          log(`task reached terminal status ${status} WITHOUT entering input_required`);
+          log(`task reached terminal status ${status} WITHOUT entering waiting_answer`);
           log('NOTE: model did not call ask_user — this is a model behavior observation');
           log('PASS: dentist scenario completed (no ask_user call observed)');
           return;
@@ -391,7 +390,7 @@ async function main() {
         await sleep(POLL_INTERVAL_MS);
       }
 
-      assert(gotInputRequired, 'Timed out waiting for input_required status');
+      assert(gotWaitingAnswer, 'Timed out waiting for waiting_answer status');
 
       // Extract structured questions from markdown
       const parsed = parsePendingQuestionFromMarkdown(lastTaskMd);
