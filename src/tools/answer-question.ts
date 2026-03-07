@@ -132,9 +132,10 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
         task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
         '',
         '**What to do next:**',
-        `- Run \`sleep 30\` to give the agent time to continue, then read \`task:///${taskId}\` to check status.`,
-        '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
-        task.outputFilePath ? `- Quick progress check: \`wc -l ${task.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
+        '- The agent is now resuming work. Run `sleep 30` and then check status.',
+        `- To check status, read the MCP resource \`task:///${taskId}\` — it will show current progress, output, and whether the agent needs further input.`,
+        task.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+        '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
       ];
       return mcpText(successParts.filter(Boolean).join('\n'));
     }
@@ -178,9 +179,10 @@ export async function handleAnswerQuestion(args: unknown): Promise<{ content: Ar
       task.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
       '',
       '**What to do next:**',
-      `- Run \`sleep 30\` to give the agent time to continue, then read \`task:///${taskId}\` to check status.`,
-      '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
-      task.outputFilePath ? `- Quick progress check: \`wc -l ${task.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
+      '- The agent is now resuming work. Run `sleep 30` and then check status.',
+      `- To check status, read the MCP resource \`task:///${taskId}\` — it will show current progress, output, and whether the agent needs further input.`,
+      task.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+      '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));

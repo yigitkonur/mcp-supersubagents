@@ -788,7 +788,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     lines.push(`| **Can resume** | ${canSendMessage(task) ? 'yes — use `message-agent`' : 'no'} |`);
     lines.push('');
 
-    // Output file
+    // Output file + what to do next (context-dependent)
     if (task.outputFilePath) {
       lines.push('## Read Logs');
       lines.push('');
@@ -797,6 +797,34 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       lines.push('```');
       lines.push('');
       lines.push(`Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.`);
+      lines.push('');
+    }
+
+    if (mcpStatus === 'working') {
+      lines.push('## What to do next');
+      lines.push('');
+      lines.push('The agent is still working. If you need to wait, run `sleep 30` and then read this resource again.');
+      if (task.outputFilePath) {
+        lines.push(`For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.`);
+      }
+      lines.push('If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.');
+      lines.push('');
+    } else if (mcpStatus === 'completed') {
+      lines.push('## Result');
+      lines.push('');
+      lines.push('The agent has finished successfully. Read the output above for results.');
+      if (task.outputFilePath) {
+        lines.push(`Full execution log: \`cat -n ${task.outputFilePath}\``);
+      }
+      lines.push('');
+    } else if (mcpStatus === 'failed') {
+      lines.push('## What to do next');
+      lines.push('');
+      if (canSendMessage(task)) {
+        lines.push(`This task failed but can be resumed. Use the \`message-agent\` tool with \`task_id: "${task.id}"\` and a message describing what to do differently.`);
+      } else {
+        lines.push('This task failed and the session is no longer available. Use a `launch-*` tool to start a new task.');
+      }
       lines.push('');
     }
 

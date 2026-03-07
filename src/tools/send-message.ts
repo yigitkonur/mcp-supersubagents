@@ -214,10 +214,10 @@ export async function handleSendMessage(
       newTask?.outputFilePath ? `Use \`cat -n\` to read with line numbers, then on subsequent reads use \`tail -n +<N>\` to skip already-read lines.` : null,
       '',
       '**What to do next:**',
-      '- If you need to launch additional agents, do so now — agents run in parallel.',
-      `- Once all agents are launched, run \`sleep 30\` to give them time to work, then read \`task:///${newTaskId}\` to check status.`,
-      '- On each subsequent check, increase the wait: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
-      newTask?.outputFilePath ? `- Quick progress check: \`wc -l ${newTask.outputFilePath}\` — if the line count is growing, the agent is still working.` : null,
+      '- The agent is now resuming work. Run `sleep 30` and then check status.',
+      `- To check status, read the MCP resource \`task:///${newTaskId}\` — it will show current progress, output, and whether the agent needs input.`,
+      newTask?.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${newTask.outputFilePath}\` — a growing line count means the agent is still working.` : null,
+      '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
     ];
 
     return mcpText(parts.filter(Boolean).join('\n'));
