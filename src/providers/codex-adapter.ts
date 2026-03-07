@@ -821,6 +821,16 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         break;
 
       // Internal Codex protocol events — silently ignored (pure noise, no user value)
+      // Per-token deltas already handled by item/agentMessage/delta and reasoning buffers
+      case 'codex/event/agent_message_content_delta':
+      case 'codex/event/agent_message_delta':
+      case 'codex/event/agent_message':
+      case 'codex/event/agent_reasoning':
+      case 'codex/event/agent_reasoning_delta':
+      case 'codex/event/agent_reasoning_section_break':
+      case 'codex/event/reasoning_content_delta':
+      case 'item/reasoning/summaryPartAdded':
+      // Wrapper events already handled by item/* and turn/* cases
       case 'codex/event/mcp_startup_update':
       case 'codex/event/mcp_startup_complete':
       case 'codex/event/task_started':
@@ -828,9 +838,14 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       case 'codex/event/item_completed':
       case 'codex/event/user_message':
       case 'codex/event/token_count':
-      case 'codex/event/agent_reasoning_section_break':
-      case 'codex/event/agent_reasoning_delta':
-      case 'codex/event/reasoning_content_delta':
+      case 'codex/event/skills_update_available':
+      case 'codex/event/request_user_input':
+      case 'codex/event/plan_update':
+      case 'codex/event/exec_command_begin':
+      case 'codex/event/exec_command_end':
+      case 'codex/event/mcp_tool_call_begin':
+      case 'codex/event/mcp_tool_call_end':
+      case 'codex/event/turn_diff':
       case 'account/rateLimits/updated':
         break;
 

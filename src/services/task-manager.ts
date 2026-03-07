@@ -24,8 +24,9 @@ function isAbortableSession(state: unknown): state is { abort: () => Promise<voi
 const VALID_TRANSITIONS: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   [TaskStatus.PENDING]: new Set([TaskStatus.WAITING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
   [TaskStatus.WAITING]: new Set([TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.TIMED_OUT]),
-  [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED]),
+  [TaskStatus.RUNNING]: new Set([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT, TaskStatus.RATE_LIMITED, TaskStatus.WAITING_ANSWER]),
   [TaskStatus.RATE_LIMITED]: new Set([TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.RUNNING, TaskStatus.TIMED_OUT]),
+  [TaskStatus.WAITING_ANSWER]: new Set([TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.TIMED_OUT]),
   [TaskStatus.COMPLETED]: new Set([]), // terminal
   [TaskStatus.FAILED]: new Set([]),  // terminal
   [TaskStatus.CANCELLED]: new Set([]),  // terminal

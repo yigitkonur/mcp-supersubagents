@@ -30,7 +30,7 @@ const MESSAGE_AGENT_BASE_DESC = `Send a follow-up message to an existing agent s
 
 **When to call:** Continue a completed/failed/rate-limited agent with follow-up instructions, or resume with default "continue".
 
-**Find task_id:** Read \`task:///all\` — look for \`can_send_message: true\`.`;
+**Find task_id:** Read \`task:///all\` — pick a terminal task (\`completed\`, \`failed\`, \`rate_limited\`) to resume.`;
 
 export const messageAgentTool = {
   name: 'message-agent',

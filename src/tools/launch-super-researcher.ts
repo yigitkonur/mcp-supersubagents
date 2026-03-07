@@ -19,7 +19,7 @@ export const launchSuperResearcherTool = {
 **Workflow:** **RESEARCHER** → planner → coder → tester
 Output goes to \`.agent-workspace/researches/[topic]/\`. After completion, read \`task:///{id}\` to get the workspace path, then pass ALL .md files from that workspace as context_files to the next agent (planner or coder). Don't cherry-pick — send everything.
 
-**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` every ~30s to monitor all tasks (status, deps, questions). Statuses: \`running\`, \`waiting → <dep>\`, \`waiting_answer ⏸\`, \`completed\`, \`failed\`.`,
 
   inputSchema: {
     type: 'object' as const,

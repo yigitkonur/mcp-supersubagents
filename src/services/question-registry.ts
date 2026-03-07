@@ -108,7 +108,7 @@ class QuestionRegistry {
         structuredQuestions,
       };
 
-      taskManager.updateTask(taskId, { pendingQuestion });
+      taskManager.updateTask(taskId, { pendingQuestion, status: TaskStatus.WAITING_ANSWER });
 
       // Build rich file-output block so anyone tailing the output knows exactly what to call
       const lines: string[] = [];
@@ -220,8 +220,8 @@ class QuestionRegistry {
       wasFreeform: parseResult.wasFreeform!,
     });
 
-    // Clear the pending question from task state
-    taskManager.updateTask(taskId, { pendingQuestion: undefined });
+    // Clear the pending question and resume running
+    taskManager.updateTask(taskId, { pendingQuestion: undefined, status: TaskStatus.RUNNING });
     taskManager.appendOutput(taskId, `[question] Answer submitted: ${parseResult.answer}`);
 
     // Remove from registry
@@ -478,9 +478,15 @@ class QuestionRegistry {
 
       clearTimeout(binding.timeoutId);
       binding.reject(new Error(`Question cleared: ${reason}`));
-      
+
       taskManager.updateTask(taskId, { pendingQuestion: undefined });
-      
+
+      // Restore to RUNNING if still in WAITING_ANSWER
+      const t = taskManager.getTask(taskId);
+      if (t && t.status === TaskStatus.WAITING_ANSWER) {
+        taskManager.updateTask(taskId, { status: TaskStatus.RUNNING });
+      }
+
       this.bindings.delete(normalizedId);
 
       console.error(`[question-registry] Question cleared for task ${taskId}: ${reason}`);

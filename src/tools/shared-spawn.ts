@@ -17,6 +17,7 @@ import {
   assemblePromptWithContext,
 } from '../utils/brief-validator.js';
 import { baseSpawnFields, contextFileSchema } from './spawn-schemas.js';
+import { getQuestionGuidance } from '../config/question-guidance.js';
 
 /**
  * Shared error recovery: attempt fallback, mark FAILED if no fallback available.
@@ -183,14 +184,18 @@ export async function handleSharedSpawn(
     );
   }
 
-  // 6. Create the task (provider-agnostic)
+  // 6. Append provider-specific question guidance to the prompt
+  const questionGuidance = getQuestionGuidance(selection.provider.id);
+  const promptWithGuidance = finalPrompt + questionGuidance;
+
+  // 7. Create the task (provider-agnostic)
   const labels = params.labels?.filter((l: string) => l.trim()) || [];
   const cwd = params.cwd || clientContext.getDefaultCwd();
   const timeout = params.timeout ?? TASK_TIMEOUT_DEFAULT_MS;
   const taskType = config.taskType || 'super-coder';
 
   try {
-    const task = taskManager.createTask(finalPrompt, cwd, model, {
+    const task = taskManager.createTask(promptWithGuidance, cwd, model, {
       dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
       labels: labels.length > 0 ? labels : undefined,
       provider: selection.provider.id,
@@ -215,7 +220,9 @@ export async function handleSharedSpawn(
         '',
         `**Waiting on:** ${depsList}`,
         '',
-        'Task will auto-start when dependencies complete. Continue with other work.',
+        'Task will auto-start when dependencies complete.',
+        '',
+        '**Monitor:** Read `task:///all` — shows all tasks with status, deps, and pending questions in one table. Re-read every ~30s to track progress.',
       ].filter(Boolean);
       return mcpText(parts.join('\n'));
     }
@@ -232,7 +239,7 @@ export async function handleSharedSpawn(
       const handle = createTaskHandle(taskId);
       selectedProvider.spawn({
         taskId,
-        prompt: finalPrompt,
+        prompt: promptWithGuidance,
         cwd,
         model: providerModel,
         timeout,
@@ -247,7 +254,7 @@ export async function handleSharedSpawn(
           reason: `${selectedProvider.id}_spawn_error`,
           err,
           cwd,
-          promptOverride: finalPrompt,
+          promptOverride: promptWithGuidance,
         });
       });
     });
@@ -270,6 +277,7 @@ export async function handleSharedSpawn(
       '- If you still have more agents to launch, launch them now — all agents run in parallel.',
       '- Once all agents are launched, run `sleep 30` and then check status.',
       `- To check status, read the MCP resource \`task:///${taskId}\` — it will show current progress, output, and whether the agent needs input.`,
+      `- \`waiting_answer\` → agent needs input — answer via \`answer-agent\``,
       task.outputFilePath ? `- For a quick progress check without reading the full resource, run \`wc -l ${task.outputFilePath}\` — a growing line count means the agent is still working.` : null,
       '- If the agent is still running after your first check, wait longer before checking again: `sleep 60`, then `sleep 90`, `sleep 120`, `sleep 150`, up to `sleep 180` max.',
       qualityTip ? '' : null,

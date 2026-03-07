@@ -19,7 +19,7 @@ export const launchSuperPlannerTool = {
 **Workflow:** researcher → **PLANNER** → coder → tester
 Output goes to \`.agent-workspace/plans/[topic]/\`. After completion, read \`task:///{id}\` to get workspace path, then pass ALL .md files from that workspace as context_files to launch-super-coder. Send everything — builder-briefing.md, tester-checklist.md, task specs, the full workspace.
 
-**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` every ~30s to monitor all tasks (status, deps, questions). Statuses: \`running\`, \`waiting → <dep>\`, \`waiting_answer ⏸\`, \`completed\`, \`failed\`.`,
 
   inputSchema: {
     type: 'object' as const,

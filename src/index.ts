@@ -709,6 +709,15 @@ function canSendMessage(task: { status: TaskStatus; sessionId?: string }): boole
   return !!(task.sessionId && allowedStatuses.includes(task.status));
 }
 
+function formatRelativeTime(iso: string | undefined): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0 || !Number.isFinite(ms)) return '—';
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  return `${Math.round(ms / 3_600_000)}h ago`;
+}
+
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   try {
   const uri = request.params.uri;
@@ -735,6 +744,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
           completed: allTasks.filter(t => t.status === TaskStatus.COMPLETED).length,
           failed: allTasks.filter(t => t.status === TaskStatus.FAILED).length,
           rate_limited: allTasks.filter(t => t.status === TaskStatus.RATE_LIMITED).length,
+          waiting_answer: allTasks.filter(t => t.status === TaskStatus.WAITING_ANSWER).length,
           pending: allTasks.filter(t => t.status === TaskStatus.PENDING).length,
           waiting: allTasks.filter(t => t.status === TaskStatus.WAITING).length,
         },
@@ -977,50 +987,69 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     return lines.join('\n');
   }
 
-  // Handle task:///all - replaces list_tasks
+  // Handle task:///all - compact markdown table
   if (uri === TASK_ALL_URI) {
     const allTasks = taskManager.getAllTasks();
-    
-    const data = {
-      count: allTasks.length,
-      tasks: allTasks.map(task => {
-        const stats = task.cachedStats || { round: 0, totalMessages: 0 };
-        return {
-          id: task.id,
-          status: buildMCPTask(task).status,
-          round: stats.round,
-          total_messages: stats.totalMessages,
-          last_user_message: stats.lastUserMessage,
-          labels: task.labels,
-          has_pending_question: !!task.pendingQuestion,
-          pending_question: task.pendingQuestion?.question,
-          how_to_answer: task.pendingQuestion ? buildHowToAnswer(task.id, task.pendingQuestion) : undefined,
-          can_send_message: canSendMessage(task),
-          session_id: task.sessionId,
-          started: task.startTime,
-          ended: task.endTime,
-        };
-      }),
-      pending_questions: allTasks
-        .filter(t => t.pendingQuestion)
-        .map(t => {
-          const q = t.pendingQuestion;
-          if (!q) return null;
-          return {
-            task_id: t.id,
-            question: q.question,
-            choices: q.choices,
-            structured_questions: q.structuredQuestions,
-            how_to_answer: buildHowToAnswer(t.id, q),
-          };
-        }).filter(Boolean),
-    };
-    
+    const activeCount = allTasks.filter(t => !isTerminalStatus(t.status)).length;
+    const lines: string[] = [];
+
+    lines.push(`# Tasks (${activeCount} active, ${allTasks.length} total)`);
+    lines.push('');
+
+    if (allTasks.length === 0) {
+      lines.push('No tasks yet. Use a `launch-*` tool to create one.');
+    } else {
+      lines.push('| ID | Status | Prompt | Lines | Last Activity |');
+      lines.push('|---|---|---|---|---|');
+      for (const task of allTasks) {
+        const prompt = (task.prompt || '').replace(/\n/g, ' ').slice(0, 30);
+        const promptCell = prompt.length >= 30 ? prompt + '…' : prompt;
+        const outputLines = task.output?.length ?? 0;
+        const lastActivity = formatRelativeTime(task.lastOutputAt || task.endTime || task.startTime);
+
+        // Build descriptive status cell
+        let statusCell: string = task.status;
+        if (task.status === TaskStatus.WAITING && task.dependsOn?.length) {
+          statusCell = `waiting → ${task.dependsOn.join(', ')}`;
+        } else if (task.status === TaskStatus.WAITING_ANSWER) {
+          statusCell = 'waiting_answer ⏸';
+        } else if (task.status === TaskStatus.RATE_LIMITED && task.retryInfo) {
+          statusCell = `rate_limited (retry ${task.retryInfo.retryCount}/${task.retryInfo.maxRetries})`;
+        }
+
+        lines.push(`| ${task.id} | ${statusCell} | ${promptCell} | ${outputLines} | ${lastActivity} |`);
+      }
+      lines.push('');
+      lines.push('> Details: `task:///{id}` · Full logs: `cat -n <output_file>` · Poll: read `task:///all` every 30s to track progress');
+    }
+
+    // Pending questions section
+    const tasksWithQuestions = allTasks.filter(t => t.pendingQuestion);
+    if (tasksWithQuestions.length > 0) {
+      lines.push('');
+      lines.push(`## Pending Questions (${tasksWithQuestions.length})`);
+      lines.push('');
+      for (const task of tasksWithQuestions) {
+        const pq = task.pendingQuestion!;
+        lines.push(`### ${task.id}`);
+        lines.push('');
+        lines.push(`**Q:** ${pq.question}`);
+        if (pq.choices?.length) {
+          for (let i = 0; i < pq.choices.length; i++) {
+            lines.push(`  ${i + 1}. ${pq.choices[i]}`);
+          }
+        }
+        lines.push('');
+        lines.push(`Answer: \`answer-agent { "task_id": "${task.id}", "answer": "1" }\``);
+        lines.push('');
+      }
+    }
+
     return {
       contents: [{
         uri,
-        mimeType: 'application/json',
-        text: JSON.stringify(data),
+        mimeType: 'text/markdown',
+        text: lines.join('\n'),
       }],
     };
   }
@@ -1060,7 +1089,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
   
-  // Handle task:///{id} - replaces get_status
+  // Handle task:///{id} - compact markdown detail
   const taskId = uriToTaskId(uri);
   if (!taskId) {
     throw new McpError(ErrorCode.InvalidParams, `Invalid resource URI: ${uri}`);

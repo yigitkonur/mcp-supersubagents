@@ -16,7 +16,7 @@ export const launchClassicAgentTool = {
   name: 'launch-classic-agent',
   description: `Launch a general-purpose autonomous agent for non-specialized tasks: documentation, analysis, file organization, data processing, report generation, or any automation that doesn't fit coder/planner/tester/researcher. Investigate first — have the agent explore and understand before producing output. Keeps context across the session — good for iterative or exploratory work.
 
-**Status:** Read \`task:///all\` or \`task:///{id}\`.`,
+**Status:** Read \`task:///all\` every ~30s to monitor all tasks (status, deps, questions). Statuses: \`running\`, \`waiting → <dep>\`, \`waiting_answer ⏸\`, \`completed\`, \`failed\`.`,
 
   inputSchema: {
     type: 'object' as const,

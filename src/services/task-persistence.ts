@@ -116,13 +116,13 @@ function applyTaskDefaults(task: TaskState): TaskState {
 }
 
 function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
-  // All non-terminal tasks (RUNNING, PENDING, WAITING) → FAILED on restart
+  // All non-terminal tasks (RUNNING, PENDING, WAITING, WAITING_ANSWER) → FAILED on restart
   // RATE_LIMITED tasks are preserved for retry
   return tasks.map(task => {
     if (task.status === TaskStatus.RATE_LIMITED) {
       return applyTaskDefaults(task);
     }
-    if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING || task.status === TaskStatus.WAITING) {
+    if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.PENDING || task.status === TaskStatus.WAITING || task.status === TaskStatus.WAITING_ANSWER) {
       // PR-012: For WAITING tasks, check if deps are all satisfied → promote to PENDING
       if (task.status === TaskStatus.WAITING && task.dependsOn) {
         const allDepsSatisfied = task.dependsOn.every((depId: string) => {
@@ -144,7 +144,9 @@ function recoverOrphanedTasks(tasks: TaskState[]): TaskState[] {
         endTime: new Date().toISOString(),
         error: prevStatus === TaskStatus.WAITING
           ? 'Server restarted while task was waiting for dependencies'
-          : 'Server restarted - task was interrupted',
+          : prevStatus === TaskStatus.WAITING_ANSWER
+            ? 'Server restarted while task was waiting for user input'
+            : 'Server restarted - task was interrupted',
         timeoutReason: 'server_restart',
         timeoutContext: { detectedBy: 'startup_recovery' },
       });

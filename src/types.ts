@@ -23,6 +23,7 @@ export enum TaskStatus {
   FAILED = 'failed',
   CANCELLED = 'cancelled',
   RATE_LIMITED = 'rate_limited',
+  WAITING_ANSWER = 'waiting_answer',
   TIMED_OUT = 'timed_out',
 }
 

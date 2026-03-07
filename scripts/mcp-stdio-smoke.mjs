@@ -62,6 +62,106 @@ function parseResourceJson(readResult, uri) {
   }
 }
 
+/** Extract raw text from a resource read result */
+function getResourceText(readResult, uri) {
+  const first = readResult?.contents?.[0];
+  if (!first || typeof first.text !== 'string') {
+    throw new Error(`Resource ${uri} did not return text content`);
+  }
+  return first.text;
+}
+
+/** Parse status from task:///{id} markdown (looks for "| **Status** | `<value>` |" or "| Status | <value> |") */
+function parseStatusFromTaskMarkdown(md) {
+  // Match: | **Status** | `value` | OR | Status | value |
+  const match = md.match(/\|\s*\*{0,2}Status\*{0,2}\s*\|\s*`?(\w+)`?\s*\|/);
+  return match ? match[1] : null;
+}
+
+/** Parse task:///all markdown table into array of {id, status} */
+function parseTasksFromAllMarkdown(md) {
+  const tasks = [];
+  // Match data rows in the table (skip header + separator)
+  const lines = md.split('\n');
+  let inTable = false;
+  for (const line of lines) {
+    // Handle both old "| ID " and new "| ID | Status |" headers
+    if (line.startsWith('| ID ')) { inTable = true; continue; }
+    if (inTable && line.startsWith('|---')) continue;
+    if (inTable && line.startsWith('| ')) {
+      const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+      if (cells.length >= 2) {
+        tasks.push({ id: cells[0], status: cells[1] });
+      }
+    } else if (inTable) {
+      break; // end of table
+    }
+  }
+  return tasks;
+}
+
+/**
+ * Parse pending question info from task:///{id} markdown.
+ * Extracts: status, question text, structured_questions (from multi-Q sections),
+ * and how_to_answer JSON block.
+ */
+function parsePendingQuestionFromMarkdown(md) {
+  const result = {
+    status: parseStatusFromTaskMarkdown(md),
+    hasPendingQuestion: md.includes('ACTION REQUIRED'),
+    structuredQuestions: [],
+    howToAnswer: null,
+  };
+
+  if (!result.hasPendingQuestion) return result;
+
+  // Parse structured questions: ### Q1 [q_id] — question text
+  const sqRegex = /### Q\d+\s+\[([^\]]+)\]\s*—\s*(.+)/g;
+  let sqMatch;
+  while ((sqMatch = sqRegex.exec(md)) !== null) {
+    const q = { id: sqMatch[1], question: sqMatch[2].trim(), options: [] };
+
+    // Find numbered options below this heading until next heading or blank line
+    const afterQ = md.slice(sqMatch.index + sqMatch[0].length);
+    const optRegex = /^\s+(\d+)\.\s+\*\*(.+?)\*\*/gm;
+    let optMatch;
+    while ((optMatch = optRegex.exec(afterQ)) !== null) {
+      // Stop if we hit the next heading
+      const beforeOpt = afterQ.slice(0, optMatch.index);
+      if (beforeOpt.includes('###')) break;
+      q.options.push({ label: optMatch[2] });
+    }
+
+    result.structuredQuestions.push(q);
+  }
+
+  // Parse single-question: **Question:** text
+  if (result.structuredQuestions.length === 0) {
+    const singleMatch = md.match(/\*\*Question:\*\*\s*(.+)/);
+    if (singleMatch) {
+      result.structuredQuestions.push({
+        id: '_single',
+        question: singleMatch[1].trim(),
+        options: [],
+      });
+    }
+  }
+
+  // Parse how_to_answer JSON from code block after "### How to answer"
+  const howToIdx = md.indexOf('### How to answer');
+  if (howToIdx !== -1) {
+    const afterHowTo = md.slice(howToIdx);
+    const jsonBlockMatch = afterHowTo.match(/```json\n([\s\S]*?)```/);
+    if (jsonBlockMatch) {
+      try {
+        result.howToAnswer = JSON.parse(jsonBlockMatch[1]);
+      } catch { /* ignore parse errors */ }
+    }
+  }
+
+  return result;
+}
+
 function resolveProvider(task) {
   return task?.provider ?? task?.sessionMetrics?.provider ?? 'n/a';
 }
@@ -113,8 +213,8 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
 
   while (Date.now() - startedAt < waitTimeoutMs) {
     const taskRead = await client.readResource({ uri: `task:///${taskId}` });
-    const task = parseResourceJson(taskRead, `task:///${taskId}`);
-    const status = task?.status;
+    const md = getResourceText(taskRead, `task:///${taskId}`);
+    const status = parseStatusFromTaskMarkdown(md);
 
     if (status !== lastStatus) {
       log(`task ${taskId} status: ${status}`);
@@ -122,7 +222,7 @@ async function waitForTerminalStatus(client, taskId, waitTimeoutMs) {
     }
 
     if (TERMINAL_STATUSES.has(status)) {
-      return task;
+      return { id: taskId, status, _raw: md };
     }
 
     await sleep(POLL_INTERVAL_MS);
@@ -148,12 +248,15 @@ async function spawnAndWait(client, cwd, index, prompt, taskTimeoutMs, waitTimeo
   log(`spawned task #${index}: ${taskId}`);
 
   // Must be readable immediately in the same persistent session.
-  await client.readResource({ uri: `task:///${taskId}` });
+  const immediateRead = await client.readResource({ uri: `task:///${taskId}` });
+  const immediateMd = getResourceText(immediateRead, `task:///${taskId}`);
+  assert(immediateMd.includes(taskId), `task:///${taskId} did not contain task ID in response`);
 
   const finalTask = await waitForTerminalStatus(client, taskId, waitTimeoutMs);
   assert(finalTask.status, `Task ${taskId} returned without status`);
 
-  if (finalTask.timeoutReason === 'server_restart') {
+  // Check for server_restart in the markdown error field
+  if (finalTask._raw && finalTask._raw.includes('server_restart')) {
     throw new Error(`Task ${taskId} ended with server_restart (persistent session check failed)`);
   }
 
@@ -259,18 +362,22 @@ async function main() {
       log(`spawned dentist task: ${taskId}`);
 
       // Poll for input_required status (max 10 min)
+      // Resources now return markdown, so we parse status from the markdown table.
+      // task:///{id} uses MCP-mapped status: input_required (from internal WAITING_ANSWER)
       const waitStart = Date.now();
       const MAX_WAIT_MS = 600_000;
-      let taskData = null;
+      let lastTaskMd = '';
       let gotInputRequired = false;
 
       while (Date.now() - waitStart < MAX_WAIT_MS) {
         const taskRead = await client.readResource({ uri: `task:///${taskId}` });
-        taskData = parseResourceJson(taskRead, `task:///${taskId}`);
-        const status = taskData?.status;
+        lastTaskMd = getResourceText(taskRead, `task:///${taskId}`);
+        const status = parseStatusFromTaskMarkdown(lastTaskMd);
         log(`dentist task status: ${status}`);
 
-        if (status === 'input_required') {
+        // input_required = MCP-mapped status when agent asks a question
+        // Also check for ACTION REQUIRED section in markdown as a fallback
+        if (status === 'input_required' || lastTaskMd.includes('ACTION REQUIRED')) {
           gotInputRequired = true;
           log('task entered input_required — pending question detected');
           break;
@@ -286,38 +393,40 @@ async function main() {
 
       assert(gotInputRequired, 'Timed out waiting for input_required status');
 
-      // Extract structured_questions IDs
-      const pq = taskData?.pending_question;
-      log(`pending_question: ${JSON.stringify(pq, null, 2)}`);
-      const questions = pq?.structured_questions ?? [];
-      assert(questions.length > 0, 'No structured_questions found in pending_question');
+      // Extract structured questions from markdown
+      const parsed = parsePendingQuestionFromMarkdown(lastTaskMd);
+      log(`parsed pending question: hasPendingQuestion=${parsed.hasPendingQuestion}, questions=${parsed.structuredQuestions.length}`);
+      const questions = parsed.structuredQuestions;
+      assert(questions.length > 0, 'No structured questions found in task markdown');
       log(`structured_questions count: ${questions.length}`);
       for (const q of questions) {
         assert(q.id, `Question missing id: ${JSON.stringify(q)}`);
-        log(`  question id=${q.id} header="${q.header}" q="${q.question}"`);
+        log(`  question id=${q.id} q="${q.question}"`);
       }
 
-      // Verify how_to_answer is present and correctly formed in task:///{id}
-      const howToAnswer = pq?.how_to_answer;
-      assert(howToAnswer, 'pending_question missing how_to_answer');
-      assert(howToAnswer.tool === 'answer-agent', `how_to_answer.tool wrong: ${howToAnswer.tool}`);
-      assert(howToAnswer.format?.task_id === taskId, `how_to_answer.format.task_id mismatch: ${howToAnswer.format?.task_id}`);
-      assert(howToAnswer.format?.answers && typeof howToAnswer.format.answers === 'object',
-        'how_to_answer.format.answers missing or not an object');
-      for (const q of questions) {
-        assert(q.id in howToAnswer.format.answers,
-          `how_to_answer.format.answers missing key for question id="${q.id}"`);
+      // Verify how_to_answer JSON block is present in markdown
+      const howToAnswer = parsed.howToAnswer;
+      assert(howToAnswer, 'Markdown missing "### How to answer" JSON block');
+      assert(howToAnswer.task_id === taskId, `how_to_answer task_id mismatch: ${howToAnswer.task_id}`);
+      // Multi-question uses "answers" key, single-question uses "answer" key
+      const hasAnswersKey = howToAnswer.answers && typeof howToAnswer.answers === 'object';
+      const hasAnswerKey = typeof howToAnswer.answer === 'string';
+      assert(hasAnswersKey || hasAnswerKey, 'how_to_answer missing both answers and answer keys');
+      if (hasAnswersKey) {
+        for (const q of questions) {
+          assert(q.id in howToAnswer.answers,
+            `how_to_answer.answers missing key for question id="${q.id}"`);
+        }
       }
-      log('how_to_answer verified: tool, task_id, and all question ID keys present');
+      log('how_to_answer verified from markdown JSON block');
 
-      // Verify how_to_answer in task:///all.tasks[] row
+      // Verify task appears in task:///all markdown table
       const allRead = await client.readResource({ uri: 'task:///all' });
-      const allData = parseResourceJson(allRead, 'task:///all');
-      const taskRow = allData.tasks?.find(t => t.id === taskId);
-      assert(taskRow, `task ${taskId} not found in task:///all.tasks[]`);
-      assert(taskRow.how_to_answer, 'task:///all tasks[] row missing how_to_answer');
-      assert(taskRow.how_to_answer.tool === 'answer-agent', `task:///all how_to_answer.tool wrong: ${taskRow.how_to_answer.tool}`);
-      log('task:///all.tasks[] how_to_answer verified');
+      const allMd = getResourceText(allRead, 'task:///all');
+      const allTasks = parseTasksFromAllMarkdown(allMd);
+      const taskRow = allTasks.find(t => t.id === taskId);
+      assert(taskRow, `task ${taskId} not found in task:///all markdown table`);
+      log(`task:///all shows task ${taskId} with status: ${taskRow.status}`);
 
       // Build answers map: question_id → plain answer string
       const answersMap = {};
@@ -452,42 +561,44 @@ async function main() {
     const first = await spawnAndWait(client, cwd, 1, firstPrompt, taskTimeoutMs, waitTimeoutMs);
     const second = await spawnAndWait(client, cwd, 2, secondPrompt, taskTimeoutMs, waitTimeoutMs);
 
+    // Load persisted tasks for provider/fallback checks (on-disk JSON, not MCP resource)
     const persistedMap = await loadPersistedTaskMap(cwd);
-    const mergedFirst = mergeTaskFromPersisted(first, persistedMap.get(first.id));
-    const mergedSecond = mergeTaskFromPersisted(second, persistedMap.get(second.id));
+    const persistedFirst = persistedMap.get(first.id);
+    const persistedSecond = persistedMap.get(second.id);
 
     const allTasksRead = await client.readResource({ uri: 'task:///all' });
-    const allTasks = parseResourceJson(allTasksRead, 'task:///all');
-    assert(Array.isArray(allTasks.tasks), 'task:///all did not return tasks array');
-    log(`task:///all visible in-session (count=${allTasks.count})`);
+    const allTasksMd = getResourceText(allTasksRead, 'task:///all');
+    const parsedTasks = parseTasksFromAllMarkdown(allTasksMd);
+    assert(parsedTasks.length >= 2, `task:///all should list at least 2 tasks, got ${parsedTasks.length}`);
+    log(`task:///all visible in-session (count=${parsedTasks.length})`);
 
     log('final task outcomes:');
-    log(`- ${mergedFirst.id}: ${mergedFirst.status}`);
-    log(`- ${mergedSecond.id}: ${mergedSecond.status}`);
-    const firstProvider = resolveProvider(mergedFirst);
-    const secondProvider = resolveProvider(mergedSecond);
-    log(`- ${mergedFirst.id} provider: ${firstProvider} fallbackActivated: ${mergedFirst.sessionMetrics?.fallbackActivated ?? false}`);
-    log(`- ${mergedSecond.id} provider: ${secondProvider} fallbackActivated: ${mergedSecond.sessionMetrics?.fallbackActivated ?? false}`);
+    log(`- ${first.id}: ${first.status}`);
+    log(`- ${second.id}: ${second.status}`);
+    const firstProvider = resolveProvider(persistedFirst);
+    const secondProvider = resolveProvider(persistedSecond);
+    log(`- ${first.id} provider: ${firstProvider} fallbackActivated: ${persistedFirst?.sessionMetrics?.fallbackActivated ?? false}`);
+    log(`- ${second.id} provider: ${secondProvider} fallbackActivated: ${persistedSecond?.sessionMetrics?.fallbackActivated ?? false}`);
 
     if (requireCompleted) {
-      assert(mergedFirst.status === 'completed', `Task ${mergedFirst.id} not completed (status=${mergedFirst.status})`);
-      assert(mergedSecond.status === 'completed', `Task ${mergedSecond.id} not completed (status=${mergedSecond.status})`);
+      assert(first.status === 'completed', `Task ${first.id} not completed (status=${first.status})`);
+      assert(second.status === 'completed', `Task ${second.id} not completed (status=${second.status})`);
       log('requireCompleted=true check passed');
     }
 
     if (expectedProvider) {
-      assert(firstProvider === expectedProvider, `Task ${mergedFirst.id} provider mismatch: expected=${expectedProvider} actual=${firstProvider}`);
-      assert(secondProvider === expectedProvider, `Task ${mergedSecond.id} provider mismatch: expected=${expectedProvider} actual=${secondProvider}`);
+      assert(firstProvider === expectedProvider, `Task ${first.id} provider mismatch: expected=${expectedProvider} actual=${firstProvider}`);
+      assert(secondProvider === expectedProvider, `Task ${second.id} provider mismatch: expected=${expectedProvider} actual=${secondProvider}`);
       log(`expectedProvider=${expectedProvider} check passed`);
     }
 
     if (expectFallbackActivated === 'true') {
-      assert(mergedFirst.sessionMetrics?.fallbackActivated === true, `Task ${mergedFirst.id} fallbackActivated was not true`);
-      assert(mergedSecond.sessionMetrics?.fallbackActivated === true, `Task ${mergedSecond.id} fallbackActivated was not true`);
+      assert(persistedFirst?.sessionMetrics?.fallbackActivated === true, `Task ${first.id} fallbackActivated was not true`);
+      assert(persistedSecond?.sessionMetrics?.fallbackActivated === true, `Task ${second.id} fallbackActivated was not true`);
       log('expectFallbackActivated=true check passed');
     } else if (expectFallbackActivated === 'false') {
-      assert(mergedFirst.sessionMetrics?.fallbackActivated !== true, `Task ${mergedFirst.id} fallbackActivated unexpectedly true`);
-      assert(mergedSecond.sessionMetrics?.fallbackActivated !== true, `Task ${mergedSecond.id} fallbackActivated unexpectedly true`);
+      assert(persistedFirst?.sessionMetrics?.fallbackActivated !== true, `Task ${first.id} fallbackActivated unexpectedly true`);
+      assert(persistedSecond?.sessionMetrics?.fallbackActivated !== true, `Task ${second.id} fallbackActivated unexpectedly true`);
       log('expectFallbackActivated=false check passed');
     }
 
