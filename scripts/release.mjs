@@ -47,9 +47,10 @@ run('pnpm build');
 // 5. Publish
 run('npm publish');
 
-// 6. Commit & push
+// 6. Stage all tracked changes + package.json, commit & push
+run('git add -u');
 run('git add package.json');
-run(`git commit -m "chore: bump to v${next} [skip ci]"`);
+run(`git commit -m "chore: release v${next}"`);
 run('git push origin main');
 
 console.error(`\n✅ Released ${pkg.name}@${next}`);
