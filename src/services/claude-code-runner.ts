@@ -263,7 +263,7 @@ async function handleAskUserQuestion(
 
     // Truncate and sanitize answer for the deny message (full answer already logged above)
     const MAX_DENY_ANSWER_LENGTH = 500;
-    const sanitized = answer.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, MAX_DENY_ANSWER_LENGTH);
+    const sanitized = answer.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ' ').slice(0, MAX_DENY_ANSWER_LENGTH);
 
     return {
       behavior: 'deny',
@@ -861,6 +861,14 @@ export async function runClaudeCodeSession(
       try { abortController.abort(new Error('Session ended')); } catch { /* ignore */ }
     }
     try { reader?.cancel(); } catch {}
+    // Clean up any zombie question left by handleAskUserQuestion
+    try {
+      const { questionRegistry: qr } = await import('./question-registry.js');
+      if (qr.hasPendingQuestion(taskId)) {
+        console.error(`[claude-code-runner] Clearing zombie question for task ${taskId}`);
+        qr.clearQuestion(taskId, 'claude session ended');
+      }
+    } catch { /* swallow — cleanup must not block */ }
     for (const key in toolMetrics) delete toolMetrics[key];
     toolStartTimes.clear();
   }
