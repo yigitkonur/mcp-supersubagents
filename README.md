@@ -22,7 +22,7 @@
 
 ## Quick Navigation
 
-[Get Started](#get-started) &#8226; [Why Super Subagents](#why-super-subagents) &#8226; [Tools](#tool-reference) &#8226; [Notifications](#proactive-notifications) &#8226; [Templates](#agent-templates) &#8226; [Configuration](#environment-variables) &#8226; [Examples](#recommended-workflows)
+[Get Started](#get-started) &#8226; [Why Super Subagents](#why-super-subagents) &#8226; [Tools](#tool-reference) &#8226; [Companion Tools](#companion-tools) &#8226; [Notifications](#proactive-notifications) &#8226; [Templates](#agent-templates) &#8226; [Configuration](#environment-variables) &#8226; [Examples](#recommended-workflows)
 
 ---
 
@@ -691,6 +691,104 @@ pnpm start
 ```
 
 > **Build note:** `tsc` only compiles `.ts` files. The build script automatically copies `.mdx` template files to `build/templates/`. If you modify templates, rebuild to pick up changes.
+
+---
+
+## Companion Tools
+
+Super Subagents agent templates reference companion MCP servers and skills that dramatically improve agent output quality. The MCP servers provide tools the agents call during execution; the skills inject domain-specific patterns and methodology into agent prompts.
+
+### One-line ecosystem install
+
+```bash
+# Install all companion MCP servers + skills + hooks in one shot:
+npx super-agents-install-ecosystem
+
+# Or from the repo:
+pnpm install-ecosystem
+```
+
+This installs all 5 companion MCP servers into your Claude Code config, all 3 required skills, and the PostToolUse notification hook. Run with `--check` to see current status without modifying anything, or `--uninstall` to remove everything.
+
+### MCP Servers
+
+These MCP servers are used by the agent templates. Install them individually or use the ecosystem installer above.
+
+| Server | npm Package | Used By | Purpose |
+|---|---|---|---|
+| **super-subagents** | [`mcp-supersubagents`](https://www.npmjs.com/package/mcp-supersubagents) | — | This server itself |
+| **crash-think-tool** | [`crash-mcp`](https://www.npmjs.com/package/crash-mcp) | All templates | Structured reasoning steps — agents think before and after every action |
+| **morph** | [`@morphllm/morphmcp`](https://www.npmjs.com/package/@morphllm/morphmcp) | All templates | Fast code editing (`edit_file`) + codebase search (`warpgrep_codebase_search`) |
+| **skills-as-context** | [`mcp-skills-as-context`](https://www.npmjs.com/package/mcp-skills-as-context) | Coder, Planner, Tester, Researcher | Dynamic skill discovery from [skills.sh](https://skills.sh) (`search-skills`, `get-skill-details`) |
+| **research-powerpack** | [`mcp-researchpowerpack`](https://www.npmjs.com/package/mcp-researchpowerpack) | Researcher | Web search, Reddit mining, deep research, URL scraping |
+| **ask-questions** | [`mcp-vibepowerpack`](https://www.npmjs.com/package/mcp-vibepowerpack) | All templates | Interactive choice popups for user decisions |
+
+<details>
+<summary><strong>Manual MCP server install commands</strong></summary>
+
+```bash
+# crash-think-tool — structured reasoning (no API key needed)
+claude mcp add crash-think-tool -- npx -y crash-mcp@latest
+
+# morph — code editing + warpgrep (requires Morph API key from https://morphllm.com)
+claude mcp add morph \
+  -e MORPH_API_KEY=your-morph-api-key \
+  -e ENABLED_TOOLS=warpgrep_codebase_search,warpgrep_github_search \
+  -- npx -y @morphllm/morphmcp@latest
+
+# skills-as-context — skill discovery (no API key needed)
+claude mcp add skills-as-context -- npx -y mcp-skills-as-context@latest
+
+# research-powerpack — web + Reddit research (requires API keys)
+claude mcp add research-powerpack \
+  -e SERPER_API_KEY=your-serper-key \
+  -e OPENROUTER_API_KEY=your-openrouter-key \
+  -- npx -y mcp-researchpowerpack@latest
+
+# ask-questions — interactive user questions
+claude mcp add ask-questions -- npx -y mcp-vibepowerpack@latest
+```
+
+See each package's README for full configuration options and optional API keys.
+
+</details>
+
+### Skills
+
+Agent templates auto-load skills from [skills.sh](https://skills.sh) to inject domain expertise. Three skills are directly referenced by name:
+
+| Skill | Template | Install Command | GitHub |
+|---|---|---|---|
+| **planning** | `super-planner` | `npx skills add yigitkonur/skills-by-yigitkonur/planning` | [skills/planning](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/planning) |
+| **playwright-cli** | `super-tester` | `npx skills add yigitkonur/skills-by-yigitkonur/playwright-cli` | [skills/playwright-cli](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/playwright-cli) |
+| **research-powerpack** | `super-researcher` | `npx skills add yigitkonur/skills-by-yigitkonur/research-powerpack` | [skills/research-powerpack](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/research-powerpack) |
+
+Additionally, the **coder** template dynamically discovers skills at runtime via `search-skills` based on the detected tech stack (e.g., `"nextjs app router patterns"`, `"rust async tokio patterns"`). The full skill catalog is at [`yigitkonur/skills-by-yigitkonur`](https://github.com/yigitkonur/skills-by-yigitkonur) (14 skills available).
+
+<details>
+<summary><strong>Manual skill install commands</strong></summary>
+
+```bash
+# Install all three required skills:
+npx skills add yigitkonur/skills-by-yigitkonur/planning
+npx skills add yigitkonur/skills-by-yigitkonur/playwright-cli
+npx skills add yigitkonur/skills-by-yigitkonur/research-powerpack
+
+# Optional — install ALL available skills from the catalog:
+npx skills add yigitkonur/skills-by-yigitkonur/copilot-review-init
+npx skills add yigitkonur/skills-by-yigitkonur/design-soul-saas
+npx skills add yigitkonur/skills-by-yigitkonur/devin-review-init
+npx skills add yigitkonur/skills-by-yigitkonur/greptile-config
+npx skills add yigitkonur/skills-by-yigitkonur/mcp-apps-builder
+npx skills add yigitkonur/skills-by-yigitkonur/mcp-cli
+npx skills add yigitkonur/skills-by-yigitkonur/mcp-server-tester
+npx skills add yigitkonur/skills-by-yigitkonur/mcp-use-code-review
+npx skills add yigitkonur/skills-by-yigitkonur/snapshot-to-nextjs
+npx skills add yigitkonur/skills-by-yigitkonur/supastarter
+npx skills add yigitkonur/skills-by-yigitkonur/tauri-devtools
+```
+
+</details>
 
 ---
 
