@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): OpenAI Codex (primary), GitHub Copilot SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `codex,!claude-cli`). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
+An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): OpenAI Codex (primary), GitHub Copilot SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `codex,!claude-cli`). The server exposes 8 MCP tools (5 `launch-*` tools plus `message-agent`, `cancel-agent`, and `answer-agent`) over STDIO transport. Node.js >= 18.0.0.
 
 ## Build & Run
 

@@ -84,11 +84,11 @@ console.error(
 );
 
 const CAPABILITIES: ProviderCapabilities = {
-  supportsSessionResume: true,
-  supportsUserInput: true,
+  supportsSessionResume: CODEX_BINARY_AVAILABLE,
+  supportsUserInput: CODEX_BINARY_AVAILABLE,
   supportsFleetMode: false,
   supportsCredentialRotation: false,
-  maxConcurrency: MAX_CONCURRENCY,
+  maxConcurrency: CODEX_BINARY_AVAILABLE ? MAX_CONCURRENCY : 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +136,12 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       return {
         available: false,
         reason: 'Codex disabled (DISABLE_CODEX_FALLBACK=true)',
+      };
+    }
+    if (!CODEX_BINARY_AVAILABLE) {
+      return {
+        available: false,
+        reason: 'Codex binary not found (install @openai/codex or set CODEX_PATH)',
       };
     }
     if (!CODEX_API_KEY && !HAS_CLI_AUTH) {
