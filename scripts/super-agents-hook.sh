@@ -2,15 +2,14 @@
 # super-agents-hook.sh — PostToolUse hook for Claude Code
 #
 # Reads unseen task events from {CWD}/.super-agents/hook-state.json
-# and outputs {"additionalContext": "..."} for Claude Code to inject
-# into the conversation. Marks events as seen after reading.
+# and outputs hookSpecificOutput with additionalContext for Claude Code
+# to inject into the conversation. Marks events as seen after output.
 #
 # Setup in ~/.claude/settings.json:
 # {
 #   "hooks": {
 #     "PostToolUse": [{
-#       "matcher": ".*",
-#       "command": "/path/to/super-agents-hook.sh"
+#       "hooks": [{"type": "command", "command": "/path/to/super-agents-hook.sh"}]
 #     }]
 #   }
 # }
@@ -67,7 +66,11 @@ if [ "$USE_JQ" = "1" ]; then
     exit 0
   fi
 
-  # Mark events as seen with current timestamp
+  # Produce output FIRST — if this fails, events stay unseen and retry next time
+  ESCAPED=$(printf '%s' "$CONTEXT" | jq -Rs . 2>/dev/null || printf '"%s"' "$CONTEXT")
+  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":%s}}\n' "$ESCAPED"
+
+  # Mark events as seen AFTER successful output
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
   UPDATED=$(jq --arg now "$NOW" '
     .events |= with_entries(
@@ -80,10 +83,6 @@ if [ "$USE_JQ" = "1" ]; then
     printf '%s\n' "$UPDATED" > "$TMP_FILE"
     mv "$TMP_FILE" "$STATE_FILE"
   fi
-
-  # Escape for JSON output
-  ESCAPED=$(printf '%s' "$CONTEXT" | jq -Rs .)
-  printf '{"additionalContext":%s}\n' "$ESCAPED"
 
 else
   # Python3 fallback — uses heredoc to avoid shell expansion / injection
@@ -121,7 +120,13 @@ for tid, ev in unseen.items():
             line += f' Output: {ev["outputFile"]}'
     lines.append(line)
 
-# Mark events as seen
+context = '\n'.join(lines)
+
+# Produce output FIRST — if this fails, events stay unseen and retry next time
+print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': context}}))
+sys.stdout.flush()
+
+# Mark events as seen AFTER successful output
 now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 for k in unseen:
     events[k]['seenAt'] = now
@@ -134,8 +139,5 @@ try:
     os.rename(tmp, state_file)
 except Exception:
     pass
-
-context = '\n'.join(lines)
-print(json.dumps({'additionalContext': context}))
 PYEOF
 fi
