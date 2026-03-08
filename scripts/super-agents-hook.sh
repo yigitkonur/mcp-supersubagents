@@ -67,7 +67,7 @@ if [ "$USE_JQ" = "1" ]; then
   fi
 
   # Produce output FIRST — if this fails, events stay unseen and retry next time
-  ESCAPED=$(printf '%s' "$CONTEXT" | jq -Rs . 2>/dev/null || printf '"%s"' "$CONTEXT")
+  ESCAPED=$(printf '%s' "$CONTEXT" | jq -Rs .)
   printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":%s}}\n' "$ESCAPED"
 
   # Mark events as seen AFTER successful output
