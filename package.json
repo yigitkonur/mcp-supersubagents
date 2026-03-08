@@ -1,6 +1,6 @@
 {
   "name": "mcp-supersubagents",
-  "version": "1.10.14",
+  "version": "1.10.15",
   "description": "MCP server for spawning and managing AI sub-agents (Codex, Copilot, Claude) — parallel task execution with planner, coder, researcher & tester specialists",
   "type": "module",
   "main": "build/index.js",
