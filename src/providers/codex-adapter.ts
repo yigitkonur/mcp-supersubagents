@@ -1,16 +1,12 @@
 /**
- * OpenAI Codex SDK Provider Adapter
+ * OpenAI Codex Provider Adapter (app-server mode)
  *
- * Full integration of @openai/codex-sdk as a provider.
+ * Full integration of Codex via the app-server JSON-RPC 2.0 protocol.
  * Extends BaseProviderAdapter for abort/timeout/cleanup boilerplate.
- * Implements executeSession() with Codex thread streaming.
  *
- * Two execution modes:
- * - App-server mode (default): Spawns `codex app-server --listen stdio://`
- *   with full JSON-RPC 2.0 protocol support, enabling user input (ask_user),
- *   session resume (thread/resume), and graceful cancellation (turn/interrupt).
- * - SDK mode (fallback): Uses @openai/codex-sdk's Codex class → thread.runStreamed().
- *   Opt-in via CODEX_USE_SDK=true or when app-server binary is not found.
+ * Spawns `codex app-server --listen stdio://` with full protocol support:
+ * user input (ask_user), session resume (thread/resume), and graceful
+ * cancellation (turn/interrupt).
  *
  * Resilience: Cockatiel bulkhead (concurrency) + circuit breaker (health).
  *
@@ -22,7 +18,6 @@
  * - CODEX_APPROVAL_POLICY — approval policy (default: never)
  * - MAX_CONCURRENT_CODEX_SESSIONS — max concurrency (default: 5)
  * - DISABLE_CODEX_FALLBACK — disable Codex in fallback chain (default: false)
- * - CODEX_USE_SDK — force SDK mode instead of app-server (default: false)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -65,14 +60,8 @@ const CODEX_APPROVAL_POLICY = (process.env.CODEX_APPROVAL_POLICY || 'never') as
 const parsedMaxCodex = parseInt(process.env.MAX_CONCURRENT_CODEX_SESSIONS || '5', 10);
 const MAX_CONCURRENCY = Number.isFinite(parsedMaxCodex) && parsedMaxCodex > 0 ? parsedMaxCodex : 5;
 
-/**
- * Auto-detect app-server mode: default to app-server when the codex binary is found.
- * Opt-out with CODEX_USE_SDK=true to force SDK mode.
- */
-const FORCE_SDK_MODE = process.env.CODEX_USE_SDK === 'true';
-
-function detectAppServerAvailable(): boolean {
-  if (FORCE_SDK_MODE) return false;
+/** Check if the codex binary is available on the system. */
+function isCodexBinaryAvailable(): boolean {
   try {
     const binary = findCodexBinary(CODEX_PATH);
     if (binary === 'codex') {
@@ -85,21 +74,21 @@ function detectAppServerAvailable(): boolean {
   }
 }
 
-const USE_APP_SERVER = detectAppServerAvailable();
+const CODEX_BINARY_AVAILABLE = isCodexBinaryAvailable();
 
-// Startup log — mode, auth source, configuration
+// Startup log — auth source, configuration
 console.error(
-  `[codex-adapter] Init: mode=${USE_APP_SERVER ? 'app-server' : 'SDK'}${FORCE_SDK_MODE ? ' (forced SDK)' : ''}, ` +
+  `[codex-adapter] Init: mode=app-server, binary=${CODEX_BINARY_AVAILABLE ? 'found' : 'missing'}, ` +
   `auth=${CODEX_API_KEY ? 'api-key' : HAS_CLI_AUTH ? 'cli-auth' : 'none'}, ` +
   `model=${CODEX_MODEL}, sandbox=${CODEX_SANDBOX_MODE}, concurrency=${MAX_CONCURRENCY}`,
 );
 
 const CAPABILITIES: ProviderCapabilities = {
-  supportsSessionResume: USE_APP_SERVER,
-  supportsUserInput: USE_APP_SERVER,
+  supportsSessionResume: CODEX_BINARY_AVAILABLE,
+  supportsUserInput: CODEX_BINARY_AVAILABLE,
   supportsFleetMode: false,
   supportsCredentialRotation: false,
-  maxConcurrency: MAX_CONCURRENCY,
+  maxConcurrency: CODEX_BINARY_AVAILABLE ? MAX_CONCURRENCY : 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -149,6 +138,12 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
         reason: 'Codex disabled (DISABLE_CODEX_FALLBACK=true)',
       };
     }
+    if (!CODEX_BINARY_AVAILABLE) {
+      return {
+        available: false,
+        reason: 'Codex binary not found (install @openai/codex or set CODEX_PATH)',
+      };
+    }
     if (!CODEX_API_KEY && !HAS_CLI_AUTH) {
       return {
         available: false,
@@ -177,7 +172,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
   }
 
   /**
-   * Codex session execution — delegates to app-server or SDK mode.
+   * Codex session execution — always uses app-server mode.
    * Base class handles: handle creation, abort controller, timeout, mode suffix, cleanup.
    */
   protected async executeSession(
@@ -186,181 +181,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
     signal: AbortSignal,
     options: ProviderSpawnOptions,
   ): Promise<void> {
-    if (USE_APP_SERVER) {
-      await this.executeSessionWithAppServer(handle, prompt, signal, options);
-    } else {
-      await this.executeSessionWithSDK(handle, prompt, signal, options);
-    }
-  }
-
-  /**
-   * SDK mode: Uses @openai/codex-sdk's Codex class → thread.runStreamed().
-   * No user input support — events are filtered by the SDK.
-   */
-  private async executeSessionWithSDK(
-    handle: TaskHandle,
-    prompt: string,
-    signal: AbortSignal,
-    options: ProviderSpawnOptions,
-  ): Promise<void> {
-    const { Codex } = await import('@openai/codex-sdk');
-    const { model, reasoningEffort } = options;
-
-    // Execute through resilience policy (bulkhead + circuit breaker)
-    await policy.execute(async () => {
-      handle.markRunning();
-      handle.setProvider('codex');
-
-      const codex = new Codex({
-        ...(CODEX_API_KEY ? { apiKey: CODEX_API_KEY } : {}),
-        codexPathOverride: CODEX_PATH,
-      });
-
-      const codexModel = model || CODEX_MODEL;
-
-      const thread = codex.startThread({
-        model: codexModel,
-        workingDirectory: options.cwd,
-        sandboxMode: CODEX_SANDBOX_MODE,
-        approvalPolicy: CODEX_APPROVAL_POLICY,
-        skipGitRepoCheck: true,
-        ...(reasoningEffort ? { modelReasoningEffort: reasoningEffort } : {}),
-      });
-
-      // prompt already has mode suffix (base class assembled it)
-      const { events } = await thread.runStreamed(prompt, { signal });
-
-      // Metrics tracking
-      let turnCount = 0;
-      let totalTokens = { input: 0, output: 0 };
-      const toolMetrics: Record<string, { count: number; successCount: number; failureCount: number }> = {};
-
-      for await (const event of events) {
-        if (handle.isTerminal()) break;
-
-        switch (event.type) {
-          case 'thread.started':
-            handle.setSessionId(event.thread_id);
-            handle.writeOutput(`[codex] Thread started: ${event.thread_id}`);
-            break;
-
-          case 'turn.started':
-            turnCount++;
-            handle.writeOutput(`--- Turn ${turnCount} ---`);
-            break;
-
-          case 'turn.completed':
-            if (event.usage) {
-              totalTokens.input += event.usage.input_tokens;
-              totalTokens.output += event.usage.output_tokens;
-              handle.writeOutputFileOnly(`[usage] in=${event.usage.input_tokens} out=${event.usage.output_tokens}`);
-            }
-            break;
-
-          case 'turn.failed':
-            handle.writeOutput(`[error] Turn failed: ${event.error.message}`);
-            break;
-
-          case 'item.started':
-            switch (event.item.type) {
-              case 'agent_message':
-                break;
-              case 'reasoning':
-                handle.writeOutputFileOnly(`[reasoning] ${event.item.text.slice(0, 200)}`);
-                break;
-              case 'command_execution':
-                handle.writeOutput(`[tool] ${event.item.command}`);
-                break;
-              case 'file_change':
-                for (const change of event.item.changes) {
-                  handle.writeOutput(`[file] ${change.path} (${change.kind})`);
-                }
-                break;
-              case 'mcp_tool_call':
-                handle.writeOutput(`[tool] MCP:${event.item.server} ${event.item.tool}`);
-                break;
-              case 'web_search':
-                handle.writeOutput(`[search] ${event.item.query}`);
-                break;
-              case 'todo_list':
-                handle.writeOutput(
-                  `[todo] ${event.item.items.map((i: any) => `${i.completed ? '✓' : '○'} ${i.text}`).join(', ')}`,
-                );
-                break;
-              case 'error':
-                handle.writeOutput(`[error] ${event.item.message}`);
-                break;
-            }
-            break;
-
-          case 'item.updated':
-            // Streaming deltas are logged when item completes (item.completed)
-            break;
-
-          case 'item.completed':
-            switch (event.item.type) {
-              case 'agent_message':
-                if (event.item.text?.trim()) handle.writeOutput(event.item.text);
-                break;
-              case 'command_execution': {
-                const exit = event.item.exit_code ?? -1;
-                const status = event.item.status;
-                const name = 'command_execution';
-                if (!toolMetrics[name]) toolMetrics[name] = { count: 0, successCount: 0, failureCount: 0 };
-                toolMetrics[name].count++;
-                if (status === 'completed') toolMetrics[name].successCount++;
-                else toolMetrics[name].failureCount++;
-                handle.writeOutput(`[tool] command exit=${exit} (${status})`);
-                break;
-              }
-              case 'file_change': {
-                const name = 'file_change';
-                if (!toolMetrics[name]) toolMetrics[name] = { count: 0, successCount: 0, failureCount: 0 };
-                toolMetrics[name].count++;
-                if (event.item.status === 'completed') toolMetrics[name].successCount++;
-                else toolMetrics[name].failureCount++;
-                handle.writeOutput(`[file] ${event.item.changes.length} changes ${event.item.status}`);
-                break;
-              }
-              case 'mcp_tool_call': {
-                const name = `mcp:${event.item.server}:${event.item.tool}`;
-                if (!toolMetrics[name]) toolMetrics[name] = { count: 0, successCount: 0, failureCount: 0 };
-                toolMetrics[name].count++;
-                if (event.item.status === 'completed') toolMetrics[name].successCount++;
-                else toolMetrics[name].failureCount++;
-                handle.writeOutput(`[tool] MCP:${event.item.server} ${event.item.tool} ${event.item.status}`);
-                break;
-              }
-            }
-            break;
-
-          case 'error':
-            handle.writeOutput(`[error] ${event.message}`);
-            break;
-        }
-      }
-
-      // Mark completed inside policy.execute() so circuit breaker sees success
-      if (handle.isAlive()) {
-        handle.writeOutput(`[summary] ${turnCount} turns, ${totalTokens.input + totalTokens.output} tokens`);
-        handle.markCompleted({
-          turnCount,
-          totalTokens,
-          toolMetrics: Object.fromEntries(
-            Object.entries(toolMetrics).map(([name, m]) => [
-              name,
-              {
-                toolName: name,
-                executionCount: m.count,
-                successCount: m.successCount,
-                failureCount: m.failureCount,
-                totalDurationMs: 0,
-              },
-            ]),
-          ),
-        });
-      }
-    });
+    await this.executeSessionWithAppServer(handle, prompt, signal, options);
   }
 
   /**
@@ -529,10 +350,6 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
    * Returns the new task ID.
    */
   async sendMessage(taskId: string, message: string, options: ProviderSpawnOptions): Promise<string> {
-    if (!USE_APP_SERVER) {
-      throw new Error('Codex sendMessage/session resume is only supported in app-server mode');
-    }
-
     const { taskManager } = await import('../services/task-manager.js');
     const { createTaskHandle } = await import('./task-handle-impl.js');
 
@@ -1102,8 +919,7 @@ export class CodexProviderAdapter extends BaseProviderAdapter {
       sandboxMode: CODEX_SANDBOX_MODE,
       approvalPolicy: CODEX_APPROVAL_POLICY,
       disabled: process.env.DISABLE_CODEX_FALLBACK === 'true',
-      appServerMode: USE_APP_SERVER,
-      forceSdkMode: FORCE_SDK_MODE,
+      binaryAvailable: CODEX_BINARY_AVAILABLE,
       activeClients: this.activeClients.size,
     };
   }

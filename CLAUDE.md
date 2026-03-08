@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): OpenAI Codex SDK (primary), GitHub Copilot SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `codex,copilot,!claude-cli`). The server exposes 4 MCP tools (`spawn_agent`, `send_message`, `cancel_task`, `answer_question`) over STDIO transport. Node.js >= 18.0.0.
+An MCP server that spawns and manages parallel AI sub-agents. Three execution backends are supported via a provider abstraction layer (`src/providers/`): OpenAI Codex (primary), GitHub Copilot SDK, and Claude Agent SDK (fallback). Provider selection order is configurable via `PROVIDER_CHAIN` (default: `codex,!claude-cli`). The server exposes 8 MCP tools (5 `launch-*` tools plus `message-agent`, `cancel-agent`, and `answer-agent`) over STDIO transport. Node.js >= 18.0.0.
 
 ## Build & Run
 
@@ -40,7 +40,7 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PROVIDER_CHAIN` | `codex,copilot,!claude-cli` | Comma-separated provider IDs in selection order. Prefix `!` = fallback-only (skipped during primary selection, used only when earlier providers fail). |
+| `PROVIDER_CHAIN` | `codex,!claude-cli` | Comma-separated provider IDs in selection order. Prefix `!` = fallback-only (skipped during primary selection, used only when earlier providers fail). |
 
 ### Feature flags
 
@@ -78,7 +78,6 @@ If no PAT is configured, the server tries the next provider in the chain (Codex 
 | `CODEX_MODEL` | `o4-mini` | Default model for Codex tasks |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Sandbox: `read-only`, `workspace-write`, `danger-full-access` |
 | `CODEX_APPROVAL_POLICY` | `never` | Approval: `never`, `on-request`, `on-failure`, `untrusted` |
-| `CODEX_USE_SDK` | `false` | Force SDK mode instead of app-server protocol (app-server is default when `codex` binary is found) |
 | `MAX_CONCURRENT_CODEX_SESSIONS` | `5` | Max simultaneous Codex sessions |
 
 ### Claude fallback

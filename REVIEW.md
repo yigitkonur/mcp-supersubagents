@@ -7,7 +7,7 @@
 - **Token and credential handling** (`src/services/account-manager.ts`) — PAT tokens must never appear in log output, error messages, or MCP responses. Only the masked form (`getMaskedCurrentToken()`) is safe to log. Review any change touching `exportCooldownState()` or token iteration to ensure raw tokens are not leaked.
 - **Process lifecycle** (`src/services/process-registry.ts`) — Kill escalation follows a strict sequence: `session.abort()` → `abortController.abort()` → `SIGTERM` → wait 3s → `SIGKILL`. Any change to this sequence must preserve the escalation order and handle entries without PIDs (Claude fallback sessions have only an AbortController).
 - **Session binding** (`src/services/sdk-session-adapter.ts`) — After token rotation, the session ID changes but the task ID does not. Any code assuming `sessionId === taskId` will silently break after rotation. Always resolve via `sdkClientManager.sessionOwners` map.
-- **Claude fallback permission mode** (`src/services/claude-code-runner.ts`) — `DEFAULT_PERMISSION_MODE` MUST remain `'plan'`, not `'bypassPermissions'`. The `bypassPermissions` value (FB-001, Critical) grants the Claude fallback full OS access without any approval gate — equivalent to running arbitrary shell commands without a sandbox. Any PR touching permission mode defaults MUST include explicit justification for the security trade-off.
+- **Claude fallback permission mode** (`src/services/claude-code-runner.ts`) — `DEFAULT_PERMISSION_MODE` is `'bypassPermissions'` for parity with Copilot's `approveAll` handler. Override via `CLAUDE_FALLBACK_PERMISSION_MODE=plan` if a restricted sandbox is needed. Any PR removing the env var override MUST include explicit justification for the security trade-off.
 
 ## Security
 

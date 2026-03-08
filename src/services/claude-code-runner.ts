@@ -156,7 +156,132 @@ async function canUseToolSafePolicy(
   return { behavior: 'allow', toolUseID };
 }
 
-function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record<string, unknown> {
+/**
+ * Combine multiple questions into a single display string for the question registry.
+ * Mirrors Codex adapter's buildCombinedUserInputQuestion pattern.
+ */
+function buildCombinedQuestionText(questions: Record<string, unknown>[]): string {
+  const lines = [
+    'The agent asked multiple questions. Answer with one line per question, in order.',
+    '',
+  ];
+
+  questions.forEach((q, index) => {
+    lines.push(`${index + 1}. ${q.question}`);
+    const opts = Array.isArray(q.options) ? q.options as unknown[] : [];
+    const optLines = opts
+      .map((o, oi) => {
+        if (!o || typeof o !== 'object' || !('label' in o)) return '';
+        const label = String((o as { label: string }).label);
+        const desc = 'description' in o && typeof (o as { description?: string }).description === 'string'
+          ? ` — ${(o as { description: string }).description}` : '';
+        return `   ${String.fromCharCode(97 + oi)}) ${label}${desc}`;
+      })
+      .filter(Boolean);
+    if (optLines.length > 0) lines.push(...optLines);
+    lines.push('');
+  });
+
+  return lines.join('\n').trim();
+}
+
+/**
+ * Handle AskUserQuestion tool calls from Claude sub-agents by routing them
+ * through the question registry. Returns a 'deny' PermissionResult with the
+ * user's answer in the message — the model sees it and proceeds accordingly.
+ */
+async function handleAskUserQuestion(
+  taskId: string,
+  input: Record<string, unknown>,
+  toolUseID: string,
+): Promise<PermissionResult> {
+  // Lazy import to avoid circular deps
+  const { questionRegistry } = await import('./question-registry.js');
+
+  try {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    const validQuestions = questions.filter(
+      (q): q is Record<string, unknown> => !!q && typeof (q as Record<string, unknown>).question === 'string',
+    );
+
+    if (validQuestions.length === 0) {
+      return {
+        behavior: 'deny',
+        message: 'No valid question provided. Proceed with your best judgment and document your assumptions.',
+        toolUseID,
+      };
+    }
+
+    // Build display question and choices — single question uses direct text,
+    // multi-question combines into a numbered list (same pattern as Codex adapter)
+    const multiQuestion = validQuestions.length > 1;
+    let displayQuestion: string;
+    let flatChoices: string[] | undefined;
+
+    if (multiQuestion) {
+      displayQuestion = buildCombinedQuestionText(validQuestions);
+      flatChoices = undefined; // freeform only for multi-question
+    } else {
+      const q = validQuestions[0];
+      displayQuestion = q.question as string;
+      const opts = Array.isArray(q.options) ? q.options as unknown[] : [];
+      flatChoices = opts
+        .map((o) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
+        .filter(Boolean);
+      if (flatChoices.length === 0) flatChoices = undefined;
+    }
+
+    // Log all questions to output
+    for (const q of validQuestions) {
+      const qText = (q.question as string).slice(0, 200);
+      taskManager.appendOutput(taskId, `[question] Agent asked: "${qText}"`);
+      const opts = Array.isArray(q.options) ? q.options as unknown[] : [];
+      const labels = opts
+        .map((o) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
+        .filter(Boolean);
+      if (labels.length > 0) {
+        taskManager.appendOutput(taskId, `[question] Options: ${labels.join(' | ')}`);
+      }
+    }
+
+    // Single registry call — blocks until orchestrator answers via answer-agent
+    const response = await questionRegistry.register(
+      taskId,
+      '',             // no session ID for Claude
+      displayQuestion,
+      flatChoices,
+      true,           // allowFreeform
+      'Claude',
+    );
+
+    const answer = response.kind === 'structured'
+      ? Object.values(response.answers).map(a => a.answers.join(', ')).join('; ')
+      : response.answer;
+
+    taskManager.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
+
+    // Truncate and sanitize answer for the deny message (full answer already logged above)
+    const MAX_DENY_ANSWER_LENGTH = 500;
+    const sanitized = answer.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, ' ').slice(0, MAX_DENY_ANSWER_LENGTH);
+
+    return {
+      behavior: 'deny',
+      message: multiQuestion
+        ? `User answered your questions: ${sanitized}. Proceed with these choices.`
+        : `User responded to your question "${displayQuestion}": ${sanitized}. Proceed with this choice.`,
+      toolUseID,
+    };
+  } catch (err) {
+    console.error(`[claude-code-runner] handleAskUserQuestion failed for task ${taskId}:`, err);
+    return {
+      behavior: 'deny',
+      message: 'Question routing failed. Proceed with your best judgment and document your assumptions.',
+      toolUseID,
+    };
+  }
+}
+
+function createModelSettings(cwd: string, taskId: string, options: ClaudeCodeRunOptions): Record<string, unknown> {
   const allowedTools = parseCsvEnv('CLAUDE_FALLBACK_ALLOWED_TOOLS') ?? ['*'];
   const disallowedTools = parseCsvEnv('CLAUDE_FALLBACK_DISALLOWED_TOOLS');
   const maxBudgetUsd = parseBudget();
@@ -174,6 +299,9 @@ function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record
       input: Record<string, unknown>,
       ctx: { toolUseID: string }
     ): Promise<PermissionResult> => {
+      if (toolName === 'AskUserQuestion') {
+        return handleAskUserQuestion(taskId, input, ctx.toolUseID);
+      }
       return canUseToolSafePolicy(toolName, input, ctx.toolUseID);
     },
     resume: options.resumeSessionId,
@@ -331,7 +459,7 @@ export async function runClaudeCodeSession(
     }
   }
 
-  const settings = createModelSettings(cwd, options);
+  const settings = createModelSettings(cwd, taskId, options);
   let reader: any;
 
   try {
@@ -732,6 +860,14 @@ export async function runClaudeCodeSession(
       try { abortController.abort(new Error('Session ended')); } catch { /* ignore */ }
     }
     try { reader?.cancel(); } catch {}
+    // Clean up any zombie question left by handleAskUserQuestion
+    try {
+      const { questionRegistry: qr } = await import('./question-registry.js');
+      if (qr.hasPendingQuestion(taskId)) {
+        console.error(`[claude-code-runner] Clearing zombie question for task ${taskId}`);
+        qr.clearQuestion(taskId, 'claude session ended');
+      }
+    } catch { /* swallow — cleanup must not block */ }
     for (const key in toolMetrics) delete toolMetrics[key];
     toolStartTimes.clear();
   }
