@@ -172,9 +172,7 @@ async function handleAskUserQuestion(
 
   try {
     const questions = Array.isArray(input.questions) ? input.questions : [];
-    const firstQuestion = questions[0] as Record<string, unknown> | undefined;
-
-    if (!firstQuestion || typeof firstQuestion.question !== 'string') {
+    if (questions.length === 0) {
       return {
         behavior: 'deny',
         message: 'No valid question provided. Proceed with your best judgment and document your assumptions.',
@@ -182,35 +180,51 @@ async function handleAskUserQuestion(
       };
     }
 
-    const questionText = firstQuestion.question as string;
-    const options = Array.isArray(firstQuestion.options) ? firstQuestion.options : [];
-    const choices = options
-      .map((o: unknown) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
-      .filter(Boolean);
+    // Register each question serially — the orchestrator answers each via answer-agent
+    const answerParts: string[] = [];
+    for (const q of questions) {
+      const qObj = q as Record<string, unknown> | undefined;
+      if (!qObj || typeof qObj.question !== 'string') continue;
 
-    tm.appendOutput(taskId, `[question] Agent asked: "${questionText.slice(0, 200)}"`);
-    if (choices.length > 0) {
-      tm.appendOutput(taskId, `[question] Options: ${choices.join(' | ')}`);
+      const qText = qObj.question as string;
+      const opts = Array.isArray(qObj.options) ? qObj.options as unknown[] : [];
+      const choices = opts
+        .map((o) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
+        .filter(Boolean);
+
+      tm.appendOutput(taskId, `[question] Agent asked: "${qText.slice(0, 200)}"`);
+      if (choices.length > 0) {
+        tm.appendOutput(taskId, `[question] Options: ${choices.join(' | ')}`);
+      }
+
+      const response = await questionRegistry.register(
+        taskId,
+        '',             // no session ID for Claude
+        qText,
+        choices.length > 0 ? choices : undefined,
+        true,           // allowFreeform
+        'Claude',
+      );
+
+      const answer = response.kind === 'structured'
+        ? Object.values(response.answers).map(a => a.answers.join(', ')).join('; ')
+        : response.answer;
+
+      tm.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
+      answerParts.push(`"${qText}": ${answer}`);
     }
 
-    const response = await questionRegistry.register(
-      taskId,
-      '',             // no session ID for Claude
-      questionText,
-      choices.length > 0 ? choices : undefined,
-      true,           // allowFreeform
-      'Claude',
-    );
-
-    const answer = response.kind === 'structured'
-      ? Object.values(response.answers).map(a => a.answers.join(', ')).join('; ')
-      : response.answer;
-
-    tm.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
+    if (answerParts.length === 0) {
+      return {
+        behavior: 'deny',
+        message: 'No valid question provided. Proceed with your best judgment and document your assumptions.',
+        toolUseID,
+      };
+    }
 
     return {
       behavior: 'deny',
-      message: `User responded to your question "${questionText}": ${answer}. Proceed with this choice.`,
+      message: `User answered your questions — ${answerParts.join(' | ')}. Proceed with these choices.`,
       toolUseID,
     };
   } catch (err) {
