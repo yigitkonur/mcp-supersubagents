@@ -8,7 +8,8 @@
     "mcp-supersubagents": "build/index.js",
     "copilot-mcp-server": "build/index.js",
     "super-subagents": "build/index.js",
-    "super-agents-install-hooks": "scripts/install-hooks.sh"
+    "super-agents-install-hooks": "scripts/install-hooks.sh",
+    "super-agents-install-ecosystem": "scripts/install-ecosystem.sh"
   },
   "files": [
     "build",
@@ -31,7 +32,8 @@
     "mcp:smoke": "node scripts/mcp-stdio-smoke.mjs",
     "test:compat": "node scripts/model-provider-compat-test.mjs",
     "release": "node scripts/release.mjs",
-    "install-hooks": "bash scripts/install-hooks.sh"
+    "install-hooks": "bash scripts/install-hooks.sh",
+    "install-ecosystem": "bash scripts/install-ecosystem.sh"
   },
   "keywords": [
     "mcp",
