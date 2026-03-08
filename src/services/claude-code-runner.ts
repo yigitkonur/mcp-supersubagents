@@ -156,7 +156,74 @@ async function canUseToolSafePolicy(
   return { behavior: 'allow', toolUseID };
 }
 
-function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record<string, unknown> {
+/**
+ * Handle AskUserQuestion tool calls from Claude sub-agents by routing them
+ * through the question registry. Returns a 'deny' PermissionResult with the
+ * user's answer in the message — the model sees it and proceeds accordingly.
+ */
+async function handleAskUserQuestion(
+  taskId: string,
+  input: Record<string, unknown>,
+  toolUseID: string,
+): Promise<PermissionResult> {
+  // Lazy import to avoid circular deps
+  const { questionRegistry } = await import('./question-registry.js');
+  const { taskManager: tm } = await import('./task-manager.js');
+
+  try {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    const firstQuestion = questions[0] as Record<string, unknown> | undefined;
+
+    if (!firstQuestion || typeof firstQuestion.question !== 'string') {
+      return {
+        behavior: 'deny',
+        message: 'No valid question provided. Proceed with your best judgment and document your assumptions.',
+        toolUseID,
+      };
+    }
+
+    const questionText = firstQuestion.question as string;
+    const options = Array.isArray(firstQuestion.options) ? firstQuestion.options : [];
+    const choices = options
+      .map((o: unknown) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
+      .filter(Boolean);
+
+    tm.appendOutput(taskId, `[question] Agent asked: "${questionText.slice(0, 200)}"`);
+    if (choices.length > 0) {
+      tm.appendOutput(taskId, `[question] Options: ${choices.join(' | ')}`);
+    }
+
+    const response = await questionRegistry.register(
+      taskId,
+      '',             // no session ID for Claude
+      questionText,
+      choices.length > 0 ? choices : undefined,
+      true,           // allowFreeform
+      'Claude',
+    );
+
+    const answer = response.kind === 'structured'
+      ? Object.values(response.answers).map(a => a.answers.join(', ')).join('; ')
+      : response.answer;
+
+    tm.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
+
+    return {
+      behavior: 'deny',
+      message: `User responded to your question "${questionText}": ${answer}. Proceed with this choice.`,
+      toolUseID,
+    };
+  } catch (err) {
+    console.error(`[claude-code-runner] handleAskUserQuestion failed for task ${taskId}:`, err);
+    return {
+      behavior: 'deny',
+      message: 'Question routing failed. Proceed with your best judgment and document your assumptions.',
+      toolUseID,
+    };
+  }
+}
+
+function createModelSettings(cwd: string, taskId: string, options: ClaudeCodeRunOptions): Record<string, unknown> {
   const allowedTools = parseCsvEnv('CLAUDE_FALLBACK_ALLOWED_TOOLS') ?? ['*'];
   const disallowedTools = parseCsvEnv('CLAUDE_FALLBACK_DISALLOWED_TOOLS');
   const maxBudgetUsd = parseBudget();
@@ -174,6 +241,9 @@ function createModelSettings(cwd: string, options: ClaudeCodeRunOptions): Record
       input: Record<string, unknown>,
       ctx: { toolUseID: string }
     ): Promise<PermissionResult> => {
+      if (toolName === 'AskUserQuestion') {
+        return handleAskUserQuestion(taskId, input, ctx.toolUseID);
+      }
       return canUseToolSafePolicy(toolName, input, ctx.toolUseID);
     },
     resume: options.resumeSessionId,
@@ -331,7 +401,7 @@ export async function runClaudeCodeSession(
     }
   }
 
-  const settings = createModelSettings(cwd, options);
+  const settings = createModelSettings(cwd, taskId, options);
   let reader: any;
 
   try {

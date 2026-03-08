@@ -104,31 +104,40 @@ Use \`AskUserQuestion\` with this exact schema:
 
 \`\`\`
 AskUserQuestion({
-  questions: [                          // 1-4 questions (prefer batching)
+  questions: [                          // 1-4 questions (prefer batching related questions)
     {
-      question: "What branding direction should I use?",
-      header: "Brand",                  // ≤12 chars, short label
-      options: [                        // 2-4 options
+      question: "What branding direction should I use?",  // required, clear question ending with ?
+      header: "Brand",                  // required, ≤12 chars, short chip/tag label
+      options: [                        // required, 2-4 options
         {
-          label: "Modern Care (Recommended)",
-          description: "Clean, trustworthy clinic branding."
+          label: "Modern Care (Recommended)",  // required, 1-5 words
+          description: "Clean, trustworthy clinic branding."  // recommended, explains the choice
         },
         {
           label: "Luxury Smile",
           description: "Upscale positioning with premium feel."
         }
       ],
-      multiSelect: false
+      multiSelect: false               // required, use false for mutually exclusive decisions
     }
   ]
 })
 \`\`\`
 
 **Rules:**
-- Do NOT add an "Other" option — the client adds it automatically
-- Max 4 options per question. Keep labels 1-5 words.
-- Set multiSelect: false (decisions are mutually exclusive)
+- Do NOT add an "Other" option — the client adds freeform input automatically
+- Max 4 options per question. Keep labels 1-5 words. Keep descriptions one sentence.
+- Set multiSelect: false for decisions. Use true only when multiple selections make sense.
 - Ask ALL ambiguous questions in one call, then build.
+`;
+
+const AUTONOMOUS_GUIDANCE = `
+--- QUESTION POLICY ---
+No question channel is available for this session. You MUST decide autonomously.
+When the brief is ambiguous about design preferences, branding, colors, naming, or scope:
+- Choose the most reasonable default
+- Document your assumption clearly (e.g. "Assumed modern blue theme since brief didn't specify")
+- Proceed without blocking
 `;
 
 const FALLBACK_GUIDANCE = `
@@ -141,8 +150,15 @@ For implementation details — decide yourself and document your assumption.
 /**
  * Returns provider-specific question guidance to append to the sub-agent prompt.
  * Includes full tool schema details so the agent knows the exact format.
+ *
+ * If the provider does not support user input, returns autonomous guidance
+ * telling the agent to decide on its own.
  */
-export function getQuestionGuidance(providerId: string): string {
+export function getQuestionGuidance(providerId: string, supportsUserInput: boolean): string {
+  if (!supportsUserInput) {
+    return AUTONOMOUS_GUIDANCE;
+  }
+
   switch (providerId) {
     case 'codex':
       return CODEX_GUIDANCE;

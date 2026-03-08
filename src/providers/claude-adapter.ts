@@ -27,7 +27,7 @@ const MAX_CONCURRENCY = Number.isFinite(parsedMax) && parsedMax > 0 ? parsedMax 
 
 const CAPABILITIES: ProviderCapabilities = {
   supportsSessionResume: false,
-  supportsUserInput: false,
+  supportsUserInput: true,
   supportsFleetMode: false,
   supportsCredentialRotation: false,
   maxConcurrency: MAX_CONCURRENCY,

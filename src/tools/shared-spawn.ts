@@ -185,7 +185,8 @@ export async function handleSharedSpawn(
   }
 
   // 6. Append provider-specific question guidance to the prompt
-  const questionGuidance = getQuestionGuidance(selection.provider.id);
+  const supportsUserInput = selection.provider.getCapabilities().supportsUserInput;
+  const questionGuidance = getQuestionGuidance(selection.provider.id, supportsUserInput);
   const promptWithGuidance = finalPrompt + questionGuidance;
 
   // 7. Create the task (provider-agnostic)
