@@ -100,6 +100,13 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
   }
 
   async abort(taskId: string, reason?: string): Promise<boolean> {
+    // Clear any pending question immediately (mirrors Codex adapter abort flow)
+    const { questionRegistry } = await import('../services/question-registry.js');
+    if (questionRegistry.hasPendingQuestion(taskId)) {
+      console.error(`[claude-adapter] Abort: clearing pending question for task ${taskId}`);
+      questionRegistry.clearQuestion(taskId, 'task aborted');
+    }
+
     const { abortClaudeCodeSession } = await import('../services/claude-code-runner.js');
     return abortClaudeCodeSession(taskId, reason ?? 'Task cancelled');
   }

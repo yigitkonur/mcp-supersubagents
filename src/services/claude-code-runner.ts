@@ -197,7 +197,6 @@ async function handleAskUserQuestion(
 ): Promise<PermissionResult> {
   // Lazy import to avoid circular deps
   const { questionRegistry } = await import('./question-registry.js');
-  const { taskManager: tm } = await import('./task-manager.js');
 
   try {
     const questions = Array.isArray(input.questions) ? input.questions : [];
@@ -235,13 +234,13 @@ async function handleAskUserQuestion(
     // Log all questions to output
     for (const q of validQuestions) {
       const qText = (q.question as string).slice(0, 200);
-      tm.appendOutput(taskId, `[question] Agent asked: "${qText}"`);
+      taskManager.appendOutput(taskId, `[question] Agent asked: "${qText}"`);
       const opts = Array.isArray(q.options) ? q.options as unknown[] : [];
       const labels = opts
         .map((o) => (o && typeof o === 'object' && 'label' in o) ? String((o as { label: string }).label) : '')
         .filter(Boolean);
       if (labels.length > 0) {
-        tm.appendOutput(taskId, `[question] Options: ${labels.join(' | ')}`);
+        taskManager.appendOutput(taskId, `[question] Options: ${labels.join(' | ')}`);
       }
     }
 
@@ -259,7 +258,7 @@ async function handleAskUserQuestion(
       ? Object.values(response.answers).map(a => a.answers.join(', ')).join('; ')
       : response.answer;
 
-    tm.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
+    taskManager.appendOutput(taskId, `[question] User answered: "${answer.slice(0, 200)}"`);
 
     // Truncate and sanitize answer for the deny message (full answer already logged above)
     const MAX_DENY_ANSWER_LENGTH = 500;
