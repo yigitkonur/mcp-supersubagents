@@ -759,9 +759,9 @@ Agent templates auto-load skills from [skills.sh](https://skills.sh) to inject d
 
 | Skill | Template | Install Command | GitHub |
 |---|---|---|---|
-| **planning** | `super-planner` | `npx skills add yigitkonur/skills-by-yigitkonur/planning` | [skills/planning](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/planning) |
-| **playwright-cli** | `super-tester` | `npx skills add yigitkonur/skills-by-yigitkonur/playwright-cli` | [skills/playwright-cli](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/playwright-cli) |
-| **research-powerpack** | `super-researcher` | `npx skills add yigitkonur/skills-by-yigitkonur/research-powerpack` | [skills/research-powerpack](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/research-powerpack) |
+| **planning** | `super-planner` | `npx skills add yigitkonur/skills-by-yigitkonur/skills/planning` | [skills/planning](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/planning) |
+| **playwright-cli** | `super-tester` | `npx skills add yigitkonur/skills-by-yigitkonur/skills/playwright-cli` | [skills/playwright-cli](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/playwright-cli) |
+| **research-powerpack** | `super-researcher` | `npx skills add yigitkonur/skills-by-yigitkonur/skills/research-powerpack` | [skills/research-powerpack](https://github.com/yigitkonur/skills-by-yigitkonur/tree/main/skills/research-powerpack) |
 
 Additionally, the **coder** template dynamically discovers skills at runtime via `search-skills` based on the detected tech stack (e.g., `"nextjs app router patterns"`, `"rust async tokio patterns"`). The full skill catalog is at [`yigitkonur/skills-by-yigitkonur`](https://github.com/yigitkonur/skills-by-yigitkonur) (14 skills available).
 
@@ -770,22 +770,22 @@ Additionally, the **coder** template dynamically discovers skills at runtime via
 
 ```bash
 # Install all three required skills:
-npx skills add yigitkonur/skills-by-yigitkonur/planning
-npx skills add yigitkonur/skills-by-yigitkonur/playwright-cli
-npx skills add yigitkonur/skills-by-yigitkonur/research-powerpack
+npx skills add yigitkonur/skills-by-yigitkonur/skills/planning
+npx skills add yigitkonur/skills-by-yigitkonur/skills/playwright-cli
+npx skills add yigitkonur/skills-by-yigitkonur/skills/research-powerpack
 
 # Optional — install ALL available skills from the catalog:
-npx skills add yigitkonur/skills-by-yigitkonur/copilot-review-init
-npx skills add yigitkonur/skills-by-yigitkonur/design-soul-saas
-npx skills add yigitkonur/skills-by-yigitkonur/devin-review-init
-npx skills add yigitkonur/skills-by-yigitkonur/greptile-config
-npx skills add yigitkonur/skills-by-yigitkonur/mcp-apps-builder
-npx skills add yigitkonur/skills-by-yigitkonur/mcp-cli
-npx skills add yigitkonur/skills-by-yigitkonur/mcp-server-tester
-npx skills add yigitkonur/skills-by-yigitkonur/mcp-use-code-review
-npx skills add yigitkonur/skills-by-yigitkonur/snapshot-to-nextjs
-npx skills add yigitkonur/skills-by-yigitkonur/supastarter
-npx skills add yigitkonur/skills-by-yigitkonur/tauri-devtools
+npx skills add yigitkonur/skills-by-yigitkonur/skills/copilot-review-init
+npx skills add yigitkonur/skills-by-yigitkonur/skills/design-soul-saas
+npx skills add yigitkonur/skills-by-yigitkonur/skills/devin-review-init
+npx skills add yigitkonur/skills-by-yigitkonur/skills/greptile-config
+npx skills add yigitkonur/skills-by-yigitkonur/skills/mcp-apps-builder
+npx skills add yigitkonur/skills-by-yigitkonur/skills/mcp-cli
+npx skills add yigitkonur/skills-by-yigitkonur/skills/mcp-server-tester
+npx skills add yigitkonur/skills-by-yigitkonur/skills/mcp-use-code-review
+npx skills add yigitkonur/skills-by-yigitkonur/skills/snapshot-to-nextjs
+npx skills add yigitkonur/skills-by-yigitkonur/skills/supastarter
+npx skills add yigitkonur/skills-by-yigitkonur/skills/tauri-devtools
 ```
 
 </details>
